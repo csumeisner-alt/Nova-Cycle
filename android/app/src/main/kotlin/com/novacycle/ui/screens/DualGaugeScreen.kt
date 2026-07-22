@@ -1,0 +1,275 @@
+package com.novacycle.ui.screens
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.novacycle.domain.model.GaugeState
+import com.novacycle.ui.components.DualGaugeWidget
+import com.novacycle.ui.components.TickerSelector
+import com.novacycle.ui.theme.*
+import com.novacycle.viewmodel.DualGaugeViewModel
+
+/**
+ * Main dashboard screen.
+ * Shows two gauge widgets (Long-Trend + Short-Trend) side by side,
+ * hold-time estimate, and a quick indicator summary row.
+ * Pull-to-refresh triggers parallel reload of all data.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DualGaugeScreen(
+    viewModel: DualGaugeViewModel = hiltViewModel(),
+    onNavigateToRawChart: () -> Unit = {},
+    onNavigateToHoldTime: () -> Unit = {},
+    onNavigateToReliability: () -> Unit = {}
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    val longGaugeState = GaugeState(
+        score      = uiState.longPrediction?.score ?: 0f,
+        signal     = uiState.longPrediction?.signal ?: "neutral",
+        confidence = uiState.longPrediction?.confidence ?: 0f,
+        gaugeType  = "long",
+        ticker     = uiState.selectedTicker,
+        isLoading  = uiState.isLoading && uiState.longPrediction == null
+    )
+    val shortGaugeState = GaugeState(
+        score      = uiState.shortPrediction?.score ?: 0f,
+        signal     = uiState.shortPrediction?.signal ?: "neutral",
+        confidence = uiState.shortPrediction?.confidence ?: 0f,
+        gaugeType  = "short",
+        ticker     = uiState.selectedTicker,
+        isLoading  = uiState.isLoading && uiState.shortPrediction == null
+    )
+
+    PullToRefreshBox(
+        isRefreshing = uiState.isLoading,
+        onRefresh    = { viewModel.refreshAll() },
+        modifier     = Modifier.fillMaxSize()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // ── Header row ────────────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "NovaCycle",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TickerSelector(
+                        selectedTicker   = uiState.selectedTicker,
+                        onTickerSelected = { viewModel.selectTicker(it) }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(onClick = { viewModel.refreshAll() }) {
+                        Icon(
+                            imageVector      = Icons.Filled.Refresh,
+                            contentDescription = "Refresh",
+                            tint             = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Error banner
+            if (uiState.error != null) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = NovaSellRed.copy(alpha = 0.15f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text  = "⚠️ ${uiState.error}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = NovaSellRed,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // ── Dual Gauge widgets ────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                DualGaugeWidget(
+                    gaugeState = longGaugeState,
+                    label      = "Long-Trend",
+                    modifier   = Modifier.weight(1f)
+                )
+                DualGaugeWidget(
+                    gaugeState = shortGaugeState,
+                    label      = "Short-Trend",
+                    modifier   = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Hold-Time card ────────────────────────────────────────────
+            val holdTime = uiState.holdTime
+            Card(
+                onClick  = onNavigateToHoldTime,
+                modifier = Modifier.fillMaxWidth(),
+                colors   = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            "Hold Time Estimate",
+                            style      = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text       = holdTime?.humanReadable ?: if (uiState.isLoading) "Loading…" else "Tap to load",
+                            style      = MaterialTheme.typography.bodyLarge,
+                            color      = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (holdTime != null) {
+                        ConfidenceBadge(holdTime.confidence)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // ── Indicator summary row ─────────────────────────────────────
+            val indicators = uiState.indicators
+            if (indicators != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors   = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            "Indicator Snapshot",
+                            style      = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            IndicatorChip(
+                                label = "RSI",
+                                value = "%.1f".format(indicators.rsi),
+                                color = when {
+                                    indicators.rsi > 70 -> NovaSellRed
+                                    indicators.rsi < 30 -> NovaBuyGreen
+                                    else                -> NovaNeutralGray
+                                }
+                            )
+                            IndicatorChip(
+                                label = "ADX",
+                                value = "%.1f".format(indicators.adx),
+                                color = if (indicators.adx > 25) NovaBuyGreen else NovaNeutralGray
+                            )
+                            IndicatorChip(
+                                label = "VIX",
+                                value = indicators.vixRegime.uppercase(),
+                                color = when (indicators.vixRegime.lowercase()) {
+                                    "low"     -> VixLow
+                                    "normal"  -> VixNormal
+                                    "high"    -> VixHigh
+                                    "extreme" -> VixExtreme
+                                    else      -> NovaNeutralGray
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // ── Quick action buttons ──────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick  = onNavigateToRawChart,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Raw Chart") }
+                OutlinedButton(
+                    onClick  = onNavigateToReliability,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Reliability") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfidenceBadge(confidence: Float) {
+    val color = when {
+        confidence >= 80f -> NovaBuyGreen
+        confidence >= 60f -> NovaWarningYellow
+        else              -> NovaSellRed
+    }
+    Surface(
+        color = color.copy(alpha = 0.2f),
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            text  = "%.0f%%".format(confidence),
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun IndicatorChip(label: String, value: String, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text  = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+        Text(
+            text  = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            color = color
+        )
+    }
+}

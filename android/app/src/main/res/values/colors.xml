@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary brand colors -->
+    <color name="nc_green">#FF00C853</color>
+    <color name="nc_red">#FFD50000</color>
+    <color name="nc_yellow">#FFFFC107</color>
+    <color name="nc_blue">#FF1565C0</color>
+    <color name="nc_purple">#FF9C27B0</color>
+    <color name="nc_cyan">#FF00BCD4</color>
+    <color name="nc_orange">#FFFF9800</color>
+
+    <!-- Dark theme backgrounds -->
+    <color name="nc_bg_primary">#FF0D0D0D</color>
+    <color name="nc_bg_surface">#FF111111</color>
+    <color name="nc_bg_card">#FF1A1A1A</color>
+    <color name="nc_bg_elevated">#FF1E1E1E</color>
+    <color name="nc_bg_divider">#FF2A2A2A</color>
+
+    <!-- Text colors -->
+    <color name="nc_text_primary">#FFFFFFFF</color>
+    <color name="nc_text_secondary">#FFE0E0E0</color>
+    <color name="nc_text_tertiary">#FF9E9E9E</color>
+    <color name="nc_text_muted">#FF616161</color>
+    <color name="nc_text_disabled">#FF424242</color>
+
+    <!-- Signal colors -->
+    <color name="signal_buy">#FF00C853</color>
+    <color name="signal_sell">#FFD50000</color>
+    <color name="signal_neutral">#FF9E9E9E</color>
+    <color name="signal_extended">#FF1565C0</color>
+    <color name="signal_gap">#FF9C27B0</color>
+    <color name="signal_low_liquidity">#FF9E9E9E</color>
+    <color name="signal_override">#FFFFC107</color>
+
+    <!-- VIX regime colors -->
+    <color name="vix_low">#FF00C853</color>
+    <color name="vix_normal">#FF9E9E9E</color>
+    <color name="vix_high">#FFFF6F00</color>
+    <color name="vix_extreme">#FFD50000</color>
+</resources>

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NovaCycle</string>
+    <string name="app_description">AI-powered VOO ETF trading signal system</string>
+
+    <!-- Navigation -->
+    <string name="nav_dual_gauge">Gauge</string>
+    <string name="nav_raw_chart">Chart</string>
+    <string name="nav_filtered_chart">Timeline</string>
+    <string name="nav_confidence">Confidence</string>
+    <string name="nav_settings">Settings</string>
+    <string name="nav_indicators">Indicators</string>
+    <string name="nav_hold_time">Hold Time</string>
+    <string name="nav_reliability">Reliability</string>
+
+    <!-- Gauges -->
+    <string name="gauge_long_trend">Long-Trend</string>
+    <string name="gauge_short_trend">Short-Trend</string>
+    <string name="signal_buy">BUY</string>
+    <string name="signal_sell">SELL</string>
+    <string name="signal_neutral">NEUTRAL</string>
+    <string name="confidence_label">%d%% confidence</string>
+
+    <!-- Ticker -->
+    <string name="ticker_voo">VOO</string>
+    <string name="ticker_placeholder_note">Multi-ticker support coming soon</string>
+
+    <!-- Notifications -->
+    <string name="notif_channel_long_name">Long-Term Signals</string>
+    <string name="notif_channel_long_desc">Long-trend BUY/SELL signal alerts</string>
+    <string name="notif_channel_short_name">Short-Term Signals</string>
+    <string name="notif_channel_short_desc">Short-trend BUY/SELL signal alerts</string>
+    <string name="notif_channel_extended_name">Extended-Hours Signals</string>
+    <string name="notif_channel_extended_desc">Pre-market and after-hours signal alerts</string>
+    <string name="notif_channel_momentum_name">Confidence Momentum</string>
+    <string name="notif_channel_momentum_desc">Alerts when confidence spikes or drops significantly</string>
+
+    <!-- Errors -->
+    <string name="error_no_data">No data available. Ensure the backend is running.</string>
+    <string name="error_network">Network error. Check your connection.</string>
+    <string name="error_backend_offline">Backend offline. Running on localhost:8080.</string>
+
+    <!-- Reliability placeholder -->
+    <string name="reliability_coming_soon">Trade reliability metrics coming soon</string>
+    <string name="reliability_description">Will show win rate, average return, and hold time once BUY→SELL cycles are recorded.</string>
+</resources>

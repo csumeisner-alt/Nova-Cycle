@@ -1,0 +1,1 @@
+- [NovaCycle backend fixes](novacycle-backend-fixes.md) — critical runtime fixes needed to boot the FastAPI server on Replit
