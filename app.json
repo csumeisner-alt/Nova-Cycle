@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Expo Router App",
+    "name": "Nova Cycle",
     "slug": "nova-cycle",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,14 +16,14 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.example.exporouterapp"
+      "bundleIdentifier": "com.meisnermethods.novacycle"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.example.exporouterapp"
+      "package": "com.meisnermethods.novacycle"
     },
     "web": {
       "favicon": "./assets/favicon.png"
