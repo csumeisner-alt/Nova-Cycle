@@ -3,8 +3,8 @@ import { Text, View, StyleSheet } from "react-native";
 export default function Index() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Expo Router App</Text>
-      <Text style={styles.subtitle}>This is a placeholder screen.</Text>
+      <Text style={styles.title}>Nova Cycle</Text>
+      <Text style={styles.subtitle}>Your ride starts here.</Text>
     </View>
   );
 }
@@ -14,15 +14,16 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#fff",
+    backgroundColor: "#ffffff",
   },
   title: {
-    fontSize: 24,
+    fontSize: 32,
     fontWeight: "bold",
-    marginBottom: 8,
+    marginBottom: 12,
+    color: "#111827",
   },
   subtitle: {
     fontSize: 16,
-    color: "#666",
+    color: "#6b7280",
   },
 });
