@@ -1,0 +1,20 @@
+Create the missing Expo entry files for a standard Expo Router project.
+
+Generate exactly these files:
+
+1. package.json
+2. app.json
+3. App.js
+4. app/index.js
+
+Use Expo SDK 51, React Native 0.74, and expo-router.
+
+Make sure:
+- App.js uses <Slot /> from expo-router
+- app/index.js renders a simple placeholder screen
+- package.json includes expo, react, react-native, expo-router
+- app.json points to App.js as the entryPoint
+
+Do NOT generate a full project.
+Do NOT create any other files.
+Only generate these four files
