@@ -58,7 +58,7 @@ lib/
 scripts/
 
 # Unused lock / config files
-pnpm-lock.yaml
+package-lock.json
 uv.lock
 pyproject.toml
 .replit

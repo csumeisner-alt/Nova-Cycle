@@ -6,9 +6,13 @@
 
 # Old NovaCycle backup
 android-novacycle-backup/
-artifacts/
-lib/
-scripts/
+
+# pnpm workspace packages needed for EAS install (pnpm-lock.yaml is also included)
+# Note: artifacts/, lib/, and scripts/ are excluded from git but must be in the EAS archive
+# because the root package.json is part of a pnpm workspace. EAS upload uses .easignore, not .gitignore.
+!artifacts/
+!lib/
+!scripts/
 
 # Build cache
 .cache/
@@ -20,7 +24,7 @@ node_modules/
 **/.config/npm/
 
 # Lock files / package managers not used by EAS
-pnpm-lock.yaml
+package-lock.json
 uv.lock
 pyproject.toml
 
