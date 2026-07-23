@@ -21,4 +21,4 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
-packages = ["glibcLocales", "libxcrypt", "ocl-icd", "opencl-headers"]
+packages = ["freetype", "glibcLocales", "lcms2", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "ocl-icd", "opencl-headers", "openjpeg", "tcl", "tk", "zlib"]
