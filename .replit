@@ -22,3 +22,8 @@ timeoutMs = 20000
 [nix]
 channel = "stable-25_05"
 packages = ["freetype", "glibcLocales", "lcms2", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "ocl-icd", "opencl-headers", "openjpeg", "tcl", "tk", "zlib", "psmisc"]
+
+[userenv]
+
+[userenv.shared]
+EAS_PROJECT_ID = "c2d9e634-8369-49d1-b640-6381c60c5fd4"
