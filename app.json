@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Expo Router App",
-    "slug": "expo-router-app",
+    "slug": "nova-cycle",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -28,6 +28,7 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "owner": "meisnermethods-team",
     "plugins": [
       "expo-router"
     ],

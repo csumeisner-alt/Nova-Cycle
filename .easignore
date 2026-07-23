@@ -1,0 +1,31 @@
+# Replit environment files
+.pythonlibs/
+.upm/
+.config/
+
+# Old NovaCycle backup
+android-novacycle-backup/
+artifacts/
+lib/
+scripts/
+
+# Build cache
+.cache/
+.expo/
+.expo-shared/
+
+# Dependencies
+node_modules/
+
+# IDE / system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+npm-debug.log*
+yarn-error.log*
+
+# Git
+.git/
