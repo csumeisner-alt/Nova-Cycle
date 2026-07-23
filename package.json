@@ -21,8 +21,8 @@
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
-    "@types/react": "^19.2.17",
-    "typescript": "^7.0.2"
+    "@types/react": "~18.2.79",
+    "typescript": "~5.3.3"
   },
   "overrides": {
     "tar": "^7.4.0"
