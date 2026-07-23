@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "expo": "~51.0.0",
+    "expo-constants": "~16.0.2",
+    "expo-linking": "~6.3.0",
     "expo-router": "~3.5.0",
     "expo-status-bar": "~1.12.0",
     "metro": "^0.80.12",
@@ -21,6 +23,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
     "@types/react": "~18.2.79",
     "eas-cli": "^21.1.0",
     "typescript": "~5.3.3"
