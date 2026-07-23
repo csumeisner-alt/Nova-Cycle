@@ -47,3 +47,20 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.config/
+.upm/
+.pythonlibs/
+
+# Old NovaCycle backup
+android-novacycle-backup/
+artifacts/
+lib/
+scripts/
+
+# Unused lock / config files
+pnpm-lock.yaml
+uv.lock
+pyproject.toml
+.replit
+.replitignore
+

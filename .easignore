@@ -2,6 +2,7 @@
 .pythonlibs/
 .upm/
 .config/
+**/.config/
 
 # Old NovaCycle backup
 android-novacycle-backup/
@@ -16,6 +17,12 @@ scripts/
 
 # Dependencies
 node_modules/
+**/.config/npm/
+
+# Lock files / package managers not used by EAS
+pnpm-lock.yaml
+uv.lock
+pyproject.toml
 
 # IDE / system files
 .idea/
@@ -29,3 +36,7 @@ yarn-error.log*
 
 # Git
 .git/
+
+# Replit config
+.replit
+.replitignore
