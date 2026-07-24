@@ -25,15 +25,20 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease
 
       - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: novacyle-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: novacycle-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
       # Only publish a release on pushes to main/master (not PRs)
@@ -42,7 +47,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: latest
-          name: "Latest Debug Build"
+          name: "Latest Release Build"
           body: |
             Automatically published from the latest commit on ${{ github.ref_name }}.
 
@@ -50,7 +55,7 @@ jobs:
             **Built:** ${{ github.run_id }}
 
             Install this APK directly on your Android device — no GitHub login required.
-          artifacts: android/app/build/outputs/apk/debug/app-debug.apk
+          artifacts: android/app/build/outputs/apk/release/app-release.apk
           artifactContentType: application/vnd.android.package-archive
           allowUpdates: true       # Overwrite the existing "latest" release each time
           removeArtifacts: true    # Replace old APK so there is always one file

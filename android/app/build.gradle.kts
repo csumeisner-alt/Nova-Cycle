@@ -31,6 +31,32 @@ android {
         buildConfigField("String", "API_BASE_URL", "\"https://85621466-d083-4137-8a68-8de9779ab36a-00-lvz8z9d2rcc1.riker.replit.dev/api/\"")
     }
 
+    signingConfigs {
+        create("release") {
+            // Credentials are injected by the CI environment (GitHub Actions secrets).
+            // Locally, set these four env vars or the build falls back to debug signing.
+            val keystoreBase64 = System.getenv("KEYSTORE_BASE64")
+            val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
+            val keyAlias = System.getenv("KEY_ALIAS")
+            val keyPassword = System.getenv("KEY_PASSWORD")
+
+            if (keystoreBase64 != null && keystorePassword != null &&
+                keyAlias != null && keyPassword != null
+            ) {
+                // Decode the base64 keystore to a temp file at build time
+                val keystoreFile = layout.buildDirectory.file("novacycle-release.p12").get().asFile
+                keystoreFile.parentFile.mkdirs()
+                keystoreFile.writeBytes(
+                    java.util.Base64.getDecoder().decode(keystoreBase64)
+                )
+                storeFile = keystoreFile
+                storePassword = keystorePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -38,6 +64,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             // Debug keeps API URL readable, minification off.
