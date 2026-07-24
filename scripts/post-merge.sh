@@ -1,4 +1,5 @@
 #!/bin/bash
 set -e
-pnpm install --frozen-lockfile
-pnpm --filter db push
+
+# Sync pnpm lockfile with any workspace config changes (overrides, catalog, etc.)
+pnpm install --no-frozen-lockfile
