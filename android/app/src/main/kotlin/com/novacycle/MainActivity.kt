@@ -19,7 +19,7 @@ import com.novacycle.ui.navigation.NovaCycleNavHost
 import com.novacycle.ui.theme.NovaCycleTheme
 import com.novacycle.viewmodel.SettingsViewModel
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
         val needsRegistration = prefs.getBoolean(NovaCycleFirebaseService.PREF_NEEDS_REGISTRATION, false)
         val deviceName = android.os.Build.MODEL
 
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             if (needsRegistration) {
                 // Token is new or was explicitly marked for re-registration — register immediately.
                 registerToken(token, deviceName, prefs)
