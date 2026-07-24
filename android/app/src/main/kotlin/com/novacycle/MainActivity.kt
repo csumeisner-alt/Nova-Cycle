@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 /**
@@ -47,6 +48,14 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var dataStore: DataStore<Preferences>
+
+    /**
+     * Guards against two concurrent registration coroutines running simultaneously.
+     * Set to true when a registration coroutine is launched; reset to false when it
+     * completes (success or failure). A second call to registerFcmTokenIfNeeded()
+     * while a coroutine is already in flight is a no-op.
+     */
+    private val registrationInFlight = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,31 +94,45 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        // Prevent a second coroutine from launching while one is already running.
+        // compareAndSet returns false if the flag was already true, meaning registration
+        // is in flight — in that case this call is a no-op.
+        if (!registrationInFlight.compareAndSet(false, true)) {
+            Log.d(TAG, "FCM token registration already in flight — skipping duplicate call")
+            return
+        }
+
         val needsRegistration = prefs.getBoolean(NovaCycleFirebaseService.PREF_NEEDS_REGISTRATION, false)
         val deviceName = android.os.Build.MODEL
 
         lifecycleScope.launch(Dispatchers.IO) {
-            if (needsRegistration) {
-                // Token is new or was explicitly marked for re-registration — register immediately.
-                registerToken(token, deviceName, prefs)
-            } else {
-                // Token was previously registered. Verify it is still known to the backend
-                // (guards against a backend DB reset wiping the device_tokens table).
-                val checkResult = repository.checkDeviceToken(token)
-                checkResult
-                    .onSuccess { found ->
-                        if (found) {
-                            Log.d(TAG, "FCM token confirmed present on backend")
-                        } else {
-                            // Backend returned 404 — DB was reset; re-register now.
-                            Log.w(TAG, "FCM token missing from backend (DB may have been reset) — re-registering")
-                            registerToken(token, deviceName, prefs)
+            try {
+                if (needsRegistration) {
+                    // Token is new or was explicitly marked for re-registration — register immediately.
+                    registerToken(token, deviceName, prefs)
+                } else {
+                    // Token was previously registered. Verify it is still known to the backend
+                    // (guards against a backend DB reset wiping the device_tokens table).
+                    val checkResult = repository.checkDeviceToken(token)
+                    checkResult
+                        .onSuccess { found ->
+                            if (found) {
+                                Log.d(TAG, "FCM token confirmed present on backend")
+                            } else {
+                                // Backend returned 404 — DB was reset; re-register now.
+                                Log.w(TAG, "FCM token missing from backend (DB may have been reset) — re-registering")
+                                registerToken(token, deviceName, prefs)
+                            }
                         }
-                    }
-                    .onFailure { e ->
-                        // Backend unreachable — leave needsRegistration flag as-is and retry next launch.
-                        Log.e(TAG, "FCM token check failed (backend unreachable, will retry on next launch): ${e.message}")
-                    }
+                        .onFailure { e ->
+                            // Backend unreachable — leave needsRegistration flag as-is and retry next launch.
+                            Log.e(TAG, "FCM token check failed (backend unreachable, will retry on next launch): ${e.message}")
+                        }
+                }
+            } finally {
+                // Always release the lock so the next legitimate call (e.g. after a token
+                // refresh) can proceed.
+                registrationInFlight.set(false)
             }
         }
     }
