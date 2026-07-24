@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "NovaCycle Web"
+version = "1.0.0"
+id = "artifacts/novacycle-web"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18285
+
+[services.development]
+run = "pnpm --filter @workspace/novacycle-web run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/novacycle-web", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/novacycle-web/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18285"
+BASE_PATH = "/"
