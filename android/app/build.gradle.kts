@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.compose.compiler)
     alias(libs.plugins.hilt.android)
     // alias(libs.plugins.google.services)  // Uncomment when google-services.json is added
     id("kotlin-kapt")
@@ -57,11 +58,6 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
-    }
-
-    composeOptions {
-        // Kotlin 2.0.0 uses compose compiler plugin 1.5.14
-        kotlinCompilerExtensionVersion = "1.5.14"
     }
 
     packaging {
