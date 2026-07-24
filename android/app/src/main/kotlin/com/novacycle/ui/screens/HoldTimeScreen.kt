@@ -52,7 +52,10 @@ fun HoldTimeScreen(
                     ) {
 
                         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                            Column(Modifier.fillMaxWidth().padding(24.dp), Alignment.CenterHorizontally) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
                                 Text("Expected Hold Time", style = MaterialTheme.typography.titleMedium,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                                 Spacer(Modifier.height(12.dp))
