@@ -1,6 +1,6 @@
 # NovaCycle
 
-AI-powered VOO ETF trading signal system. Dual long-trend and short-trend ML gauges, confidence history, filtered BUY/SELL signals, signal story cards, reliability metrics, and FCM push notifications.
+AI-powered VOO ETF trading signal system. Dual long-trend and short-trend ML gauges, confidence history, filtered BUY/SELL signals, signal story cards, reliability metrics, and optional FCM push notifications.
 
 ---
 
@@ -11,6 +11,20 @@ NovaCycle
 ├── artifacts/api-server/backend/   ← Python FastAPI backend (running on Replit)
 └── android/                        ← Kotlin/Jetpack Compose Android app
 ```
+
+---
+
+## Download the APK automatically
+
+The easiest way to get the app on your phone is via the **GitHub Actions** workflow.
+
+1. Push this repo to GitHub (see below for the one-line command).
+2. Open the repo on GitHub → **Actions** tab → **Build NovaCycle APK**.
+3. Click the latest successful run, then download the **novacyle-debug-apk** artifact.
+4. Transfer the APK to your Android phone and install it.
+
+No Firebase account, no Android Studio, and no command-line setup required.  
+Detailed instructions: [`android/README_BUILD.md`](android/README_BUILD.md)
 
 ---
 
@@ -72,10 +86,11 @@ All settings can be overridden with environment variables:
 
 > **Note:** Do NOT set `DATABASE_URL` in the environment — the backend always uses SQLite (`novacycle.db`) regardless of any env var, to avoid conflicts with Replit's PostgreSQL `DATABASE_URL`.
 
-### FCM Push Notifications
+### FCM Push Notifications (optional)
 1. Download your Firebase service account JSON from Firebase Console → Project Settings → Service Accounts
 2. Set the entire JSON as the `FCM_SERVER_KEY` environment variable (or Replit Secret)
 3. The backend will send BUY/SELL alerts via FCM v1 HTTP API
+4. On the Android side, add `google-services.json` and re-enable the commented Firebase lines (see `android/README_BUILD.md`)
 
 ---
 
@@ -83,12 +98,15 @@ All settings can be overridden with environment variables:
 
 > **Full build instructions: [`android/README_BUILD.md`](android/README_BUILD.md)**
 
-### Quick Start
+### Quick Start — GitHub Actions APK
+1. Push this repo to a GitHub repository.
+2. GitHub Actions automatically builds the APK on every push.
+3. Download the APK from the Actions page and install it on your phone.
 
-1. Open `android/` in Android Studio (File → Open → select the `android/` folder)
-2. Add your `google-services.json` to `android/app/` (from Firebase Console)
-3. Run **Build → Build APK(s)** or `./gradlew assembleDebug`
-4. Install: `adb install android/app/build/outputs/apk/debug/app-debug.apk`
+### Local Build
+1. Open `android/` in Android Studio (File → Open → select the `android/` folder).
+2. Wait for Gradle sync.
+3. Build → Build APK(s) → locate `app-debug.apk`.
 
 ### App Screens
 | Screen | Description |
