@@ -10,7 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ArrowDropUp
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -378,7 +378,7 @@ private fun RowScope.SortHeader(
         )
         if (selected) {
             Icon(
-                imageVector = if (ascending) Icons.Filled.ArrowDropUp else Icons.Filled.ArrowDropDown,
+                imageVector = if (ascending) Icons.Filled.KeyboardArrowUp else Icons.Filled.ArrowDropDown,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp)
             )

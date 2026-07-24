@@ -45,7 +45,11 @@ fun HoldTimeScreen(
 
                 uiState.holdTime != null -> {
                     val ht = uiState.holdTime!!
-                    Column(Modifier.padding(24.dp), Alignment.CenterHorizontally, Arrangement.spacedBy(16.dp)) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
 
                         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                             Column(Modifier.fillMaxWidth().padding(24.dp), Alignment.CenterHorizontally) {
