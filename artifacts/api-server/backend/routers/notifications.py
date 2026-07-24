@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,18 @@ router = APIRouter()
 class RegisterDeviceRequest(BaseModel):
     token: str
     device_name: Optional[str] = None
+    # Notification preferences synced from the Android app's SensitivitySettings.
+    # min_buy_threshold / min_sell_threshold are 0.0–1.0 fractions derived from
+    # the user's buyThreshold slider + notificationSensitivity enum.
+    min_buy_threshold: float = 0.70
+    min_sell_threshold: float = 0.70
+    extended_hours_notifications: bool = True
+
+    @field_validator("min_buy_threshold", "min_sell_threshold")
+    @classmethod
+    def clamp_threshold(cls, v: float) -> float:
+        """Clamp confidence thresholds to the valid [0.0, 1.0] range."""
+        return max(0.0, min(1.0, v))
 
 
 class TestNotificationRequest(BaseModel):
@@ -67,6 +79,9 @@ async def register_device(
     if existing:
         existing.device_name = body.device_name
         existing.updated_at = datetime.utcnow()
+        existing.min_buy_threshold = body.min_buy_threshold
+        existing.min_sell_threshold = body.min_sell_threshold
+        existing.extended_hours_notifications = body.extended_hours_notifications
         logger.info("FCM token refreshed for device: %s", body.device_name or "unknown")
     else:
         session.add(DeviceToken(
@@ -74,6 +89,9 @@ async def register_device(
             device_name=body.device_name,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
+            min_buy_threshold=body.min_buy_threshold,
+            min_sell_threshold=body.min_sell_threshold,
+            extended_hours_notifications=body.extended_hours_notifications,
         ))
         logger.info("FCM token registered for device: %s", body.device_name or "unknown")
 

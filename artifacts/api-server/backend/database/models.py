@@ -203,3 +203,14 @@ class DeviceToken(Base):
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # ── Per-device notification preferences ──────────────────────────────────
+    # Minimum confidence (0.0–1.0) required to fire a BUY notification.
+    # Derived from the user's buyThreshold + notificationSensitivity on Android.
+    min_buy_threshold = Column(Float, nullable=False, default=0.70)
+
+    # Minimum confidence (0.0–1.0) required to fire a SELL notification.
+    min_sell_threshold = Column(Float, nullable=False, default=0.70)
+
+    # When False, skip push notifications for extended-hours signals.
+    extended_hours_notifications = Column(Boolean, nullable=False, default=True)

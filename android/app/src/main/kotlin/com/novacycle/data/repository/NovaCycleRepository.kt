@@ -8,6 +8,8 @@ import com.novacycle.data.local.entities.ConfidenceHistoryEntity
 import com.novacycle.data.local.entities.SignalHistoryEntity
 import com.novacycle.data.remote.NovaCycleApiService
 import com.novacycle.data.remote.models.*
+import com.novacycle.domain.model.NotifSensitivity
+import com.novacycle.domain.model.SensitivitySettings
 import javax.inject.Inject
 import javax.inject.Singleton
 import android.util.Log
@@ -187,14 +189,59 @@ class NovaCycleRepository @Inject constructor(
         runCatching { apiService.getTradeHistory(ticker, window) }
 
     /**
-     * Register (or refresh) an FCM device token with the backend.
+     * Register (or refresh) an FCM device token with the backend, including the
+     * user's current notification preferences so the backend can filter signals
+     * per-device before firing push notifications.
+     *
      * Idempotent — the backend upserts by token value.
+     *
+     * @param token      FCM registration token
+     * @param deviceName Human-readable device label (e.g. "Pixel 7")
+     * @param settings   Current sensitivity settings; preferences default to lenient
+     *                   values when null (all signals pass through)
      */
     suspend fun registerDeviceToken(
         token: String,
-        deviceName: String? = null
+        deviceName: String? = null,
+        settings: SensitivitySettings? = null
     ): Result<Unit> = runCatching {
-        apiService.registerDeviceToken(RegisterDeviceRequest(token, deviceName))
-        Log.d("NovaCycleRepository", "Device token registered: ${token.take(20)}...")
+        val (minBuy, minSell) = computeEffectiveThresholds(settings)
+        val extHours = settings?.extendedHoursNotifications ?: true
+        apiService.registerDeviceToken(
+            RegisterDeviceRequest(
+                token = token,
+                deviceName = deviceName,
+                minBuyThreshold = minBuy,
+                minSellThreshold = minSell,
+                extendedHoursNotifications = extHours,
+            )
+        )
+        Log.d("NovaCycleRepository", "Device token registered: ${token.take(20)}... " +
+            "(buyThreshold=${"%.2f".format(minBuy)}, sellThreshold=${"%.2f".format(minSell)}, extHours=$extHours)")
+    }
+
+    /**
+     * Translate user-facing SensitivitySettings into backend-ready confidence thresholds.
+     *
+     * NotifSensitivity mapping:
+     *   HIGH     → 0.50 (buzz for any signal ≥ 50 %)
+     *   STANDARD → user's slider value (default 70 %)
+     *   LOW      → 0.85 (only strong signals)
+     *
+     * @return Pair(minBuyThreshold, minSellThreshold) in [0.0, 1.0]
+     */
+    private fun computeEffectiveThresholds(settings: SensitivitySettings?): Pair<Double, Double> {
+        if (settings == null) return Pair(0.70, 0.70)
+        val threshold = when (settings.notificationSensitivity) {
+            NotifSensitivity.HIGH     -> 0.50
+            NotifSensitivity.LOW      -> 0.85
+            NotifSensitivity.STANDARD -> settings.buyThreshold / 100.0
+        }
+        val sellThreshold = when (settings.notificationSensitivity) {
+            NotifSensitivity.HIGH     -> 0.50
+            NotifSensitivity.LOW      -> 0.85
+            NotifSensitivity.STANDARD -> kotlin.math.abs(settings.sellThreshold) / 100.0
+        }
+        return Pair(threshold, sellThreshold)
     }
 }

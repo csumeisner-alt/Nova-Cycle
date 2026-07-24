@@ -188,6 +188,10 @@ async def _notify_all_devices_bg(
     """
     Background task: send FCM push notifications to all registered device tokens.
 
+    Each device's stored preferences are checked before firing:
+      - Extended-hours signals are skipped when the device opted out.
+      - Signals below the device's confidence threshold are silently skipped.
+
     Uses its own DB session so it can run after the request session is closed.
     Errors are logged but never raise — this must not affect prediction responses.
     """
@@ -197,7 +201,17 @@ async def _notify_all_devices_bg(
         session_factory = get_session_factory()
         async with session_factory() as db:
             result = await db.execute(select(DeviceToken))
-            tokens = result.scalars().all()
+            # Load all columns eagerly before the session closes.
+            tokens = [
+                {
+                    "token": t.token,
+                    "device_name": t.device_name,
+                    "min_buy_threshold": t.min_buy_threshold,
+                    "min_sell_threshold": t.min_sell_threshold,
+                    "extended_hours_notifications": t.extended_hours_notifications,
+                }
+                for t in result.scalars().all()
+            ]
 
         if not tokens:
             logger.debug("No device tokens registered — skipping FCM notification")
@@ -205,8 +219,32 @@ async def _notify_all_devices_bg(
 
         notifier = FCMNotifier()
         for device in tokens:
+            # ── Preference filtering ────────────────────────────────────────
+            # Skip extended-hours signals when the device has opted out.
+            if is_extended and not device["extended_hours_notifications"]:
+                logger.debug(
+                    "Skipping extended-hours notification for device: %s",
+                    device["device_name"] or "unknown",
+                )
+                continue
+
+            # Skip signals below this device's confidence threshold.
+            threshold = (
+                device["min_buy_threshold"]
+                if signal_type == "buy"
+                else device["min_sell_threshold"]
+            )
+            if confidence < threshold:
+                logger.debug(
+                    "Skipping %s signal (conf=%.2f < threshold=%.2f) for device: %s",
+                    signal_type, confidence, threshold,
+                    device["device_name"] or "unknown",
+                )
+                continue
+            # ───────────────────────────────────────────────────────────────
+
             ok = await notifier.send_signal_notification(
-                device_token=device.token,
+                device_token=device["token"],
                 signal_type=signal_type,
                 gauge_type=gauge_type,
                 confidence=confidence,
@@ -217,7 +255,7 @@ async def _notify_all_devices_bg(
             )
             if not ok:
                 logger.warning(
-                    "FCM delivery failed for device: %s", device.device_name or "unknown"
+                    "FCM delivery failed for device: %s", device["device_name"] or "unknown"
                 )
     except Exception as exc:
         logger.error("Background FCM notification error: %s", exc)
