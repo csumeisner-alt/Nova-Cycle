@@ -12,7 +12,16 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.net.URL
 import javax.inject.Inject
+
+/** State for an in-progress or completed connection test. */
+sealed class ConnectionTestState {
+    object Idle    : ConnectionTestState()
+    object Testing : ConnectionTestState()
+    data class Success(val message: String) : ConnectionTestState()
+    data class Failure(val message: String) : ConnectionTestState()
+}
 
 /**
  * Manages user sensitivity settings persisted in DataStore.
@@ -101,8 +110,77 @@ class SettingsViewModel @Inject constructor(
         prefs[KEY_EXTENDED_NOTIF] = enabled
     }
 
-    fun updateApiBaseUrl(url: String) = save { prefs ->
-        prefs[KEY_API_BASE_URL] = url
+    // ── URL validation & connection test ──────────────────────────────────────
+
+    private val _connectionTestState = MutableStateFlow<ConnectionTestState>(ConnectionTestState.Idle)
+    val connectionTestState: StateFlow<ConnectionTestState> = _connectionTestState.asStateFlow()
+
+    /**
+     * Validate an API base URL string.
+     * @return An error message string if invalid, or null if the URL is acceptable.
+     */
+    fun validateApiUrl(url: String): String? {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return "URL must not be empty"
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            return "URL must start with http:// or https://"
+        }
+        return try {
+            URL(trimmed)  // throws MalformedURLException if unparseable
+            null
+        } catch (e: java.net.MalformedURLException) {
+            "Invalid URL: ${e.message}"
+        }
+    }
+
+    /**
+     * Save the API base URL only if it passes validation.
+     * @return The validation error message, or null on success.
+     */
+    fun updateApiBaseUrl(url: String): String? {
+        val error = validateApiUrl(url)
+        if (error != null) return error
+        save { prefs -> prefs[KEY_API_BASE_URL] = url.trim() }
+        _connectionTestState.value = ConnectionTestState.Idle
+        return null
+    }
+
+    /**
+     * Ping the backend's /healthz endpoint at the given URL to verify reachability.
+     * Updates [connectionTestState] with the result.
+     */
+    fun testConnection(url: String) {
+        val error = validateApiUrl(url)
+        if (error != null) {
+            _connectionTestState.value = ConnectionTestState.Failure(error)
+            return
+        }
+        _connectionTestState.value = ConnectionTestState.Testing
+        viewModelScope.launch {
+            try {
+                // Build a one-shot OkHttp call to <url>/healthz (or <url>healthz)
+                val base = url.trim().trimEnd('/')
+                val healthUrl = "$base/healthz"
+                val client = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                val request = okhttp3.Request.Builder().url(healthUrl).get().build()
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    _connectionTestState.value = ConnectionTestState.Success("Connected ✓ (HTTP ${response.code})")
+                } else {
+                    _connectionTestState.value = ConnectionTestState.Failure("Server responded HTTP ${response.code}")
+                }
+                response.close()
+            } catch (e: Exception) {
+                _connectionTestState.value = ConnectionTestState.Failure("Could not reach server: ${e.message}")
+            }
+        }
+    }
+
+    fun resetConnectionTestState() {
+        _connectionTestState.value = ConnectionTestState.Idle
     }
 
     fun resetToDefaults() = saveAndSync { prefs ->

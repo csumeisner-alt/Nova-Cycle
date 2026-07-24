@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.*
+import com.novacycle.viewmodel.ConnectionTestState
 import com.novacycle.viewmodel.SettingsViewModel
 
 /**
@@ -20,8 +21,10 @@ import com.novacycle.viewmodel.SettingsViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
-    val settings    by viewModel.settings.collectAsStateWithLifecycle()
-    var apiUrlDraft by remember(settings.apiBaseUrl) { mutableStateOf(settings.apiBaseUrl) }
+    val settings         by viewModel.settings.collectAsStateWithLifecycle()
+    val connTestState    by viewModel.connectionTestState.collectAsStateWithLifecycle()
+    var apiUrlDraft      by remember(settings.apiBaseUrl) { mutableStateOf(settings.apiBaseUrl) }
+    var apiUrlError      by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -93,16 +96,69 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
 
         SettingsSection("Backend API") {
             OutlinedTextField(
-                value = apiUrlDraft, onValueChange = { apiUrlDraft = it },
-                label = { Text("API Base URL") }, placeholder = { Text("http://10.0.2.2:8080/api/") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true
+                value = apiUrlDraft,
+                onValueChange = {
+                    apiUrlDraft = it
+                    apiUrlError = null                         // clear error on edit
+                    viewModel.resetConnectionTestState()
+                },
+                label = { Text("API Base URL") },
+                placeholder = { Text("http://10.0.2.2:8080/api/") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                isError = apiUrlError != null,
+                supportingText = apiUrlError?.let { err ->
+                    { Text(err, color = MaterialTheme.colorScheme.error) }
+                }
             )
             Spacer(Modifier.height(8.dp))
-            Button(onClick = { viewModel.updateApiBaseUrl(apiUrlDraft) }, modifier = Modifier.fillMaxWidth()) { Text("Save API URL") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { viewModel.testConnection(apiUrlDraft) },
+                    modifier = Modifier.weight(1f),
+                    enabled = connTestState !is ConnectionTestState.Testing
+                ) {
+                    Text(if (connTestState is ConnectionTestState.Testing) "Testing…" else "Test")
+                }
+                Button(
+                    onClick = {
+                        val err = viewModel.updateApiBaseUrl(apiUrlDraft)
+                        apiUrlError = err
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Save")
+                }
+            }
+            // Connection test result banner
+            when (val state = connTestState) {
+                is ConnectionTestState.Success -> {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        state.message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                is ConnectionTestState.Failure -> {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        state.message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                else -> Unit
+            }
         }
 
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = { viewModel.resetToDefaults(); apiUrlDraft = "http://10.0.2.2:8080/api/" }, modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = {
+            viewModel.resetToDefaults()
+            apiUrlDraft = "http://10.0.2.2:8080/api/"
+            apiUrlError = null
+            viewModel.resetConnectionTestState()
+        }, modifier = Modifier.fillMaxWidth()) {
             Text("Reset to Defaults")
         }
         Spacer(Modifier.height(24.dp))
