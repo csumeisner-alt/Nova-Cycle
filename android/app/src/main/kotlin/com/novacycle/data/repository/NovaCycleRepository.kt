@@ -189,6 +189,28 @@ class NovaCycleRepository @Inject constructor(
         runCatching { apiService.getTradeHistory(ticker, window) }
 
     /**
+     * Check whether the backend still holds this token.
+     *
+     * Returns:
+     *   Result.success(true)  — token is registered
+     *   Result.success(false) — backend responded 404 (token missing, e.g. after DB reset)
+     *   Result.failure(...)   — network/backend unreachable; caller should retry later
+     */
+    suspend fun checkDeviceToken(token: String): Result<Boolean> = runCatching {
+        apiService.checkDeviceToken(token)
+        true   // 2xx → token found
+    }.recoverCatching { error ->
+        // Retrofit throws HttpException for non-2xx responses
+        val code = (error as? retrofit2.HttpException)?.code()
+        if (code == 404) {
+            Log.d("NovaCycleRepository", "Token not found on backend (DB may have been reset)")
+            false
+        } else {
+            throw error   // propagate network errors so caller knows it couldn't reach backend
+        }
+    }
+
+    /**
      * Register (or refresh) an FCM device token with the backend, including the
      * user's current notification preferences so the backend can filter signals
      * per-device before firing push notifications.

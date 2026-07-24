@@ -94,6 +94,16 @@ interface NovaCycleApiService {
         @Body body: Map<String, Any> = emptyMap()
     ): Map<String, Any>
 
+    /**
+     * Check whether a token is known to the backend.
+     * Returns 200 if found, throws HttpException(404) if not.
+     * Used on every launch to detect a backend DB reset.
+     */
+    @GET("device_tokens/check")
+    suspend fun checkDeviceToken(
+        @Query("token") token: String
+    ): Map<String, Any>
+
     /** Health check endpoint */
     @GET("healthz")
     suspend fun healthz(): Map<String, Any>

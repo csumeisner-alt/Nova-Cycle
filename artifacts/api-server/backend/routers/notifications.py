@@ -111,6 +111,31 @@ async def unregister_device(
     return {"status": "ok", "message": "Device token removed"}
 
 
+@router.get("/device_tokens/check")
+async def check_device_token(
+    token: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Lightweight token presence check.
+
+    Returns 200 if the token is registered, 404 if it is not.
+    No token data is returned — the response body is intentionally minimal.
+    """
+    if not token:
+        raise HTTPException(status_code=400, detail="token query parameter is required")
+
+    result = await session.execute(
+        select(DeviceToken).where(DeviceToken.token == token)
+    )
+    existing = result.scalar_one_or_none()
+
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    return {"status": "ok"}
+
+
 @router.get("/device_tokens")
 async def list_device_tokens(session: AsyncSession = Depends(get_session)):
     """List all registered device tokens (tokens are truncated for safety)."""

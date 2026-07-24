@@ -79,30 +79,59 @@ class MainActivity : ComponentActivity() {
     private fun registerFcmTokenIfNeeded() {
         val prefs = getSharedPreferences(NovaCycleFirebaseService.PREFS_NAME, MODE_PRIVATE)
         val token = prefs.getString(NovaCycleFirebaseService.PREF_TOKEN, null)
-        val needsRegistration = prefs.getBoolean(NovaCycleFirebaseService.PREF_NEEDS_REGISTRATION, false)
 
-        if (token == null || !needsRegistration) {
-            Log.d(TAG, "FCM token not available or already registered (Firebase disabled or not yet configured)")
+        if (token == null) {
+            Log.d(TAG, "FCM token not yet available (Firebase disabled or not yet configured)")
             return
         }
 
+        val needsRegistration = prefs.getBoolean(NovaCycleFirebaseService.PREF_NEEDS_REGISTRATION, false)
         val deviceName = android.os.Build.MODEL
 
         CoroutineScope(Dispatchers.IO).launch {
-            // Read current sensitivity settings so the backend receives up-to-date
-            // notification preferences alongside the device token.
-            val settings = readCurrentSettings()
+            if (needsRegistration) {
+                // Token is new or was explicitly marked for re-registration — register immediately.
+                registerToken(token, deviceName, prefs)
+            } else {
+                // Token was previously registered. Verify it is still known to the backend
+                // (guards against a backend DB reset wiping the device_tokens table).
+                val checkResult = repository.checkDeviceToken(token)
+                checkResult
+                    .onSuccess { found ->
+                        if (found) {
+                            Log.d(TAG, "FCM token confirmed present on backend")
+                        } else {
+                            // Backend returned 404 — DB was reset; re-register now.
+                            Log.w(TAG, "FCM token missing from backend (DB may have been reset) — re-registering")
+                            registerToken(token, deviceName, prefs)
+                        }
+                    }
+                    .onFailure { e ->
+                        // Backend unreachable — leave needsRegistration flag as-is and retry next launch.
+                        Log.e(TAG, "FCM token check failed (backend unreachable, will retry on next launch): ${e.message}")
+                    }
+            }
+        }
+    }
 
-            val result = repository.registerDeviceToken(token, deviceName, settings)
-            result.onSuccess {
-                Log.d(TAG, "FCM token registered with backend successfully")
-                prefs.edit()
-                    .putBoolean(NovaCycleFirebaseService.PREF_NEEDS_REGISTRATION, false)
-                    .apply()
-            }
-            result.onFailure { e ->
-                Log.e(TAG, "FCM token registration failed (will retry on next launch): ${e.message}")
-            }
+    /**
+     * Send the FCM token to the backend and, on success, clear the pending-registration flag.
+     */
+    private suspend fun registerToken(
+        token: String,
+        deviceName: String,
+        prefs: android.content.SharedPreferences,
+    ) {
+        val settings = readCurrentSettings()
+        val result = repository.registerDeviceToken(token, deviceName, settings)
+        result.onSuccess {
+            Log.d(TAG, "FCM token registered with backend successfully")
+            prefs.edit()
+                .putBoolean(NovaCycleFirebaseService.PREF_NEEDS_REGISTRATION, false)
+                .apply()
+        }
+        result.onFailure { e ->
+            Log.e(TAG, "FCM token registration failed (will retry on next launch): ${e.message}")
         }
     }
 
