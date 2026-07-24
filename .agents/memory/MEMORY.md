@@ -1,1 +1,2 @@
 - [NovaCycle backend fixes](novacycle-backend-fixes.md) — critical runtime fixes needed to boot the FastAPI server on Replit
+- [NovaCycle deployment notes](novacycle-deployment-notes.md) — backend must be a Reserved VM (not autoscale) because of SQLite and APScheduler
