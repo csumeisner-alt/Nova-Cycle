@@ -4,6 +4,8 @@ Handles all ML prediction and signal endpoints.
 NOTE: Multi-ticker support placeholder - only 'VOO' is accepted.
 """
 
+import asyncio
+import logging
 import uuid
 import math
 from datetime import datetime, timedelta, timezone
@@ -13,10 +15,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_
 
-from database.db import get_session
+from database.db import get_session, get_session_factory
 from database.models import (
     VooCandle, VixCandle, ConfidenceHistory, SignalHistory,
-    TradeCycles, FilteredSignal
+    TradeCycles, FilteredSignal, DeviceToken
 )
 from indicators.technical import TechnicalIndicators
 from ml.long_trend import LongTrendModel
@@ -31,6 +33,7 @@ import pandas as pd
 import numpy as np
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # In-memory cache for last computed scores (used by hold_time, macro override)
@@ -173,6 +176,53 @@ async def _store_signal(session: AsyncSession, ticker: str, signal_type: str,
     return entry
 
 
+async def _notify_all_devices_bg(
+    signal_type: str,
+    gauge_type: str,
+    confidence: float,
+    is_extended: bool,
+    gap_type: str,
+    liquidity_score: float,
+    score: float,
+) -> None:
+    """
+    Background task: send FCM push notifications to all registered device tokens.
+
+    Uses its own DB session so it can run after the request session is closed.
+    Errors are logged but never raise — this must not affect prediction responses.
+    """
+    from notifications.fcm import FCMNotifier
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            result = await db.execute(select(DeviceToken))
+            tokens = result.scalars().all()
+
+        if not tokens:
+            logger.debug("No device tokens registered — skipping FCM notification")
+            return
+
+        notifier = FCMNotifier()
+        for device in tokens:
+            ok = await notifier.send_signal_notification(
+                device_token=device.token,
+                signal_type=signal_type,
+                gauge_type=gauge_type,
+                confidence=confidence,
+                is_extended=is_extended,
+                score=score,
+                gap_type=gap_type,
+                liquidity_score=liquidity_score,
+            )
+            if not ok:
+                logger.warning(
+                    "FCM delivery failed for device: %s", device.device_name or "unknown"
+                )
+    except Exception as exc:
+        logger.error("Background FCM notification error: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # POST /predict_long
 # ---------------------------------------------------------------------------
@@ -233,7 +283,7 @@ async def predict_long(
                                 short_buy=0.0, short_sell=0.0,
                                 session_type=session_type, is_extended=is_extended)
 
-        # Persist signal if actionable
+        # Persist signal if actionable, then push notification in background
         if result["signal"] in ("buy", "sell"):
             await _store_signal(
                 session, ticker,
@@ -243,6 +293,15 @@ async def predict_long(
                 gap_type=str(latest.get("gap_type", "none")),
                 liquidity_score=1.0, macro_override=False
             )
+            asyncio.create_task(_notify_all_devices_bg(
+                signal_type=result["signal"],
+                gauge_type="long",
+                confidence=abs(result["score"]) / 100.0,
+                is_extended=is_extended,
+                gap_type=str(latest.get("gap_type", "none")),
+                liquidity_score=1.0,
+                score=result["score"],
+            ))
 
         return {
             "score": result["score"],
@@ -346,7 +405,7 @@ async def predict_short(
                                 short_buy=short_buy_conf, short_sell=short_sell_conf,
                                 session_type=session_type, is_extended=is_extended)
 
-        # Persist signal if actionable
+        # Persist signal if actionable, then push notification in background
         if final_signal in ("buy", "sell"):
             await _store_signal(
                 session, ticker,
@@ -356,6 +415,15 @@ async def predict_short(
                 gap_type=gap_type, liquidity_score=liquidity_score,
                 macro_override=macro_override_applied
             )
+            asyncio.create_task(_notify_all_devices_bg(
+                signal_type=final_signal,
+                gauge_type="short",
+                confidence=abs(result["score"]) / 100.0,
+                is_extended=is_extended,
+                gap_type=gap_type,
+                liquidity_score=liquidity_score,
+                score=result["score"],
+            ))
 
         return {
             "score": result["score"],

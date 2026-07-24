@@ -1,18 +1,18 @@
 """
 NovaCycle Firebase Cloud Messaging (FCM) Notifier
 ===================================================
-Sends push notifications via the legacy FCM HTTP v1 API.
+Sends push notifications via the FCM HTTP v1 API using a service account.
 
-Notification types:
-  - Long-term BUY / SELL signals
-  - Short-term BUY / SELL signals
-  - Extended-hours signal alerts
-  - Confidence momentum alerts
+FCM_SERVER_KEY must contain the full JSON content of a Firebase service account
+key file (Firebase Console → Project Settings → Service Accounts → Generate new
+private key). The JSON is stored as a single-line string in the Replit Secret.
 
 Gracefully no-ops when FCM_SERVER_KEY is not configured.
 """
 
+import json
 import logging
+import asyncio
 from typing import Optional
 
 import httpx
@@ -21,11 +21,34 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-FCM_ENDPOINT = "https://fcm.googleapis.com/fcm/send"
+FCM_SCOPES = ["https://www.googleapis.com/auth/firebase.messaging"]
+
+
+def _get_access_token(service_account_json: str) -> tuple[str, str]:
+    """
+    Exchange service account credentials for an OAuth2 bearer token.
+    Returns (access_token, project_id).
+
+    Runs synchronously — always call via asyncio.run_in_executor.
+    """
+    from google.oauth2 import service_account
+    import google.auth.transport.requests
+
+    info = json.loads(service_account_json)
+    project_id = info.get("project_id", "")
+    if not project_id:
+        raise ValueError("Service account JSON is missing 'project_id'")
+
+    credentials = service_account.Credentials.from_service_account_info(
+        info, scopes=FCM_SCOPES
+    )
+    auth_request = google.auth.transport.requests.Request()
+    credentials.refresh(auth_request)
+    return credentials.token, project_id
 
 
 class FCMNotifier:
-    """Send FCM push notifications for NovaCycle trading signals."""
+    """Send FCM push notifications for NovaCycle trading signals (HTTP v1 API)."""
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -43,7 +66,7 @@ class FCMNotifier:
         liquidity_score: Optional[float] = None,
     ) -> bool:
         """
-        Send a signal push notification to a specific device.
+        Send a BUY/SELL signal push notification to a specific device.
 
         Args:
             device_token:    FCM device registration token.
@@ -51,7 +74,7 @@ class FCMNotifier:
             gauge_type:      'long' or 'short'
             confidence:      float in [0, 1]
             is_extended:     True if this is an extended-hours signal
-            score:           Raw gauge score (optional, for data payload)
+            score:           Raw gauge score (optional)
             gap_type:        'gap_up', 'gap_down', or 'none' (optional)
             liquidity_score: float (optional)
 
@@ -60,8 +83,8 @@ class FCMNotifier:
         """
         if not settings.FCM_SERVER_KEY:
             logger.info(
-                "FCM_SERVER_KEY not configured — skipping notification "
-                "(%s %s signal)", gauge_type, signal_type
+                "FCM_SERVER_KEY not configured — skipping notification (%s %s signal)",
+                gauge_type, signal_type,
             )
             return False
 
@@ -69,31 +92,46 @@ class FCMNotifier:
             logger.warning("No device token provided — skipping FCM notification")
             return False
 
+        auth = await self._get_auth()
+        if not auth:
+            return False
+        access_token, project_id = auth
+
         title, body = self._build_message(
             signal_type, gauge_type, confidence, is_extended, gap_type
         )
 
         payload = {
-            "to": device_token,
-            "notification": {
-                "title": title,
-                "body": body,
-                "sound": "default",
-            },
-            "data": {
-                "signal_type": signal_type,
-                "gauge_type": gauge_type,
-                "confidence": str(round(confidence, 4)),
-                "is_extended_hours": str(is_extended).lower(),
-                "score": str(round(score, 2)) if score is not None else "",
-                "gap_type": gap_type or "none",
-                "liquidity_score": str(round(liquidity_score, 4)) if liquidity_score is not None else "",
-                "ticker": settings.TICKER,
-            },
-            "priority": "high",
+            "message": {
+                "token": device_token,
+                "notification": {
+                    "title": title,
+                    "body": body,
+                },
+                "data": {
+                    "signal_type": signal_type,
+                    "gauge_type": gauge_type,
+                    "confidence": str(round(confidence, 4)),
+                    "is_extended_hours": str(is_extended).lower(),
+                    "score": str(round(score, 2)) if score is not None else "",
+                    "gap_type": gap_type or "none",
+                    "liquidity_score": (
+                        str(round(liquidity_score, 4))
+                        if liquidity_score is not None else ""
+                    ),
+                    "ticker": settings.TICKER,
+                },
+                "android": {
+                    "priority": "HIGH",
+                    "notification": {"sound": "default"},
+                },
+                "apns": {
+                    "payload": {"aps": {"sound": "default"}},
+                },
+            }
         }
 
-        return await self._post(payload)
+        return await self._post(payload, access_token, project_id)
 
     async def send_confidence_momentum_alert(
         self,
@@ -104,7 +142,7 @@ class FCMNotifier:
         direction: str,
     ) -> bool:
         """
-        Send an alert when confidence is changing rapidly (momentum alert).
+        Send an alert when confidence is changing rapidly.
 
         Args:
             device_token:    FCM device token
@@ -119,6 +157,11 @@ class FCMNotifier:
         if not settings.FCM_SERVER_KEY:
             return False
 
+        auth = await self._get_auth()
+        if not auth:
+            return False
+        access_token, project_id = auth
+
         change_pct = abs(new_confidence - old_confidence) * 100.0
         title = f"NovaCycle – {gauge_type.capitalize()} Confidence {direction.capitalize()}"
         body = (
@@ -127,24 +170,38 @@ class FCMNotifier:
         )
 
         payload = {
-            "to": device_token,
-            "notification": {"title": title, "body": body, "sound": "default"},
-            "data": {
-                "alert_type": "confidence_momentum",
-                "gauge_type": gauge_type,
-                "old_confidence": str(round(old_confidence, 4)),
-                "new_confidence": str(round(new_confidence, 4)),
-                "direction": direction,
-                "ticker": settings.TICKER,
-            },
-            "priority": "normal",
+            "message": {
+                "token": device_token,
+                "notification": {"title": title, "body": body},
+                "data": {
+                    "alert_type": "confidence_momentum",
+                    "gauge_type": gauge_type,
+                    "old_confidence": str(round(old_confidence, 4)),
+                    "new_confidence": str(round(new_confidence, 4)),
+                    "direction": direction,
+                    "ticker": settings.TICKER,
+                },
+                "android": {"priority": "NORMAL"},
+            }
         }
 
-        return await self._post(payload)
+        return await self._post(payload, access_token, project_id)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    async def _get_auth(self) -> Optional[tuple[str, str]]:
+        """Obtain (access_token, project_id) using the service account JSON."""
+        try:
+            loop = asyncio.get_event_loop()
+            token, project_id = await loop.run_in_executor(
+                None, _get_access_token, settings.FCM_SERVER_KEY
+            )
+            return token, project_id
+        except Exception as exc:
+            logger.error("Failed to obtain FCM access token: %s", exc)
+            return None
 
     @staticmethod
     def _build_message(
@@ -154,12 +211,7 @@ class FCMNotifier:
         is_extended: bool,
         gap_type: Optional[str],
     ) -> tuple[str, str]:
-        """
-        Build a human-readable notification title and body.
-
-        Returns:
-            (title: str, body: str)
-        """
+        """Build a human-readable notification title and body."""
         emoji_map = {"buy": "🟢", "sell": "🔴", "neutral": "⚪"}
         emoji = emoji_map.get(signal_type.lower(), "📊")
 
@@ -178,41 +230,26 @@ class FCMNotifier:
         if is_extended:
             body_parts.append("⚠️ Extended hours – lower liquidity")
 
-        body = " | ".join(body_parts)
-        return title, body
+        return title, " | ".join(body_parts)
 
-    async def _post(self, payload: dict) -> bool:
-        """
-        POST the FCM payload to the FCM endpoint.
-
-        Returns:
-            True if HTTP 200 received, False on any error.
-        """
+    async def _post(self, payload: dict, access_token: str, project_id: str) -> bool:
+        """POST the FCM v1 payload to the correct project endpoint."""
+        url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
         headers = {
-            "Authorization": f"key={settings.FCM_SERVER_KEY}",
+            "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    FCM_ENDPOINT,
-                    headers=headers,
-                    json=payload,
-                )
+                response = await client.post(url, headers=headers, json=payload)
                 if response.status_code == 200:
-                    resp_json = response.json()
-                    if resp_json.get("failure", 0) > 0:
-                        logger.warning(
-                            "FCM reported delivery failure: %s", resp_json
-                        )
-                        return False
                     logger.info("FCM notification sent successfully")
                     return True
                 else:
                     logger.error(
                         "FCM HTTP error %d: %s",
                         response.status_code,
-                        response.text[:200],
+                        response.text[:300],
                     )
                     return False
         except httpx.TimeoutException:

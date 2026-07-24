@@ -183,3 +183,23 @@ class ModelMetadata(Base):
     # JSON-encoded dict: {"feature_name": importance_value, ...}
     feature_importances = Column(Text, nullable=True)
     accuracy = Column(Float, nullable=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FCM Device Tokens
+# Stores FCM registration tokens for push notification delivery.
+# One row per physical device. Token is refreshed automatically by Firebase SDK.
+# ─────────────────────────────────────────────────────────────────────────────
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Full FCM registration token (up to ~512 chars)
+    token = Column(String(512), nullable=False, unique=True, index=True)
+
+    # Optional human-readable label (e.g. "Pixel 7", "Galaxy S24")
+    device_name = Column(String(128), nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)

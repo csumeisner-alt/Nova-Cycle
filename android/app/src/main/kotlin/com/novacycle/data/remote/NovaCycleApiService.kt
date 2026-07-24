@@ -76,6 +76,24 @@ interface NovaCycleApiService {
         @Query("window") window: String = "30d"
     ): TradeHistoryResponse
 
+    /** Register or refresh an FCM device token with the backend */
+    @POST("register_device")
+    suspend fun registerDeviceToken(
+        @Body request: RegisterDeviceRequest
+    ): Map<String, Any>
+
+    /** Remove a device token from the backend */
+    @DELETE("unregister_device")
+    suspend fun unregisterDeviceToken(
+        @Query("token") token: String
+    ): Map<String, Any>
+
+    /** Send a test push notification to all registered devices */
+    @POST("test_notification")
+    suspend fun testNotification(
+        @Body body: Map<String, Any> = emptyMap()
+    ): Map<String, Any>
+
     /** Health check endpoint */
     @GET("healthz")
     suspend fun healthz(): Map<String, Any>

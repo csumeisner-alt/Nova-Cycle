@@ -10,6 +10,7 @@ import com.novacycle.data.remote.NovaCycleApiService
 import com.novacycle.data.remote.models.*
 import javax.inject.Inject
 import javax.inject.Singleton
+import android.util.Log
 
 /**
  * Single source of truth for all NovaCycle data.
@@ -184,4 +185,16 @@ class NovaCycleRepository @Inject constructor(
         window: String = "30d"
     ): Result<TradeHistoryResponse> =
         runCatching { apiService.getTradeHistory(ticker, window) }
+
+    /**
+     * Register (or refresh) an FCM device token with the backend.
+     * Idempotent — the backend upserts by token value.
+     */
+    suspend fun registerDeviceToken(
+        token: String,
+        deviceName: String? = null
+    ): Result<Unit> = runCatching {
+        apiService.registerDeviceToken(RegisterDeviceRequest(token, deviceName))
+        Log.d("NovaCycleRepository", "Device token registered: ${token.take(20)}...")
+    }
 }
