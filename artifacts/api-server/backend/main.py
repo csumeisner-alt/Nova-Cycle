@@ -4,6 +4,7 @@ Entry point for the NovaCycle backend service.
 Serves all endpoints under the /api prefix on port 8080.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -40,15 +41,21 @@ async def lifespan(app: FastAPI):
     await create_tables()
     logger.info("Database tables ready.")
 
-    # 2. Initialize data pipeline (fetch history if empty, else incremental)
-    try:
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            await pipeline.initialize(session)
-            await session.commit()
-        logger.info("Data ingestion pipeline initialized.")
-    except Exception as e:
-        logger.warning(f"Data initialization warning (will retry on schedule): {e}")
+    # 2. Initialize data pipeline in the background so the API starts fast.
+    #    The committed SQLite DB already contains historical data; this task
+    #    only needs to catch up incremental updates. Endpoints gracefully
+    #    return "no data" messages if the DB is temporarily empty.
+    async def _init_pipeline():
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                await pipeline.initialize(session)
+                await session.commit()
+            logger.info("Data ingestion pipeline initialized.")
+        except Exception as e:
+            logger.warning(f"Data initialization warning (will retry on schedule): {e}")
+
+    asyncio.create_task(_init_pipeline())
 
     # 3. Configure APScheduler for incremental updates
     # Every 5 minutes during extended-hours trading window: Mon-Fri 04:00-20:00 ET
