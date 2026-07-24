@@ -200,13 +200,8 @@ async def get_voo_candles(
         rows = result.scalars().all()
         candles = [_candle_to_dict(r) for r in rows]
 
-        return {
-            "ticker": ticker,
-            "timeframe": timeframe,
-            "window": window,
-            "count": len(candles),
-            "candles": candles,
-        }
+        # The Android app expects a flat array of candles, not a wrapped object.
+        return candles
     except HTTPException:
         raise
     except Exception as exc:
@@ -282,19 +277,32 @@ async def get_indicators(
         ind = _INDICATORS.compute_all(voo_df, vix_df, exclude_extended=True)
         latest = ind.get("latest", {})
 
-        # Also include additional computed metrics
-        extras = {
-            "return_5d": ind.get("return_5d"),
-            "return_10d": ind.get("return_10d"),
-            "return_20d": ind.get("return_20d"),
-            "sma20_distance": ind.get("sma20_distance"),
-        }
-
+        # Map backend indicator names to the Android app's expected field names.
+        # The Android /api/indicators consumer expects a flat object with the
+        # indicator values directly at the top level.
         return {
             "ticker": ticker,
             "status": "ok",
             "computed_at": datetime.utcnow().isoformat(),
-            "indicators": {**latest, **extras},
+            "rsi": latest.get("rsi"),
+            "stoch_k": latest.get("stoch_k"),
+            "stoch_d": latest.get("stoch_d"),
+            "stoch_rsi_k": latest.get("stoch_rsi_k"),
+            "stoch_rsi_d": latest.get("stoch_rsi_d"),
+            "macd_line": latest.get("macd"),
+            "macd_signal": latest.get("macd_signal"),
+            "macd_histogram": latest.get("macd_histogram"),
+            "sma20": latest.get("sma20"),
+            "sma50": latest.get("sma50"),
+            "sma200": latest.get("sma200"),
+            "bollinger_upper": latest.get("bb_upper"),
+            "bollinger_lower": latest.get("bb_lower"),
+            "bollinger_perc_b": latest.get("bb_pct_b"),
+            "cci": latest.get("cci"),
+            "williams_r": latest.get("williams_r"),
+            "atr": latest.get("atr"),
+            "adx": latest.get("adx"),
+            "vix_regime": latest.get("vix_regime"),
         }
     except HTTPException:
         raise
