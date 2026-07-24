@@ -51,9 +51,20 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Guards against two concurrent registration coroutines running simultaneously.
-     * Set to true when a registration coroutine is launched; reset to false when it
-     * completes (success or failure). A second call to registerFcmTokenIfNeeded()
-     * while a coroutine is already in flight is a no-op.
+     * Set to true when a registration coroutine is launched; reset to false in the
+     * finally block when it completes (success or failure). A second call to
+     * registerFcmTokenIfNeeded() while a coroutine is already in flight is a no-op.
+     *
+     * INVARIANT — this field MUST remain a plain in-memory AtomicBoolean.
+     * Do NOT persist it to SharedPreferences, DataStore, or any other on-disk store.
+     *
+     * Reason: if the process is killed mid-coroutine (OOM, force-stop, ANR), the
+     * JVM heap is discarded and this flag resets to false on the next launch —
+     * which is the correct, safe behaviour. If it were ever persisted to disk and
+     * the process were killed between the write and the finally-block reset, the
+     * flag would stay true across reboots and silently block every future FCM
+     * registration attempt, preventing the device from ever receiving push
+     * notifications again.
      */
     private val registrationInFlight = AtomicBoolean(false)
 
