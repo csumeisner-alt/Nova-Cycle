@@ -30,7 +30,7 @@ android {
         // This is the single source of truth for the default API URL; all in-app
         // fallbacks reference BuildConfig.API_BASE_URL. Users can override it at
         // runtime from the Settings screen without rebuilding the APK.
-        buildConfigField("String", "API_BASE_URL", "\"https://85621466-d083-4137-8a68-8de9779ab36a-00-lvz8z9d2rcc1.riker.replit.dev/api/\"")
+        buildConfigField("String", "API_BASE_URL", "\"https://nova-cycle.replit.app/api/\"")
     }
 
     signingConfigs {
