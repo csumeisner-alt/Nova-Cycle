@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to create/update releases
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -27,9 +29,30 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug
 
-      - name: Upload APK
+      - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: novacyle-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Only publish a release on pushes to main/master (not PRs)
+      - name: Publish APK as GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: latest
+          name: "Latest Debug Build"
+          body: |
+            Automatically published from the latest commit on ${{ github.ref_name }}.
+
+            **Commit:** ${{ github.sha }}
+            **Built:** ${{ github.run_id }}
+
+            Install this APK directly on your Android device — no GitHub login required.
+          artifacts: android/app/build/outputs/apk/debug/app-debug.apk
+          artifactContentType: application/vnd.android.package-archive
+          allowUpdates: true       # Overwrite the existing "latest" release each time
+          removeArtifacts: true    # Replace old APK so there is always one file
+          makeLatest: true
+          token: ${{ secrets.GITHUB_TOKEN }}
