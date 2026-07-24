@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
         session_factory = get_session_factory()
         async with session_factory() as session:
             await pipeline.initialize(session)
+            await session.commit()
         logger.info("Data ingestion pipeline initialized.")
     except Exception as e:
         logger.warning(f"Data initialization warning (will retry on schedule): {e}")
@@ -95,6 +96,7 @@ async def _run_incremental_update():
         session_factory = get_session_factory()
         async with session_factory() as session:
             await pipeline.run_incremental_update(session)
+            await session.commit()
     except Exception as e:
         logger.error(f"Incremental update failed: {e}")
 
@@ -104,7 +106,8 @@ async def _run_daily_update():
     try:
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await pipeline.run_incremental_update(session, timeframe="daily")
+            await pipeline.run_incremental_update(session)
+            await session.commit()
     except Exception as e:
         logger.error(f"Daily update failed: {e}")
 
