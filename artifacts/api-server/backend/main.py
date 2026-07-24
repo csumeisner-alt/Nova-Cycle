@@ -144,6 +144,18 @@ app.include_router(notifications.router, prefix="/api", tags=["Notifications"])
 
 
 # ---------------------------------------------------------------------------
+# Connectivity check — used by the Android app to verify it can reach the API
+# ---------------------------------------------------------------------------
+@app.get("/api/test")
+async def api_test():
+    return {
+        "status": "ok",
+        "service": "NovaCycle API",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Root redirect
 # ---------------------------------------------------------------------------
 @app.get("/")

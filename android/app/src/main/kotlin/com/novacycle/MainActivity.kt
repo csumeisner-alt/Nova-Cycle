@@ -194,7 +194,7 @@ class MainActivity : ComponentActivity() {
                         prefs[SettingsViewModel.KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
                     ),
                     extendedHoursNotifications = prefs[SettingsViewModel.KEY_EXTENDED_NOTIF] ?: true,
-                    apiBaseUrl = prefs[SettingsViewModel.KEY_API_BASE_URL] ?: "http://10.0.2.2:8080/api/"
+                    apiBaseUrl = prefs[SettingsViewModel.KEY_API_BASE_URL] ?: com.novacycle.BuildConfig.API_BASE_URL
                 )
             }
             .first()

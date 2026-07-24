@@ -24,9 +24,10 @@ android {
             useSupportLibrary = true
         }
 
-        // Backend API URL — points to the live Replit backend.
-        // For local development against an emulator, change to "http://10.0.2.2:8080/api/"
-        // For a real device against the Replit backend, keep the https:// URL below.
+        // Backend API URL — points to the live Replit backend over HTTPS.
+        // This is the single source of truth for the default API URL; all in-app
+        // fallbacks reference BuildConfig.API_BASE_URL. Users can override it at
+        // runtime from the Settings screen without rebuilding the APK.
         buildConfigField("String", "API_BASE_URL", "\"https://85621466-d083-4137-8a68-8de9779ab36a-00-lvz8z9d2rcc1.riker.replit.dev/api/\"")
     }
 

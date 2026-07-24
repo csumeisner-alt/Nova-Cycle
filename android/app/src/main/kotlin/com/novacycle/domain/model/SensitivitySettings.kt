@@ -22,7 +22,7 @@ data class SensitivitySettings(
     /** Whether to send notifications for extended-hours signals */
     val extendedHoursNotifications: Boolean = true,
     /** Backend API base URL — overridable from settings screen */
-    val apiBaseUrl: String = "http://10.0.2.2:8080/api/"
+    val apiBaseUrl: String = com.novacycle.BuildConfig.API_BASE_URL
 )
 
 enum class WeightingMode {

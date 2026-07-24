@@ -72,7 +72,7 @@ class SettingsViewModel @Inject constructor(
                     prefs[KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
                 ),
                 extendedHoursNotifications = prefs[KEY_EXTENDED_NOTIF] ?: true,
-                apiBaseUrl = prefs[KEY_API_BASE_URL] ?: "http://10.0.2.2:8080/api/"
+                apiBaseUrl = prefs[KEY_API_BASE_URL] ?: com.novacycle.BuildConfig.API_BASE_URL
             )
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, SensitivitySettings())

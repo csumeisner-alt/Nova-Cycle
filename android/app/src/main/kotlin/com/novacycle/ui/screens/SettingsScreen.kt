@@ -103,7 +103,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                     viewModel.resetConnectionTestState()
                 },
                 label = { Text("API Base URL") },
-                placeholder = { Text("http://10.0.2.2:8080/api/") },
+                placeholder = { Text(com.novacycle.BuildConfig.API_BASE_URL) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 isError = apiUrlError != null,
@@ -155,7 +155,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = {
             viewModel.resetToDefaults()
-            apiUrlDraft = "http://10.0.2.2:8080/api/"
+            apiUrlDraft = com.novacycle.BuildConfig.API_BASE_URL
             apiUrlError = null
             viewModel.resetConnectionTestState()
         }, modifier = Modifier.fillMaxWidth()) {
