@@ -1,6 +1,6 @@
 # NovaCycle
 
-AI-powered VOO ETF trading signal system. Dual long-trend and short-trend ML gauges, confidence history, filtered BUY/SELL signals, signal story cards, and FCM push notifications.
+AI-powered VOO ETF trading signal system. Dual long-trend and short-trend ML gauges, confidence history, filtered BUY/SELL signals, signal story cards, reliability metrics, and FCM push notifications.
 
 ---
 
@@ -9,7 +9,7 @@ AI-powered VOO ETF trading signal system. Dual long-trend and short-trend ML gau
 ```
 NovaCycle
 ├── artifacts/api-server/backend/   ← Python FastAPI backend (running on Replit)
-└── android/                        ← Kotlin/Compose Android app (build in Android Studio)
+└── android/                        ← Kotlin/Jetpack Compose Android app
 ```
 
 ---
@@ -33,7 +33,7 @@ The API server starts automatically via the **API Server** workflow. After boot:
 | GET | `/api/confidence_history` | Long + short confidence over time |
 | GET | `/api/signal_history` | Raw signal history |
 | GET | `/api/filtered_signal_history` | Strongest-confidence filtered signals |
-| GET | `/api/trade_history` | Completed BUY→SELL trade cycles |
+| GET | `/api/trade_history` | Completed BUY→SELL trade cycles + reliability metrics |
 | GET | `/api/voo_candles` | VOO OHLCV candles |
 | GET | `/api/vix_candles` | VIX candles |
 | GET | `/api/indicators` | Live technical indicators |
@@ -81,37 +81,14 @@ All settings can be overridden with environment variables:
 
 ## Android App
 
-### Requirements
-- Android Studio Hedgehog or newer
-- JDK 17
-- Android SDK 34 (target), min SDK 26
-- A Firebase project with an Android app registered for `com.novacycle`
+> **Full build instructions: [`android/README_BUILD.md`](android/README_BUILD.md)**
 
-### Setup Steps
+### Quick Start
 
-1. **Clone / open the project**
-   Open `android/` as the root in Android Studio (it contains `settings.gradle.kts`).
-
-2. **Set the API base URL**
-   In `android/app/build.gradle.kts`, find:
-   ```kotlin
-   buildConfigField("String", "API_BASE_URL", "\"https://YOUR_REPLIT_URL/api/\"")
-   ```
-   Replace `YOUR_REPLIT_URL` with your Replit project's `.replit.dev` domain (found in the Replit preview URL bar), e.g.:
-   ```
-   https://myproject.myusername.repl.co/api/
-   ```
-
-3. **Add `google-services.json`**
-   - In Firebase Console, download `google-services.json` for `com.novacycle`
-   - Place it at `android/app/google-services.json`
-   - A placeholder is at `android/app/google-services.json.placeholder` — replace it
-
-4. **Build & run**
-   ```
-   ./gradlew assembleDebug
-   ```
-   Or press ▶ in Android Studio.
+1. Open `android/` in Android Studio (File → Open → select the `android/` folder)
+2. Add your `google-services.json` to `android/app/` (from Firebase Console)
+3. Run **Build → Build APK(s)** or `./gradlew assembleDebug`
+4. Install: `adb install android/app/build/outputs/apk/debug/app-debug.apk`
 
 ### App Screens
 | Screen | Description |
@@ -123,7 +100,7 @@ All settings can be overridden with environment variables:
 | **Indicators** | Live indicator cards: RSI, Stochastic, StochRSI, MACD, MAs, Bollinger, CCI, Williams %R, ATR, ADX, VIX regime |
 | **Hold Time** | AI-estimated position duration with confidence bar and reasoning bullets |
 | **Settings** | BUY/SELL thresholds, weighting mode, smoothing, story card level, notification sensitivity |
-| **Reliability** | Trade-cycle win-rate metrics (populates after BUY→SELL pairs complete) |
+| **Reliability** | Trade-cycle win-rate metrics, sortable/filterable BUY→SELL cycle table |
 
 ### Signal Story Card Detail Levels
 - **Simple**: 3–4 bullets summarising why the signal fired

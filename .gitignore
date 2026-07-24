@@ -5,8 +5,6 @@ dist
 tmp
 out-tsc
 *.tsbuildinfo
-.expo
-.expo-shared
 
 # dependencies
 node_modules
@@ -44,23 +42,28 @@ Thumbs.db
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
-# Replit
+# Replit runtime (not source)
 .cache/
 .local/
 .config/
 .upm/
 .pythonlibs/
 
-# Old NovaCycle backup
-android-novacycle-backup/
-artifacts/
-lib/
-scripts/
+# Android build outputs — source is tracked, generated files are not
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+
+# Android signing — debug.keystore is intentionally kept (debug only, no secrets)
+# android/app/debug.keystore  ← tracked so anyone can build without setup
+
+# Firebase config — contains project credentials, must be added manually
+android/app/google-services.json
+
+# Python artifacts
+uv.lock
+pyproject.toml
 
 # Unused lock / config files
 package-lock.json
-uv.lock
-pyproject.toml
-.replit
-.replitignore
-

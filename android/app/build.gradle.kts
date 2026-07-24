@@ -23,8 +23,10 @@ android {
             useSupportLibrary = true
         }
 
-        // Backend API URL — defaults to Android emulator localhost (10.0.2.2 maps to host machine)
-        buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8080/api/\"")
+        // Backend API URL — points to the live Replit backend.
+        // For local development against an emulator, change to "http://10.0.2.2:8080/api/"
+        // For a real device against the Replit backend, keep the https:// URL below.
+        buildConfigField("String", "API_BASE_URL", "\"https://85621466-d083-4137-8a68-8de9779ab36a-00-lvz8z9d2rcc1.riker.replit.dev/api/\"")
     }
 
     buildTypes {
@@ -36,7 +38,9 @@ android {
             )
         }
         debug {
-            // Debug keeps API URL readable, minification off
+            // Debug keeps API URL readable, minification off.
+            // Android Gradle plugin auto-generates ~/.android/debug.keystore on first build —
+            // no manual keystore setup required for debug APKs.
             isMinifyEnabled = false
         }
     }
