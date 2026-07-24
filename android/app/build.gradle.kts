@@ -1,3 +1,5 @@
+import java.util.Base64
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -47,7 +49,7 @@ android {
                 val keystoreFile = layout.buildDirectory.file("novacycle-release.p12").get().asFile
                 keystoreFile.parentFile.mkdirs()
                 keystoreFile.writeBytes(
-                    java.util.Base64.getDecoder().decode(keystoreBase64)
+                    Base64.getDecoder().decode(keystoreBase64)
                 )
                 storeFile = keystoreFile
                 storePassword = keystorePassword
