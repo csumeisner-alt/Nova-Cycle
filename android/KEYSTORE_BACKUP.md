@@ -122,7 +122,7 @@ Update `KEY_ALIAS` if you chose a different alias during generation.
 - [ ] Record `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD` in the same secure note
 - [ ] Verify the backup by decoding and running `keytool -list` on a local machine
 - [ ] Confirm at least one team member (other than yourself) also has access to the backup
-- [ ] Add a calendar reminder to verify the backup is still accessible every 6 months
+- [ ] *(Automated)* The `verify-keystore` GitHub Actions workflow runs on the 1st of every month and emails you on failure — no manual calendar reminder needed
 
 ---
 
