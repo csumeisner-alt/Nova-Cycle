@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.novacycle.domain.model.GaugeState
 import kotlin.math.*
 
 /**
@@ -29,19 +30,18 @@ import kotlin.math.*
  * Color gradient: Red (SELL) → Yellow (neutral) → Green (BUY).
  * Needle animates smoothly using spring physics.
  *
- * @param score  Signal score in range [-100, +100]
- * @param signal Signal label: "buy", "sell", or "neutral"
- * @param confidence Confidence value 0.0–1.0
- * @param label  Gauge title, e.g. "Long-Trend" or "Short-Trend"
+ * @param gaugeState  Signal state containing score, signal, and confidence
+ * @param label       Gauge title, e.g. "Long-Trend" or "Short-Trend"
  */
 @Composable
 fun DualGaugeWidget(
-    score: Float,
-    signal: String,
-    confidence: Float,
+    gaugeState: GaugeState,
     label: String,
     modifier: Modifier = Modifier
 ) {
+    val score = gaugeState.score
+    val signal = gaugeState.signal
+    val confidence = gaugeState.confidence
     // Animate needle position: score [-100, +100] maps to angle [180°, 0°]
     // (left side = -100 = SELL = red, right side = +100 = BUY = green)
     val targetAngle = remember(score) {

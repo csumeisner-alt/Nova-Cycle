@@ -13,7 +13,6 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
-import com.novacycle.domain.model.ConfidencePoint
 
 /**
  * ConfidenceRibbon — compact bar chart showing confidence momentum over time.
@@ -24,12 +23,10 @@ import com.novacycle.domain.model.ConfidencePoint
  */
 @Composable
 fun ConfidenceRibbon(
-    confidencePoints: List<ConfidencePoint>,
-    modifier: Modifier = Modifier,
-    showLong: Boolean = true,
-    showShort: Boolean = true
+    momentumPoints: List<Float>,
+    modifier: Modifier = Modifier
 ) {
-    if (confidencePoints.isEmpty()) {
+    if (momentumPoints.isEmpty()) {
         Box(modifier.height(48.dp)) {
             Text(
                 "No confidence data",
@@ -38,16 +35,6 @@ fun ConfidenceRibbon(
             )
         }
         return
-    }
-
-    // Compute momentum values: Momentum(t) = confidence(t) - confidence(t-1)
-    val longMomentum = confidencePoints.zipWithNext { a, b ->
-        val prev = if (showLong) a.longBuyConfidence else a.shortBuyConfidence
-        val curr = if (showLong) b.longBuyConfidence else b.shortBuyConfidence
-        curr - prev
-    }
-    val shortMomentum = confidencePoints.zipWithNext { a, b ->
-        b.shortBuyConfidence - a.shortBuyConfidence
     }
 
     Canvas(
@@ -59,13 +46,13 @@ fun ConfidenceRibbon(
         val h = size.height
         val midY = h / 2f
 
-        if (longMomentum.isEmpty()) return@Canvas
+        if (momentumPoints.isEmpty()) return@Canvas
 
-        val barWidth = (w / longMomentum.size.coerceAtLeast(1)) * 0.7f
+        val barWidth = (w / momentumPoints.size.coerceAtLeast(1)) * 0.7f
         val maxMom = 0.3f  // Clamp momentum display to ±0.3
 
-        longMomentum.forEachIndexed { i, mom ->
-            val x = (i.toFloat() / longMomentum.size) * w + barWidth * 0.15f
+        momentumPoints.forEachIndexed { i, mom ->
+            val x = (i.toFloat() / momentumPoints.size) * w + barWidth * 0.15f
             val clampedMom = mom.coerceIn(-maxMom, maxMom)
             val barH = (kotlin.math.abs(clampedMom) / maxMom) * (h / 2f)
             val color = if (mom >= 0) Color(0xFF00C853) else Color(0xFFD50000)
