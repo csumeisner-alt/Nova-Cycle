@@ -312,6 +312,12 @@ class DataFetcher:
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
 
+        # Normalize timezone-aware timestamps to UTC-naive so they match the DB
+        # and so incremental comparisons between fetched data and last_timestamp
+        # do not raise dtype mismatch errors.
+        if df.index.tz is not None:
+            df.index = df.index.tz_convert("UTC").tz_localize(None)
+
         # Drop rows with all-NaN OHLC
         df.dropna(subset=["open", "high", "low", "close"], inplace=True)
 
