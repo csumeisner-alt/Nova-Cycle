@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.hilt.android)
-    alias(libs.plugins.google.services)
+    // alias(libs.plugins.google.services)  // Uncomment when google-services.json is added
     id("kotlin-kapt")
     id("kotlin-parcelize")
 }
@@ -110,9 +110,10 @@ dependencies {
     implementation(libs.moshi)
     implementation(libs.moshi.kotlin)
 
-    // Firebase
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.messaging)
+    // Firebase — uncomment these two lines once google-services.json is in android/app/
+    // and re-enable alias(libs.plugins.google.services) in the plugins block above.
+    // implementation(platform(libs.firebase.bom))
+    // implementation(libs.firebase.messaging)
 
     // DataStore for settings persistence
     implementation(libs.datastore.preferences)

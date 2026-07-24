@@ -5,35 +5,49 @@ Build it with Android Studio or the Gradle command line — **no Expo, no React 
 
 ---
 
+## Quick start — build the APK right now
+
+Firebase push notifications are **disabled by default** so you can build without any
+Firebase setup. All 8 screens and live data from the Replit backend work immediately.
+
+```bash
+cd android
+./gradlew assembleDebug
+```
+
+The output APK is at:
+
+```
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install it:
+
+```bash
+# Via ADB (USB debugging on, device connected):
+adb install android/app/build/outputs/apk/debug/app-debug.apk
+
+# Or copy app-debug.apk to your device and open it.
+# You may need: Settings → Security → Install unknown apps
+```
+
+> **First build is slow** (~5–10 min) while Gradle downloads dependencies.  
+> Subsequent incremental builds take 30–60 seconds.
+
+---
+
 ## Requirements
 
 | Tool | Version |
 |------|---------|
 | Android Studio | Hedgehog (2023.1.1) or newer |
 | JDK | 17 |
-| Android SDK | 35 (compileSdk), min SDK 26 |
+| Android SDK | 35 (compileSdk), min SDK 26 (Android 8+) |
 | Gradle | Bundled via `gradlew` wrapper |
 
 ---
 
-## Step 1 — Add google-services.json
-
-Firebase is required for push notifications (BUY/SELL alerts).
-
-1. Go to [https://console.firebase.google.com/](https://console.firebase.google.com/)
-2. Create or select a project
-3. Click **Add app → Android**, package name: `com.novacycle`
-4. Download `google-services.json`
-5. Place it at `android/app/google-services.json`
-
-> **Without this file the build will fail.** The placeholder at  
-> `android/app/google-services.json.placeholder` describes what to do.
-
-If you want to build without Firebase for now, see **Building without Firebase** below.
-
----
-
-## Step 2 — Set the API base URL (if needed)
+## Step 1 — Set the API base URL (if needed)
 
 The URL is pre-set to the live Replit backend in `android/app/build.gradle.kts`:
 
@@ -47,63 +61,65 @@ buildConfigField("String", "API_BASE_URL", "\"https://<your-replit-domain>/api/\
 
 ---
 
-## Step 3 — Build the debug APK
+## Step 2 — Build via Android Studio (alternative)
 
-### Option A — Android Studio (recommended)
-
-1. Open Android Studio
-2. **File → Open** → select the `android/` folder (the one containing `settings.gradle.kts`)
-3. Wait for Gradle sync to complete
-4. **Build → Build Bundle(s) / APK(s) → Build APK(s)**
-5. Click **locate** in the notification to find the APK
-
-### Option B — Command line
-
-```bash
-cd android
-./gradlew assembleDebug
-```
-
-The output APK is at:
-
-```
-android/app/build/outputs/apk/debug/app-debug.apk
-```
+1. **File → Open** → select the `android/` folder (the one containing `settings.gradle.kts`)
+2. Wait for Gradle sync to complete
+3. **Build → Build Bundle(s) / APK(s) → Build APK(s)**
+4. Click **locate** in the notification to find `app-debug.apk`
 
 ---
 
-## Step 4 — Install on your device
+## Enabling Firebase push notifications (optional)
 
-**Via ADB (USB debugging enabled on device):**
+Push notifications (BUY/SELL alerts) require a Firebase project. To enable them:
 
-```bash
-adb install android/app/build/outputs/apk/debug/app-debug.apk
+### 1 — Create the Firebase config
+
+1. Go to [https://console.firebase.google.com/](https://console.firebase.google.com/)
+2. Create or select a project
+3. Click **Add app → Android**, package name: `com.novacycle`
+4. Download `google-services.json`
+5. Place it at `android/app/google-services.json`
+
+### 2 — Re-enable Firebase in Gradle
+
+In `android/app/build.gradle.kts`, un-comment these three lines:
+
+```kotlin
+// In the plugins block:
+alias(libs.plugins.google.services)   // ← un-comment
+
+// In dependencies:
+implementation(platform(libs.firebase.bom))    // ← un-comment
+implementation(libs.firebase.messaging)        // ← un-comment
 ```
 
-**Via file transfer:**  
-Copy `app-debug.apk` to your device and open it. You may need to enable  
-**Settings → Security → Install unknown apps** for your file manager.
+### 3 — Re-enable the FCM service in the manifest
+
+In `android/app/src/main/AndroidManifest.xml`, un-comment the service block:
+
+```xml
+<service
+    android:name=".notifications.NovaCycleFirebaseService"
+    android:exported="false">
+    <intent-filter>
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+    </intent-filter>
+</service>
+```
+
+### 4 — Restore NovaCycleFirebaseService and NovaCycleApp
+
+In `NovaCycleFirebaseService.kt`, replace the stub `object` with the full `class`
+implementation shown in the file's comments.
+
+In `NovaCycleApp.kt`, restore the Firebase import and the `fetchFcmToken()` call
+(also shown in comments in that file).
 
 ---
 
-## Building without Firebase
-
-To build without a `google-services.json` (disables push notifications):
-
-1. In `android/app/build.gradle.kts`, comment out these two lines:
-   ```kotlin
-   // alias(libs.plugins.google.services)    ← in the plugins block
-   // implementation(libs.firebase.messaging) ← in dependencies
-   ```
-2. In `android/app/src/main/kotlin/com/novacycle/notifications/NovaCycleFirebaseService.kt`,
-   comment out the class body or delete the file.
-3. Remove the Firebase service entry from `AndroidManifest.xml`.
-
-All other screens (gauges, charts, indicators, reliability) work without Firebase.
-
----
-
-## App Screens
+## App screens
 
 | Screen | What it does |
 |--------|-------------|
@@ -128,7 +144,8 @@ All other screens (gauges, charts, indicators, reliability) work without Firebas
 
 | Problem | Fix |
 |---------|-----|
-| `google-services.json not found` | Add the file to `android/app/` (Step 1) |
-| `Connection refused` on real device | Update `API_BASE_URL` to the Replit HTTPS URL (Step 2) |
+| `Connection refused` on real device | Update `API_BASE_URL` to the Replit HTTPS URL in `build.gradle.kts` |
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | Uninstall any previous version of the app first |
 | Gradle sync fails on JDK version | Ensure JDK 17 is selected in Android Studio → Settings → Build Tools → Gradle |
+| `google-services.json not found` | Either add the file (see Enabling Firebase above) or keep Firebase commented out |
+| Build succeeds but no push notifications | Firebase is disabled — see Enabling Firebase above |
