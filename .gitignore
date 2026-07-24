@@ -67,3 +67,4 @@ pyproject.toml
 
 # Unused lock / config files
 package-lock.json
+attached_assets
