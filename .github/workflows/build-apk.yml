@@ -41,8 +41,34 @@ jobs:
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
+      # Compute a short commit SHA for the versioned tag
+      - name: Set version tag
+        if: github.event_name != 'pull_request'
+        id: version
+        run: echo "tag=v$(date -u +'%Y-%m-%d')-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
       # Only publish a release on pushes to main/master (not PRs)
-      - name: Publish APK as GitHub Release
+      - name: Publish versioned GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.version.outputs.tag }}
+          name: "Release ${{ steps.version.outputs.tag }}"
+          body: |
+            Automatically published from commit ${{ github.sha }} on ${{ github.ref_name }}.
+
+            **Commit:** ${{ github.sha }}
+            **Built:** ${{ github.run_id }}
+
+            Install this APK directly on your Android device — no GitHub login required.
+            To roll back, download the APK from any earlier release listed on the Releases page.
+          artifacts: android/app/build/outputs/apk/release/app-release.apk
+          artifactContentType: application/vnd.android.package-archive
+          allowUpdates: false      # Never overwrite a versioned release
+          makeLatest: false        # The rolling "latest" tag controls what is marked latest
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update rolling "latest" GitHub Release
         if: github.event_name != 'pull_request'
         uses: ncipollo/release-action@v1
         with:
@@ -53,8 +79,10 @@ jobs:
 
             **Commit:** ${{ github.sha }}
             **Built:** ${{ github.run_id }}
+            **Versioned release:** ${{ steps.version.outputs.tag }}
 
             Install this APK directly on your Android device — no GitHub login required.
+            Previous versions are available on the [Releases page](../../releases).
           artifacts: android/app/build/outputs/apk/release/app-release.apk
           artifactContentType: application/vnd.android.package-archive
           allowUpdates: true       # Overwrite the existing "latest" release each time
