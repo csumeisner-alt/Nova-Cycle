@@ -577,44 +577,25 @@ async def filtered_signal_history(
 
 
 # ---------------------------------------------------------------------------
-# GET /trade_history  (placeholder for future reliability metrics)
+# GET /trade_history  (Signal Reliability Metrics)
 # ---------------------------------------------------------------------------
 @router.get("/trade_history")
 async def trade_history(
     ticker: str = Query(default="VOO"),
+    window: str = Query(default="30d"),
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Return trade cycles (BUY→SELL pairs) for reliability analysis.
-    Placeholder for future reliability metrics feature.
+    Return BUY→SELL trade cycles and their reliability summary for the ticker.
+
+    This endpoint delegates all reliability logic to reliability_engine.py so that
+    existing signal filtering and prediction code is not touched. It regenerates
+    cycles from the filtered signal timeline, persists any new ones, and returns
+    both the cycle list and aggregate metrics.
     """
     _validate_ticker(ticker)
-    result = await session.execute(
-        select(TradeCycles)
-        .where(TradeCycles.ticker == ticker)
-        .order_by(desc(TradeCycles.buy_timestamp))
-        .limit(500)
-    )
-    rows = result.scalars().all()
-    return [
-        {
-            "id": r.id,
-            "cycle_id": r.cycle_id,
-            "ticker": r.ticker,
-            "buy_timestamp": r.buy_timestamp.isoformat() if r.buy_timestamp else None,
-            "sell_timestamp": r.sell_timestamp.isoformat() if r.sell_timestamp else None,
-            "buy_price": r.buy_price,
-            "sell_price": r.sell_price,
-            "return_percent": r.return_percent,
-            "return_dollars": r.return_dollars,
-            "hold_time_minutes": r.hold_time_minutes,
-            "volatility_class": r.volatility_class,
-            "liquidity_class": r.liquidity_class,
-            "gap_type_at_buy": r.gap_type_at_buy,
-            "macro_override_applied": r.macro_override_applied
-        }
-        for r in rows
-    ]
+    from reliability_engine import get_trade_history_with_metrics
+    return await get_trade_history_with_metrics(session, ticker=ticker, window=window)
 
 
 # ---------------------------------------------------------------------------

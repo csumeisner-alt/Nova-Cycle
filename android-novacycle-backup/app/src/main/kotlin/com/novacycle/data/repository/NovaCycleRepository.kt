@@ -173,4 +173,15 @@ class NovaCycleRepository @Inject constructor(
 
     suspend fun getIndicators(ticker: String = "VOO"): Result<IndicatorResponse> =
         runCatching { apiService.getIndicators(ticker) }
+
+    /**
+     * Fetch trade cycles and reliability metrics from /trade_history.
+     * Kept as a simple remote call because the backend is the source of truth
+     * for generated cycles and computed metrics.
+     */
+    suspend fun getTradeHistory(
+        ticker: String = "VOO",
+        window: String = "30d"
+    ): Result<TradeHistoryResponse> =
+        runCatching { apiService.getTradeHistory(ticker, window) }
 }

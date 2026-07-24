@@ -137,10 +137,17 @@ class TradeCycles(Base):
 
     hold_time_minutes = Column(Float, nullable=True)
 
-    volatility_class = Column(String(16), nullable=True)   # e.g. 'low'|'medium'|'high'
-    liquidity_class = Column(String(16), nullable=True)    # e.g. 'adequate'|'thin'
+    # Captured from the BUY signal that opened this cycle
+    confidence_at_buy = Column(Float, nullable=True)
+    confidence_at_sell = Column(Float, nullable=True)
+    session_type_at_buy = Column(String(16), nullable=True)   # 'pre_market', 'regular', 'after_hours'
+    liquidity_score_at_buy = Column(Float, nullable=True)
     gap_type_at_buy = Column(String(16), nullable=True)
     macro_override_applied = Column(Boolean, nullable=False, default=False)
+
+    # Classifications used for segmented reliability metrics
+    volatility_class = Column(String(16), nullable=True)   # e.g. 'low'|'medium'|'high'
+    liquidity_class = Column(String(16), nullable=True)    # e.g. 'adequate'|'thin'
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -69,11 +69,12 @@ interface NovaCycleApiService {
         @Query("ticker") ticker: String = "VOO"
     ): Map<String, Any>
 
-    /** Retrieve historical trade records for reliability metrics */
+    /** Retrieve historical trade records and reliability summary metrics */
     @GET("trade_history")
     suspend fun getTradeHistory(
-        @Query("ticker") ticker: String = "VOO"
-    ): List<Map<String, Any>>
+        @Query("ticker") ticker: String = "VOO",
+        @Query("window") window: String = "30d"
+    ): TradeHistoryResponse
 
     /** Health check endpoint */
     @GET("healthz")
