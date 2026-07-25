@@ -198,6 +198,29 @@ async def test_gap_status_returns_numeric_momentum(client):
 
 
 @pytest.mark.asyncio
+async def test_gap_status_stale_gap_from_earlier_day_is_null(client):
+    """A gap from a previous day must not produce momentum for today's status."""
+    ac, session_maker = client
+    old_day = datetime(2026, 7, 17)  # a week earlier: gap + full post-open window
+    candles = [five_min_candle(old_day.replace(hour=9), "pre_market", gap_percent=1.5)]
+    for i in range(N):
+        close = 101.0 if i == N - 1 else 100.0
+        candles.append(
+            five_min_candle(
+                old_day.replace(hour=13, minute=30) + timedelta(minutes=5 * i),
+                "regular", open_=100.0, close=close,
+            )
+        )
+    # Today: latest candle has no gap
+    today = datetime(2026, 7, 24)
+    candles.append(five_min_candle(today.replace(hour=13, minute=35), "regular"))
+    await seed(session_maker, candles)
+    body = (await ac.get("/api/gap_status", params={"ticker": "VOO"})).json()
+    assert body["gap_percent"] == 0.0
+    assert body["gap_momentum"] is None
+
+
+@pytest.mark.asyncio
 async def test_gap_status_gap_down_fade_is_negative(client):
     ac, session_maker = client
     day = datetime(2026, 7, 24)

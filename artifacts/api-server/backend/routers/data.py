@@ -161,7 +161,9 @@ async def _load_vix_df(db: AsyncSession, limit: int = 300) -> pd.DataFrame:
     return df
 
 
-async def _compute_gap_momentum(db: AsyncSession) -> Optional[float]:
+async def _compute_gap_momentum(
+    db: AsyncSession, as_of: Optional[datetime] = None
+) -> Optional[float]:
     """
     Compute gap follow-through momentum at read time (additive; no schema
     changes — nothing is persisted).
@@ -171,8 +173,13 @@ async def _compute_gap_momentum(db: AsyncSession) -> Optional[float]:
     DataFetcher.compute_gap_momentum (price movement over the first 30
     minutes after the open, signed by the gap direction).
 
-    Returns None when there is no gap candle or not enough post-open candles.
-    Never raises.
+    When `as_of` is provided (the timestamp of the latest candle whose gap
+    status is being reported), the gap candle must be from the same trading
+    day as `as_of` — otherwise None is returned. This prevents pairing
+    today's "no gap" status with a stale momentum from an earlier day.
+
+    Returns None when there is no gap candle for that day or not enough
+    post-open candles. Never raises.
     """
     try:
         result = await db.execute(
@@ -188,6 +195,11 @@ async def _compute_gap_momentum(db: AsyncSession) -> Optional[float]:
         )
         gap_candle = result.scalars().first()
         if not gap_candle or not gap_candle.timestamp:
+            return None
+
+        # Only report momentum for a gap that belongs to the same trading day
+        # as the candle whose gap status we're returning.
+        if as_of is not None and gap_candle.timestamp.date() != as_of.date():
             return None
 
         day_start = datetime.combine(gap_candle.timestamp.date(), datetime.min.time())
@@ -428,7 +440,7 @@ async def get_gap_status(
             "gap_type": latest.gap_type or "none",
             # Additive fields (computed at read time; existing fields unchanged)
             "gap_class": DataFetcher.classify_gap_magnitude(gap_percent),
-            "gap_momentum": await _compute_gap_momentum(db),
+            "gap_momentum": await _compute_gap_momentum(db, as_of=latest.timestamp),
             "timestamp": latest.timestamp.isoformat() if latest.timestamp else None,
             "session_type": latest.session_type,
             "close": latest.close,
