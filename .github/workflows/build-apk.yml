@@ -25,6 +25,21 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # Compile main sources and run JVM unit tests BEFORE assembling the APK.
+      # A compile error or failing unit test fails the workflow here, blocking
+      # the release APK from being built or published.
+      - name: Run unit tests (compiles app + test sources)
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Upload unit test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: android/app/build/reports/tests/
+          if-no-files-found: ignore
+
       - name: Build release APK
         working-directory: android
         env:
