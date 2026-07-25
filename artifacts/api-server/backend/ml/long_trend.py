@@ -275,6 +275,14 @@ class LongTrendModel:
                 logger.warning("Not enough data to train long-trend model (%d rows)", len(X))
                 return {"accuracy": 0.0, "feature_importances": {}}
 
+            # Normalize time-decay weights to mean 1.0. With a decade of
+            # history the raw exp(-λ·age) weights shrink to ~1e-8, so the
+            # summed hessian never reaches XGBoost's min_child_weight and the
+            # trees degenerate to a constant prediction.
+            mean_w = float(weights.mean())
+            if mean_w > 0:
+                weights = weights / mean_w
+
             X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
                 X, y, weights, test_size=0.2, shuffle=False
             )

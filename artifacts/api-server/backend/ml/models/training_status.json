@@ -1,0 +1,14 @@
+{
+  "long_trend": {
+    "success": true,
+    "error": null,
+    "accuracy": 0.56312625250501,
+    "attempted_at": "2026-07-25T19:10:47.246919+00:00"
+  },
+  "short_trend": {
+    "success": true,
+    "error": null,
+    "accuracy": 0.9863952643057431,
+    "attempted_at": "2026-07-25T19:10:51.766086+00:00"
+  }
+}

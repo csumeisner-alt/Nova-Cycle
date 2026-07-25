@@ -1,3 +1,4 @@
 - [NovaCycle backend fixes](novacycle-backend-fixes.md) — critical runtime fixes needed to boot the FastAPI server on Replit
 - [NovaCycle deployment notes](novacycle-deployment-notes.md) — backend must be a Reserved VM (not autoscale) because of SQLite and APScheduler
 - [Prediction frame index alignment](prediction-frame-index-alignment.md) — router candle frames use integer index + timestamp column; align datetime-indexed series before feature computation
+- [XGBoost time-decay weights](xgboost-time-decay-weights.md) — normalize exp-decay sample weights to mean 1 or XGBoost degenerates to a constant predictor with zero importances
