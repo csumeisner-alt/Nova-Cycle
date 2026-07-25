@@ -35,6 +35,9 @@ import com.novacycle.data.remote.models.ModelHealth
 import com.novacycle.ui.theme.NovaSellRed
 import com.novacycle.viewmodel.HealthUiState
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import java.time.format.DateTimeParseException
 
 private val Amber = Color(0xFFFFB300)
@@ -304,12 +307,32 @@ private fun DetailLine(
 /**
  * Renders the backend's ISO-8601 `last_trained_at` as a relative age
  * ("3 h 12 min ago"); falls back to the raw string when unparseable.
+ *
+ * Accepts instants with a Z suffix ("2026-07-25T10:00:00Z"), explicit UTC
+ * offsets ("2026-07-25T12:00:00+02:00"), and naive timestamps without any
+ * zone info as emitted by Python's `datetime.isoformat()`
+ * ("2026-07-25T10:00:00.123456") — naive timestamps are treated as UTC.
  */
 internal fun formatTrainedAt(nowMillis: Long, isoTimestamp: String): String {
+    val millis = parseTrainedAtMillis(isoTimestamp) ?: return isoTimestamp
+    return "${formatRelativeAge(nowMillis, millis)} ($isoTimestamp)"
+}
+
+/** Epoch millis for a backend timestamp, or null when unparseable. */
+internal fun parseTrainedAtMillis(isoTimestamp: String): Long? {
+    val text = isoTimestamp.trim()
+    // Z-suffixed or otherwise instant-formatted.
+    try {
+        return Instant.parse(text).toEpochMilli()
+    } catch (_: DateTimeParseException) { }
+    // Explicit offset, e.g. "+02:00".
+    try {
+        return OffsetDateTime.parse(text).toInstant().toEpochMilli()
+    } catch (_: DateTimeParseException) { }
+    // Naive (no zone) — Python datetime.isoformat(); treat as UTC.
     return try {
-        val millis = Instant.parse(isoTimestamp).toEpochMilli()
-        "${formatRelativeAge(nowMillis, millis)} ($isoTimestamp)"
+        LocalDateTime.parse(text).toInstant(ZoneOffset.UTC).toEpochMilli()
     } catch (_: DateTimeParseException) {
-        isoTimestamp
+        null
     }
 }
