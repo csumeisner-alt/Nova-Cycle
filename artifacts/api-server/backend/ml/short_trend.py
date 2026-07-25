@@ -139,16 +139,23 @@ class ShortTrendModel:
 
         # ── Additive features (vectorized, in-memory) ─────────────────────────
         liq_class = df["liquidity_class"] if "liquidity_class" in df.columns else None
-        vol_regime_enc = ml_features.encode_volatility_regime(
-            ml_features.compute_volatility_regime(close, atr=atr_s, liquidity_class=liq_class)
+        vol_regimes = ml_features.compute_volatility_regime(
+            close, atr=atr_s, liquidity_class=liq_class
         )
+        vol_regime_enc = ml_features.encode_volatility_regime(vol_regimes)
         macro_sens = ml_features.compute_macro_sensitivity(
             close,
             open_=open_col,
             vix_regime=indicators.get("vix_regime"),
             spx_futures_close=indicators.get("spx_futures_close"),
         )
-        macro_flag = ml_features.macro_override_flag(df.index)
+        macro_flag = ml_features.macro_override_flag(
+            df.index,
+            close=close,
+            open_=open_col,
+            vix_regime=indicators.get("vix_regime"),
+            volatility_regime=vol_regimes,
+        )
         gap_momentum_s, gap_momentum_cls = ml_features.compute_gap_momentum_features(df)
         liq_compression = ml_features.compute_liquidity_compression_score(df)
 

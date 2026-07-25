@@ -82,6 +82,60 @@ class TestMacroSensitivity:
         assert len(score) == 0  # empty in, empty out, no crash
 
 
+class TestMacroOverrideFlag:
+    def test_default_zero_without_inputs(self):
+        df = _daily_df(30)
+        flag = ml_features.macro_override_flag(df.index)
+        assert (flag == 0.0).all()
+
+    def test_fires_on_extreme_vix_plus_big_overnight_move(self):
+        df = _daily_df(30)
+        open_ = df["close"].shift(1).fillna(100.0) * 1.05  # +5% overnight gaps
+        vix = pd.Series("EXTREME", index=df.index)
+        flag = ml_features.macro_override_flag(
+            df.index, close=df["close"], open_=open_, vix_regime=vix
+        )
+        assert flag.iloc[1:].eq(1.0).all()  # first bar has no prev close
+
+    def test_not_fired_when_vix_extreme_but_calm_overnight(self):
+        df = _daily_df(30)
+        open_ = df["close"].shift(1).fillna(100.0)  # zero overnight move
+        vix = pd.Series("EXTREME", index=df.index)
+        flag = ml_features.macro_override_flag(
+            df.index, close=df["close"], open_=open_, vix_regime=vix
+        )
+        assert (flag == 0.0).all()
+
+    def test_not_fired_on_big_move_with_low_vix(self):
+        df = _daily_df(30)
+        open_ = df["close"].shift(1).fillna(100.0) * 1.05
+        vix = pd.Series("LOW", index=df.index)
+        flag = ml_features.macro_override_flag(
+            df.index, close=df["close"], open_=open_, vix_regime=vix
+        )
+        assert (flag == 0.0).all()
+
+    def test_fires_on_macro_shock_regime(self):
+        df = _daily_df(30)
+        regimes = pd.Series("calm", index=df.index)
+        regimes.iloc[10:15] = "macro_shock"
+        flag = ml_features.macro_override_flag(
+            df.index, close=df["close"], volatility_regime=regimes
+        )
+        assert flag.iloc[10:15].eq(1.0).all()
+        assert flag.drop(flag.index[10:15]).eq(0.0).all()
+
+    def test_binary_values_only(self):
+        df = _daily_df(60)
+        vix = pd.Series("HIGH", index=df.index)
+        regimes = ml_features.compute_volatility_regime(df["close"])
+        flag = ml_features.macro_override_flag(
+            df.index, close=df["close"], open_=df["open"],
+            vix_regime=vix, volatility_regime=regimes,
+        )
+        assert set(flag.unique()) <= {0.0, 1.0}
+
+
 class TestGapMomentum:
     def test_direction_sign(self):
         df = _fivemin_df(50)

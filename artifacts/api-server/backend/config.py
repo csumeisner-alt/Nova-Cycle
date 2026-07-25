@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # away from it on a fading gap:
     GAP_MOMENTUM_SCORE_BOOST: float = 10.0
 
+    # ── Macro override flag (ML feature, in-memory only) ─────────────────────
+    # macro_override_flag = 1.0 when either:
+    #   - volatility_regime == 'macro_shock', or
+    #   - VIX regime >= MACRO_OVERRIDE_VIX_REGIME AND the absolute overnight
+    #     move exceeds MACRO_OVERRIDE_OVERNIGHT_MOVE_PCT (%)
+    MACRO_OVERRIDE_VIX_REGIME: str = "EXTREME"
+    MACRO_OVERRIDE_OVERNIGHT_MOVE_PCT: float = 2.0  # % overnight move
+
     # ── Firebase Cloud Messaging ───────────────────────────────────────────────
     FCM_SERVER_KEY: str = ""
 

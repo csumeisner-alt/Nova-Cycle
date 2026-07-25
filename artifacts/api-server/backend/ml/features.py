@@ -12,7 +12,9 @@ Features provided:
   - macro_sensitivity_score : [0, 1] from VIX regime, SPX futures
                               (graceful fallback when unavailable) and
                               overnight returns
-  - macro_override_flag     : placeholder (always 0.0 for now)
+  - macro_override_flag     : 1.0 during genuine macro shocks (VIX regime
+                              + overnight move, or volatility_regime ==
+                              macro_shock); thresholds in config.py
   - gap_momentum            : gap_percent × direction_of_first_candle
   - gap_momentum_class      : weak | medium | strong
   - liquidity_compression_score : volume-deviation based, reusing
@@ -201,9 +203,63 @@ def compute_macro_sensitivity(
         return _default_series(close.index, DEFAULT_MACRO_SENSITIVITY)
 
 
-def macro_override_flag(index) -> pd.Series:
-    """Placeholder macro override flag (always 0.0 for now; in-memory only)."""
-    return _default_series(index, DEFAULT_MACRO_OVERRIDE_FLAG)
+def macro_override_flag(
+    index,
+    close: pd.Series | None = None,
+    open_: pd.Series | None = None,
+    vix_regime: pd.Series | None = None,
+    volatility_regime: pd.Series | None = None,
+) -> pd.Series:
+    """
+    macro_override_flag ∈ {0.0, 1.0}: flips to 1.0 during genuine macro
+    shock conditions so models can learn to discount normal signals.
+
+    Fires when either (vectorized):
+      - volatility_regime == 'macro_shock', or
+      - VIX regime >= settings.MACRO_OVERRIDE_VIX_REGIME (default EXTREME)
+        AND |overnight return| > settings.MACRO_OVERRIDE_OVERNIGHT_MOVE_PCT %
+
+    In-memory only; all-0.0 when inputs are missing or on failure.
+    """
+    try:
+        flag = pd.Series(False, index=index)
+
+        # Volatility-regime condition
+        if volatility_regime is not None and not volatility_regime.empty:
+            flag |= (
+                volatility_regime.reindex(index).astype(str) == "macro_shock"
+            )
+
+        # VIX + overnight-move condition
+        if (
+            vix_regime is not None
+            and not vix_regime.empty
+            and close is not None
+            and not close.empty
+        ):
+            threshold_regime = str(settings.MACRO_OVERRIDE_VIX_REGIME).upper()
+            threshold_score = VIX_REGIME_SCORE.get(threshold_regime, 1.0)
+            vix_score = (
+                vix_regime.astype(str).str.upper().map(VIX_REGIME_SCORE)
+                .reindex(index, method="ffill")
+                .fillna(0.0)
+            )
+            vix_hot = vix_score >= threshold_score
+
+            if open_ is not None and not open_.empty:
+                overnight = ((open_ - close.shift(1)) / close.shift(1)).replace(
+                    [np.inf, -np.inf], np.nan
+                ).fillna(0.0)
+            else:
+                overnight = close.pct_change().fillna(0.0)
+            big_move = overnight.abs() * 100.0 > settings.MACRO_OVERRIDE_OVERNIGHT_MOVE_PCT
+
+            flag |= vix_hot & big_move
+
+        return flag.astype(float)
+    except Exception as exc:
+        logger.error("ml_feature_error feature=macro_override_flag error=%s", exc)
+        return _default_series(index, DEFAULT_MACRO_OVERRIDE_FLAG)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
