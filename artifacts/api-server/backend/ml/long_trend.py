@@ -392,6 +392,15 @@ class LongTrendModel:
             self._model_loaded = True
             return False
 
+    def is_neutral_fallback(self) -> bool:
+        """
+        True when the model is unavailable (missing, stale, or failed to load)
+        and predict() would return the neutral 0.5 fallback.
+        """
+        if not self._model_loaded:
+            self.load_model()
+        return self.model is None
+
     def build_latest_features(
         self,
         df: pd.DataFrame,

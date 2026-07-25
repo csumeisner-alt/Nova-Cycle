@@ -13,7 +13,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, and_
+from sqlalchemy import select, desc, and_, func
 
 from database.db import get_session, get_session_factory
 from database.models import (
@@ -815,12 +815,71 @@ async def trade_history(
 # GET /healthz
 # ---------------------------------------------------------------------------
 @router.get("/healthz")
-async def healthz():
-    """Health check endpoint."""
+async def healthz(session: AsyncSession = Depends(get_session)):
+    """
+    Health check endpoint.
+
+    Also reports ML model health so a failed weekly retrain (or a model
+    stuck serving the neutral 0.5 fallback) is visible, not just logged.
+    Overall status becomes "degraded" if either model failed its last
+    training attempt or is running in neutral-fallback mode.
+    """
+    from ml.training_status import get_training_status
+    from database.models import ModelMetadata
+
+    training_status = get_training_status()
+
+    models = {}
+    degraded = False
+    for name, model in (("long_trend", _long_model), ("short_trend", _short_model)):
+        neutral = True
+        try:
+            neutral = model.is_neutral_fallback()
+        except Exception as exc:
+            logger.error("healthz: %s fallback check failed: %s", name, exc)
+
+        last_trained_at = None
+        try:
+            result = await session.execute(
+                select(func.max(ModelMetadata.trained_at)).where(
+                    ModelMetadata.model_name == name
+                )
+            )
+            ts = result.scalar()
+            last_trained_at = ts.isoformat() if ts else None
+        except Exception as exc:
+            logger.error("healthz: %s metadata lookup failed: %s", name, exc)
+
+        status = training_status.get(name, {})
+        failed = status.get("success") is False
+        if failed or neutral:
+            degraded = True
+
+        models[name] = {
+            "last_training_success": status.get("success"),
+            "last_training_error": status.get("error"),
+            "last_training_attempted_at": status.get("attempted_at"),
+            "last_training_accuracy": status.get("accuracy"),
+            "last_trained_at": last_trained_at,
+            "neutral_fallback": neutral,
+        }
+
+    alerts = []
+    for name, info in models.items():
+        if info["last_training_success"] is False:
+            alerts.append(
+                f"{name}: last training attempt failed"
+                + (f" ({info['last_training_error']})" if info["last_training_error"] else "")
+            )
+        if info["neutral_fallback"]:
+            alerts.append(f"{name}: model unavailable — serving neutral 0.5 predictions")
+
     return {
-        "status": "ok",
+        "status": "degraded" if degraded else "ok",
         "ticker": "VOO",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "NovaCycle API",
+        "models": models,
+        "alerts": alerts,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
     }

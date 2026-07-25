@@ -20,6 +20,7 @@ from database.models import ModelMetadata, VooCandle, VixCandle, SpxCandle
 from indicators.technical import TechnicalIndicators
 from ml.long_trend import LongTrendModel
 from ml.short_trend import ShortTrendModel
+from ml.training_status import record_training_result
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,12 @@ class ModelTrainer:
         daily_df = await self._load_daily_voo(db_session)
         if daily_df.empty:
             logger.warning("No daily VOO data available for training. Skipping.")
+            record_training_result(
+                "long_trend", success=False, error="No daily VOO data available"
+            )
+            record_training_result(
+                "short_trend", success=False, error="No daily VOO data available"
+            )
             return
 
         # ── Load VIX candles ───────────────────────────────────────────────────
@@ -86,6 +93,19 @@ class ModelTrainer:
         logger.info("Training long-trend model…")
         try:
             long_result = self.long_model.train(daily_df, indicators)
+            if self.long_model.model is None:
+                # train() swallows exceptions internally and returns zeros.
+                record_training_result(
+                    "long_trend",
+                    success=False,
+                    error="Training produced no model (see server logs)",
+                )
+            else:
+                record_training_result(
+                    "long_trend",
+                    success=True,
+                    accuracy=long_result.get("accuracy", 0.0),
+                )
             await self._save_metadata(
                 db_session,
                 model_name="long_trend",
@@ -99,12 +119,16 @@ class ModelTrainer:
             )
         except Exception as exc:
             logger.error("Long-trend training failed: %s", exc)
+            record_training_result("long_trend", success=False, error=str(exc))
 
         # ── Load 5-min VOO candles ─────────────────────────────────────────────
         fivemin_df = await self._load_fivemin_voo(db_session)
 
         if fivemin_df.empty:
             logger.warning("No 5-min VOO data available. Skipping short-trend training.")
+            record_training_result(
+                "short_trend", success=False, error="No 5-min VOO data available"
+            )
             return
 
         # ── Compute short indicators ───────────────────────────────────────────
@@ -123,6 +147,18 @@ class ModelTrainer:
         logger.info("Training short-trend model…")
         try:
             short_result = self.short_model.train(fivemin_df, short_indicators)
+            if self.short_model.model is None:
+                record_training_result(
+                    "short_trend",
+                    success=False,
+                    error="Training produced no model (see server logs)",
+                )
+            else:
+                record_training_result(
+                    "short_trend",
+                    success=True,
+                    accuracy=short_result.get("accuracy", 0.0),
+                )
             await self._save_metadata(
                 db_session,
                 model_name="short_trend",
@@ -137,6 +173,7 @@ class ModelTrainer:
             )
         except Exception as exc:
             logger.error("Short-trend training failed: %s", exc)
+            record_training_result("short_trend", success=False, error=str(exc))
 
         logger.info("Initial model training complete.")
 
