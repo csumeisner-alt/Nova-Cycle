@@ -10,6 +10,7 @@ import com.novacycle.data.local.dao.CandleDao
 import com.novacycle.data.local.dao.ConfidenceDao
 import com.novacycle.data.local.dao.SignalDao
 import com.novacycle.data.remote.NovaCycleApiService
+import com.novacycle.data.repository.DataFreshnessTracker
 import com.novacycle.data.repository.NovaCycleRepository
 import dagger.Module
 import dagger.Provides
@@ -61,8 +62,10 @@ object AppModule {
         apiService: NovaCycleApiService,
         signalDao: SignalDao,
         confidenceDao: ConfidenceDao,
-        candleDao: CandleDao
-    ): NovaCycleRepository = NovaCycleRepository(apiService, signalDao, confidenceDao, candleDao)
+        candleDao: CandleDao,
+        freshnessTracker: DataFreshnessTracker
+    ): NovaCycleRepository =
+        NovaCycleRepository(apiService, signalDao, confidenceDao, candleDao, freshnessTracker)
 
     /** DataStore for user sensitivity settings — survives process death */
     @Provides

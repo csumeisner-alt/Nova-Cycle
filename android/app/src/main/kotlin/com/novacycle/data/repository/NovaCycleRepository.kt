@@ -24,7 +24,7 @@ import android.util.Log
  *  4. Return Result<T> so ViewModels can cleanly handle success/failure states.
  */
 @Singleton
-class NovaCycleRepository @Inject constructor(
+open class NovaCycleRepository @Inject constructor(
     private val apiService: NovaCycleApiService,
     private val signalDao: SignalDao,
     private val confidenceDao: ConfidenceDao,
@@ -189,7 +189,7 @@ class NovaCycleRepository @Inject constructor(
         runCatching { apiService.getIndicators(ticker).recordDataFreshness() }
 
     /** Backend health snapshot — used to surface the degraded-predictions warning. */
-    suspend fun getHealth(): Result<HealthzResponse> =
+    open suspend fun getHealth(): Result<HealthzResponse> =
         runCatching { apiService.healthz() }
 
     /**

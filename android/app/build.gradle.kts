@@ -98,8 +98,11 @@ android {
 }
 
 dependencies {
-    // Unit tests (data-freshness contract behind the "last updated X ago" label)
+    // Unit tests (data-freshness contract behind the "last updated X ago" label,
+    // HealthViewModel banner state machine)
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("io.mockk:mockk:1.13.11")
 
     // Material Components (provides Theme.Material3 used in AndroidManifest/themes)
     implementation(libs.material)
