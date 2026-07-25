@@ -25,6 +25,14 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # Caches the Gradle wrapper, dependency, and build caches between runs so
+      # repeat CI runs skip re-downloading Gradle and all dependencies.
+      # Only pushes to main/master write to the cache; PRs read from it.
+      - name: Set up Gradle (with caching)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
       # Compile main sources and run JVM unit tests BEFORE assembling the APK.
       # A compile error or failing unit test fails the workflow here, blocking
       # the release APK from being built or published.
