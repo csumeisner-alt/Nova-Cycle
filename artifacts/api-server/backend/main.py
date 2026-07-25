@@ -16,6 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from database.db import create_tables, get_session_factory
+from database.maintenance import reclassify_session_labels
 from ingestion.pipeline import IngestionPipeline
 from routers import predictions, data, history, notifications
 
@@ -49,6 +50,11 @@ async def lifespan(app: FastAPI):
         try:
             session_factory = get_session_factory()
             async with session_factory() as session:
+                corrected = await reclassify_session_labels(session)
+                if corrected:
+                    logger.info(
+                        f"Repaired {corrected} candle(s) with stale session labels."
+                    )
                 await pipeline.initialize(session)
                 await session.commit()
             logger.info("Data ingestion pipeline initialized.")
