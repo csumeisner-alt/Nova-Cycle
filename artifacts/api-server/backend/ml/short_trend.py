@@ -146,6 +146,7 @@ class ShortTrendModel:
             close,
             open_=open_col,
             vix_regime=indicators.get("vix_regime"),
+            spx_futures_close=indicators.get("spx_futures_close"),
         )
         macro_flag = ml_features.macro_override_flag(df.index)
         gap_momentum_s, gap_momentum_cls = ml_features.compute_gap_momentum_features(df)

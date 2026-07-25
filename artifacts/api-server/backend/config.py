@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     # ── Ticker ────────────────────────────────────────────────────────────────
     TICKER: str = "VOO"
     VIX_TICKER: str = "^VIX"
+    SPX_FUTURES_TICKER: str = "ES=F"   # S&P 500 E-mini futures (yfinance)
 
     # ── Time-decay lambdas ────────────────────────────────────────────────────
     # Weight(t) = exp(-lambda * age)

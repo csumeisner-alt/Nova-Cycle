@@ -17,7 +17,7 @@ from sqlalchemy import select, desc, and_
 
 from database.db import get_session, get_session_factory
 from database.models import (
-    VooCandle, VixCandle, ConfidenceHistory, SignalHistory,
+    VooCandle, VixCandle, SpxCandle, ConfidenceHistory, SignalHistory,
     TradeCycles, FilteredSignal, DeviceToken
 )
 from indicators.technical import TechnicalIndicators
@@ -133,6 +133,58 @@ async def _load_vix_candles(session: AsyncSession, limit: int = 300) -> pd.DataF
         "open": r.open, "high": r.high, "low": r.low, "close": r.close,
         "ticker": r.ticker
     } for r in rows])
+
+
+async def _load_spx_close_series(session: AsyncSession, limit: int = 300) -> pd.Series:
+    """
+    Load the daily SPX futures close series for macro sensitivity.
+
+    Returns an empty Series when unavailable so downstream feature code
+    keeps the VOO overnight-return fallback (never raises).
+    """
+    try:
+        result = await session.execute(
+            select(SpxCandle)
+            .where(
+                SpxCandle.ticker == settings.SPX_FUTURES_TICKER,
+                SpxCandle.timeframe == "daily",
+            )
+            .order_by(desc(SpxCandle.timestamp))
+            .limit(limit)
+        )
+        rows = result.scalars().all()
+        if not rows:
+            return pd.Series(dtype=float)
+        rows = list(reversed(rows))
+        return pd.Series(
+            [r.close for r in rows],
+            index=pd.to_datetime([r.timestamp for r in rows]),
+            dtype=float,
+        )
+    except Exception as exc:
+        logger.error("_load_spx_close_series error: %s", exc)
+        return pd.Series(dtype=float)
+
+
+def _align_spx_to_df(spx_close: pd.Series, df: pd.DataFrame) -> pd.Series:
+    """
+    Align the daily SPX close series onto a candle DataFrame's row index
+    (the router frames use an integer index with a `timestamp` column).
+
+    Forward-fills the most recent daily SPX close onto each row's date.
+    Returns an empty Series on any mismatch so the feature layer keeps
+    its VOO overnight fallback (never raises).
+    """
+    try:
+        if spx_close.empty or df.empty or "timestamp" not in df.columns:
+            return pd.Series(dtype=float)
+        dates = pd.to_datetime(df["timestamp"]).dt.normalize()
+        aligned = spx_close.sort_index().reindex(dates, method="ffill")
+        aligned.index = df.index
+        return aligned.astype(float)
+    except Exception as exc:
+        logger.error("_align_spx_to_df error: %s", exc)
+        return pd.Series(dtype=float)
 
 
 def _compute_gap_momentum_from_df(df_5min: pd.DataFrame) -> Optional[float]:
@@ -332,6 +384,12 @@ async def predict_long(
 
         # Compute indicators (exclude extended hours always for long-trend)
         indicators = _indicators_engine.compute_all(daily_df, vix_df, exclude_extended=True)
+
+        # Inject the real SPX futures close series for macro sensitivity
+        # (empty series → build_features keeps the VOO overnight fallback).
+        spx_aligned = _align_spx_to_df(await _load_spx_close_series(session), daily_df)
+        if not spx_aligned.empty:
+            indicators["spx_futures_close"] = spx_aligned
         _last_indicators = indicators
 
         # Build features and run ML model
@@ -444,6 +502,12 @@ async def predict_short(
 
         # Compute short-term indicators from 5-min data
         indicators = _indicators_engine.compute_all(df_5min, vix_df, exclude_extended=False)
+
+        # Inject the real SPX futures close series for macro sensitivity
+        # (empty series → build_features keeps the VOO overnight fallback).
+        spx_aligned = _align_spx_to_df(await _load_spx_close_series(session), df_5min)
+        if not spx_aligned.empty:
+            indicators["spx_futures_close"] = spx_aligned
 
         # Build features and predict
         try:

@@ -127,6 +127,32 @@ class DataFetcher:
             logger.error("Error fetching VIX data: %s", exc)
             return pd.DataFrame()
 
+    async def fetch_historical_spx(self, years: int = 10) -> pd.DataFrame:
+        """
+        Fetch `years` years of daily SPX futures (ES=F) data.
+
+        Returns:
+            pd.DataFrame with columns: open, high, low, close, volume
+            (empty on error — callers preserve fallback behavior).
+        """
+        spx_ticker = settings.SPX_FUTURES_TICKER
+        logger.info("Fetching %d years of historical SPX futures data…", years)
+        try:
+            df = await self._run_sync(
+                yf.download,
+                spx_ticker,
+                period=f"{years}y",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+            df = self._normalise_columns(df)
+            logger.info("Fetched %d daily SPX futures candles", len(df))
+            return df
+        except Exception as exc:
+            logger.error("Error fetching SPX futures data: %s", exc)
+            return pd.DataFrame()
+
     async def fetch_vix_daily_range(self, start: datetime, end: datetime) -> pd.DataFrame:
         """
         Fetch daily VIX candles for a specific [start, end] date range.

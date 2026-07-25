@@ -71,6 +71,26 @@ class VixCandle(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SPX futures Candlestick data (E-mini S&P 500, ES=F)
+# ─────────────────────────────────────────────────────────────────────────────
+class SpxCandle(Base):
+    __tablename__ = "spx_candles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    ticker = Column(String(16), nullable=False, default="ES=F", index=True)
+
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=True, default=0.0)
+
+    timeframe = Column(String(8), nullable=False, default="daily")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Confidence History
 # Stores rolling ML + indicator confidence snapshots
 # ─────────────────────────────────────────────────────────────────────────────

@@ -170,12 +170,24 @@ def compute_macro_sensitivity(
         ).clip(0.0, 1.0)
 
         # SPX futures component (graceful fallback)
+        futures_comp = None
         if spx_futures_close is not None and not spx_futures_close.empty:
-            fut_ret = spx_futures_close.pct_change().reindex(idx, method="ffill").fillna(0.0)
-            futures_comp = (
-                fut_ret.abs().rolling(window, min_periods=1).mean() / 0.02
-            ).clip(0.0, 1.0)
-        else:
+            try:
+                fut_ret = spx_futures_close.pct_change()
+                if not fut_ret.index.equals(idx):
+                    fut_ret = fut_ret.reindex(idx, method="ffill")
+                fut_ret = fut_ret.fillna(0.0)
+                futures_comp = (
+                    fut_ret.abs().rolling(window, min_periods=1).mean() / 0.02
+                ).clip(0.0, 1.0)
+            except Exception as align_exc:
+                logger.warning(
+                    "ml_feature_fallback feature=macro_sensitivity_score "
+                    "reason=spx_futures_alignment_failed error=%s "
+                    "using=voo_overnight_proxy", align_exc,
+                )
+                futures_comp = None
+        if futures_comp is None:
             logger.info(
                 "ml_feature_fallback feature=macro_sensitivity_score "
                 "reason=spx_futures_unavailable using=voo_overnight_proxy"

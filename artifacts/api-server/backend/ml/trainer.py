@@ -16,7 +16,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from database.models import ModelMetadata, VooCandle, VixCandle
+from database.models import ModelMetadata, VooCandle, VixCandle, SpxCandle
 from indicators.technical import TechnicalIndicators
 from ml.long_trend import LongTrendModel
 from ml.short_trend import ShortTrendModel
@@ -64,6 +64,9 @@ class ModelTrainer:
         # ── Load VIX candles ───────────────────────────────────────────────────
         vix_df = await self._load_vix(db_session)
 
+        # ── Load SPX futures candles (real macro series; empty → fallback) ────
+        spx_close = await self._load_spx_close(db_session)
+
         # ── Compute indicators ─────────────────────────────────────────────────
         logger.info("Computing indicators for training data…")
         try:
@@ -73,6 +76,11 @@ class ModelTrainer:
         except Exception as exc:
             logger.error("Indicator computation failed: %s", exc)
             indicators = {}
+
+        # Attach the SPX futures close series so models can feed the real
+        # series into compute_macro_sensitivity (fallback preserved when empty).
+        if not spx_close.empty:
+            indicators["spx_futures_close"] = spx_close
 
         # ── Train long-trend model ─────────────────────────────────────────────
         logger.info("Training long-trend model…")
@@ -107,6 +115,9 @@ class ModelTrainer:
         except Exception as exc:
             logger.error("Short indicator computation failed: %s", exc)
             short_indicators = {}
+
+        if not spx_close.empty:
+            short_indicators["spx_futures_close"] = spx_close
 
         # ── Train short-trend model ────────────────────────────────────────────
         logger.info("Training short-trend model…")
@@ -271,6 +282,39 @@ class ModelTrainer:
         except Exception as exc:
             logger.error("_load_vix error: %s", exc)
             return pd.DataFrame()
+
+    @staticmethod
+    async def _load_spx_close(db_session: AsyncSession) -> pd.Series:
+        """
+        Load the daily SPX futures close series from the database.
+
+        Returns an empty Series when no data exists so callers keep the
+        VOO overnight-return fallback in compute_macro_sensitivity.
+        """
+        try:
+            result = await db_session.execute(
+                select(SpxCandle).where(
+                    SpxCandle.ticker == settings.SPX_FUTURES_TICKER,
+                    SpxCandle.timeframe == "daily",
+                ).order_by(SpxCandle.timestamp.asc())
+            )
+            rows = result.scalars().all()
+            if not rows:
+                logger.info(
+                    "ml_trainer_spx_unavailable — macro sensitivity will use fallback"
+                )
+                return pd.Series(dtype=float)
+
+            series = pd.Series(
+                [r.close for r in rows],
+                index=pd.to_datetime([r.timestamp for r in rows]),
+                dtype=float,
+            )
+            logger.info("Loaded %d daily SPX futures closes", len(series))
+            return series
+        except Exception as exc:
+            logger.error("_load_spx_close error: %s", exc)
+            return pd.Series(dtype=float)
 
     @staticmethod
     async def _save_metadata(

@@ -19,7 +19,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from database.models import VooCandle, VixCandle
+from database.models import VooCandle, VixCandle, SpxCandle
 from ingestion import market_calendar
 from ingestion.fetcher import DataFetcher
 
@@ -84,6 +84,11 @@ class IngestionPipeline:
         if not vix_df.empty:
             await self.store_vix_candles(vix_df, db_session, timeframe="daily")
 
+        # ── SPX futures ───────────────────────────────────────────────────────
+        spx_df = await self.fetcher.fetch_historical_spx(years=settings.HISTORY_YEARS)
+        if not spx_df.empty:
+            await self.store_spx_candles(spx_df, db_session, timeframe="daily")
+
         logger.info("Full historical fetch complete.")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -144,6 +149,21 @@ class IngestionPipeline:
                 # missing-day detection can heal downtime holes older than
                 # the last stored VIX timestamp.
                 await self.store_vix_candles(vix_df, db_session, timeframe="daily")
+
+        # ── Incremental SPX futures ───────────────────────────────────────────
+        result = await db_session.execute(
+            select(func.max(SpxCandle.timestamp)).where(
+                SpxCandle.ticker == settings.SPX_FUTURES_TICKER
+            )
+        )
+        last_spx: Optional[datetime] = result.scalar()
+
+        # Fetch a rolling window (full history when never ingested) — duplicates
+        # are skipped, so downtime holes heal automatically.
+        spx_years = 1 if last_spx else settings.HISTORY_YEARS
+        spx_df = await self.fetcher.fetch_historical_spx(years=spx_years)
+        if not spx_df.empty:
+            await self.store_spx_candles(spx_df, db_session, timeframe="daily")
 
         logger.info("Incremental update complete.")
 
@@ -516,6 +536,63 @@ class IngestionPipeline:
                 await self._backfill_missing_vix_days(missing_days, db_session)
             except Exception as exc:
                 logger.error("vix_ingest_backfill_failed error=%s", exc)
+
+    async def store_spx_candles(
+        self,
+        candles: pd.DataFrame,
+        db_session: AsyncSession,
+        timeframe: str = "daily",
+    ) -> None:
+        """
+        Persist SPX futures candles to DB, skipping duplicates.
+
+        Simpler than the VIX path (no missing-day backfill): the macro
+        sensitivity feature forward-fills over gaps, and incremental runs
+        re-fetch a rolling window that heals holes automatically.
+        """
+        if candles.empty:
+            return
+
+        ticker = settings.SPX_FUTURES_TICKER
+        inserted = 0
+        skipped = 0
+
+        result = await db_session.execute(
+            select(SpxCandle.timestamp).where(
+                SpxCandle.ticker == ticker,
+                SpxCandle.timeframe == timeframe,
+            )
+        )
+        existing_timestamps = set(row[0] for row in result.fetchall())
+
+        for ts, row in candles.sort_index().iterrows():
+            ts_naive = ts.to_pydatetime()
+            if ts_naive.tzinfo is not None:
+                ts_naive = ts_naive.replace(tzinfo=None)
+
+            if ts_naive in existing_timestamps:
+                skipped += 1
+                continue
+
+            candle = SpxCandle(
+                ticker=ticker,
+                timestamp=ts_naive,
+                open=float(row.get("open", 0.0)),
+                high=float(row.get("high", 0.0)),
+                low=float(row.get("low", 0.0)),
+                close=float(row.get("close", 0.0)),
+                volume=float(row.get("volume", 0.0)),
+                timeframe=timeframe,
+            )
+            db_session.add(candle)
+            existing_timestamps.add(ts_naive)
+            inserted += 1
+
+        await db_session.flush()
+        logger.info(
+            "SPX %s candles: inserted=%d, skipped=%d (duplicates)",
+            timeframe, inserted, skipped,
+        )
 
     async def _backfill_missing_vix_days(
         self,

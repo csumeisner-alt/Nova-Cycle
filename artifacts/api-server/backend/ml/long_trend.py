@@ -124,7 +124,10 @@ class LongTrendModel:
             ml_features.compute_volatility_regime(close, atr=atr, liquidity_class=liq_class)
         )
         macro_sens = ml_features.compute_macro_sensitivity(
-            close, open_=open_col, vix_regime=vix_regime if not vix_regime.empty else None
+            close,
+            open_=open_col,
+            vix_regime=vix_regime if not vix_regime.empty else None,
+            spx_futures_close=indicators.get("spx_futures_close"),
         )
         macro_flag = ml_features.macro_override_flag(df.index)
         overnight_weighted = ml_features.compute_overnight_return_weighted(open_col, close)
