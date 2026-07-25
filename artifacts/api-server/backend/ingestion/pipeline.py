@@ -172,6 +172,7 @@ class IngestionPipeline:
         candles: pd.DataFrame,
         db_session: AsyncSession,
         timeframe: str,
+        _is_backfill: bool = False,
     ) -> None:
         """
         Persist VOO candles to DB.
@@ -211,26 +212,30 @@ class IngestionPipeline:
         except Exception as exc:
             logger.error("ingest_duplicate_check_failed error=%s", exc)
 
-        # ── Missing-candle detection (daily only) ─────────────────────────────
-        # Detect trading days with no candle in the fetched window; log only
-        # (backfill happens naturally on the next incremental fetch).
+        # ── Missing-candle detection + targeted backfill (daily only) ─────────
+        # Detect trading days with no candle in the fetched window, then
+        # proactively re-fetch just those date ranges. Backfill failures are
+        # logged and never abort the regular ingestion run.
+        missing_days: list = []
         try:
-            if timeframe == "daily" and len(candles) > 1:
+            if timeframe == "daily" and len(candles) > 1 and not _is_backfill:
                 idx = candles.sort_index().index
                 have = {ts.date() for ts in idx}
-                missing = [
-                    d.date().isoformat()
+                missing_days = [
+                    d.date()
                     for d in pd.date_range(idx[0].date(), idx[-1].date(), freq="D")
                     if market_calendar.is_trading_day(d.date())
                     and d.date() not in have
                 ]
-                if missing:
+                if missing_days:
                     logger.warning(
                         "ingest_missing_candles timeframe=daily count=%d days=%s",
-                        len(missing), ",".join(missing[:20]),
+                        len(missing_days),
+                        ",".join(d.isoformat() for d in missing_days[:20]),
                     )
         except Exception as exc:
             logger.error("ingest_missing_check_failed error=%s", exc)
+            missing_days = []
 
         # Pre-load existing timestamps to avoid duplicate queries
         result = await db_session.execute(
@@ -294,6 +299,74 @@ class IngestionPipeline:
         logger.info(
             "VOO %s candles: inserted=%d, skipped=%d (duplicates)",
             timeframe, inserted, skipped,
+        )
+
+        # ── Targeted backfill of missing trading days ─────────────────────────
+        if missing_days:
+            try:
+                await self._backfill_missing_days(missing_days, db_session)
+            except Exception as exc:
+                logger.error("ingest_backfill_failed error=%s", exc)
+
+    @staticmethod
+    def _group_contiguous_days(days: list) -> list[tuple]:
+        """Group a sorted list of dates into (start, end) ranges where
+        consecutive entries are at most 4 calendar days apart (so weekends
+        and short holidays don't split a range)."""
+        from datetime import timedelta as _td
+
+        ranges: list[tuple] = []
+        days = sorted(days)
+        start = prev = days[0]
+        for d in days[1:]:
+            if (d - prev).days <= 4:
+                prev = d
+            else:
+                ranges.append((start, prev))
+                start = prev = d
+        ranges.append((start, prev))
+        return ranges
+
+    async def _backfill_missing_days(self, missing_days: list, db_session: AsyncSession) -> None:
+        """
+        Re-fetch and store daily candles for the given missing trading days.
+
+        Failures are logged per range and never propagate to the caller's
+        regular ingestion flow.
+        """
+        from datetime import datetime as _dt, time as _time
+
+        ranges = self._group_contiguous_days(missing_days)
+        logger.info(
+            "ingest_backfill_start days=%d ranges=%d",
+            len(missing_days), len(ranges),
+        )
+
+        filled = 0
+        for start_d, end_d in ranges:
+            try:
+                start = _dt.combine(start_d, _time.min)
+                end = _dt.combine(end_d, _time.min)
+                df = await self.fetcher.fetch_daily_range(start, end)
+                if df.empty:
+                    logger.warning(
+                        "ingest_backfill_empty range=%s→%s",
+                        start_d.isoformat(), end_d.isoformat(),
+                    )
+                    continue
+                await self.store_voo_candles(
+                    df, db_session, timeframe="daily", _is_backfill=True
+                )
+                filled += 1
+            except Exception as exc:
+                logger.error(
+                    "ingest_backfill_range_failed range=%s→%s error=%s",
+                    start_d.isoformat(), end_d.isoformat(), exc,
+                )
+
+        logger.info(
+            "ingest_backfill_complete ranges_ok=%d ranges_total=%d",
+            filled, len(ranges),
         )
 
     async def store_vix_candles(

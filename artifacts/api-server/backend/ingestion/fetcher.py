@@ -174,6 +174,41 @@ class DataFetcher:
 
         return result
 
+    async def fetch_daily_range(self, start: datetime, end: datetime) -> pd.DataFrame:
+        """
+        Fetch daily VOO candles for a specific [start, end] date range.
+        Used for targeted backfill of missing trading days.
+
+        yfinance's `end` is exclusive, so one day is added to include it.
+
+        Returns:
+            pd.DataFrame (may be empty on error) with is_extended_hours /
+            session_type columns matching the daily ingestion path.
+        """
+        ticker = settings.TICKER
+        start_str = start.strftime("%Y-%m-%d")
+        end_str = (end + timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.info("Backfill fetch: VOO daily %s → %s", start_str, end_str)
+        try:
+            df = await self._run_sync(
+                yf.download,
+                ticker,
+                start=start_str,
+                end=end_str,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+            df = self._normalise_columns(df)
+            if not df.empty:
+                df["is_extended_hours"] = False
+                df["session_type"] = "regular"
+            logger.info("Backfill fetch: %d daily candles", len(df))
+            return df
+        except Exception as exc:
+            logger.error("Error in backfill daily fetch %s→%s: %s", start_str, end_str, exc)
+            return pd.DataFrame()
+
     async def fetch_5min_candles(self, period: str = "60d") -> pd.DataFrame:
         """
         Fetch 5-minute candles with extended-hours data (prepost=True).
