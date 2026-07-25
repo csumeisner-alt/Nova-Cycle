@@ -25,7 +25,9 @@ data class DualGaugeUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     /** Currently selected ticker — only "VOO" supported, placeholder for multi-ticker */
-    val selectedTicker: String = "VOO"
+    val selectedTicker: String = "VOO",
+    /** Epoch millis of the last successful data refresh on this screen; null if none yet */
+    val lastUpdatedAtMillis: Long? = null
 )
 
 /**
@@ -65,12 +67,19 @@ class DualGaugeViewModel @Inject constructor(
             val holdResult = holdDeferred.await()
             val indicatorsResult = indicatorsDeferred.await()
 
+            // Data freshness is recorded centrally by the repository on remote success;
+            // here we only track this screen's own "Updated X ago" header label.
+            val anySuccess = listOf(longResult, shortResult, holdResult, indicatorsResult)
+                .any { it.isSuccess }
+
             _uiState.update { state ->
                 state.copy(
                     longPrediction = longResult.getOrNull() ?: state.longPrediction,
                     shortPrediction = shortResult.getOrNull() ?: state.shortPrediction,
                     holdTime = holdResult.getOrNull() ?: state.holdTime,
                     indicators = indicatorsResult.getOrNull() ?: state.indicators,
+                    lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()
+                                          else state.lastUpdatedAtMillis,
                     isLoading = false,
                     error = if (longResult.isFailure && shortResult.isFailure) {
                         longResult.exceptionOrNull()?.message ?: "Failed to load predictions"

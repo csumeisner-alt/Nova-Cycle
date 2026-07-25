@@ -3,6 +3,7 @@ package com.novacycle.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novacycle.data.remote.models.HealthzResponse
+import com.novacycle.data.repository.DataFreshnessTracker
 import com.novacycle.data.repository.NovaCycleRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
@@ -18,7 +19,9 @@ data class HealthUiState(
     /** Latest backend health snapshot; null until the first successful poll */
     val health: HealthzResponse? = null,
     /** True after several consecutive failed /healthz polls — backend unreachable */
-    val backendUnreachable: Boolean = false
+    val backendUnreachable: Boolean = false,
+    /** Epoch millis of the last successful user-visible DATA fetch (not health polls); null if none yet */
+    val lastSuccessAtMillis: Long? = null
 )
 
 /**
@@ -37,7 +40,8 @@ data class HealthUiState(
  */
 @HiltViewModel
 class HealthViewModel @Inject constructor(
-    private val repository: NovaCycleRepository
+    private val repository: NovaCycleRepository,
+    private val freshnessTracker: DataFreshnessTracker
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HealthUiState())
@@ -45,6 +49,16 @@ class HealthViewModel @Inject constructor(
 
     init {
         startHealthPolling()
+        observeFreshness()
+    }
+
+    /** Mirror the app-wide last-successful-fetch timestamp into the UI state */
+    private fun observeFreshness() {
+        viewModelScope.launch {
+            freshnessTracker.lastSuccessAtMillis.collect { ts ->
+                _uiState.update { it.copy(lastSuccessAtMillis = ts) }
+            }
+        }
     }
 
     private fun startHealthPolling() {
@@ -53,6 +67,9 @@ class HealthViewModel @Inject constructor(
             while (isActive) {
                 repository.getHealth()
                     .onSuccess { health ->
+                        // NOTE: a successful /healthz poll proves reachability only —
+                        // it must NOT advance the data-freshness timestamp, which
+                        // tracks user-visible data fetches (recorded by the repository).
                         consecutiveFailures = 0
                         _uiState.update {
                             it.copy(health = health, backendUnreachable = false)

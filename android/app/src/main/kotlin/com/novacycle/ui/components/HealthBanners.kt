@@ -52,8 +52,15 @@ fun HealthBanners(
                         color      = NovaSellRed
                     )
                     Spacer(modifier = Modifier.height(4.dp))
+                    val now = rememberTickingNow()
+                    val lastSuccess = state.lastSuccessAtMillis
                     Text(
-                        text  = "Backend unreachable — data may be stale.",
+                        text = if (lastSuccess != null) {
+                            "Backend unreachable — data may be stale. " +
+                                "Last updated ${formatRelativeAge(now, lastSuccess)}."
+                        } else {
+                            "Backend unreachable — no data received yet."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = NovaSellRed.copy(alpha = 0.9f)
                     )

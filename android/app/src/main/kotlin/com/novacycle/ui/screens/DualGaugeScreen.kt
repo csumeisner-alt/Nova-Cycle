@@ -17,6 +17,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.GaugeState
 import com.novacycle.ui.components.DualGaugeWidget
 import com.novacycle.ui.components.TickerSelector
+import com.novacycle.ui.components.formatRelativeAge
+import com.novacycle.ui.components.rememberTickingNow
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.DualGaugeViewModel
 
@@ -89,6 +91,20 @@ fun DualGaugeScreen(
                         )
                     }
                 }
+            }
+
+            // "Updated X ago" label under the header, ticking as time passes
+            val lastUpdated = uiState.lastUpdatedAtMillis
+            if (lastUpdated != null) {
+                val now = rememberTickingNow()
+                Text(
+                    text     = "Updated ${formatRelativeAge(now, lastUpdated)}",
+                    style    = MaterialTheme.typography.labelSmall,
+                    color    = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp)
+                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))

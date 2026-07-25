@@ -28,23 +28,34 @@ class NovaCycleRepository @Inject constructor(
     private val apiService: NovaCycleApiService,
     private val signalDao: SignalDao,
     private val confidenceDao: ConfidenceDao,
-    private val candleDao: CandleDao
+    private val candleDao: CandleDao,
+    private val freshnessTracker: DataFreshnessTracker
 ) {
 
+    /**
+     * Record a successful REMOTE fetch of user-visible data.
+     * Deliberately NOT called for /healthz polls (reachability is not data
+     * freshness) nor for Room cache fallbacks (cached data is not fresh).
+     */
+    private fun <T> T.recordDataFreshness(): T {
+        freshnessTracker.recordSuccess()
+        return this
+    }
+
     suspend fun getPredictionLong(ticker: String = "VOO"): Result<PredictionResponse> =
-        runCatching { apiService.predictLong(ticker) }
+        runCatching { apiService.predictLong(ticker).recordDataFreshness() }
 
     suspend fun getPredictionShort(ticker: String = "VOO"): Result<PredictionResponse> =
-        runCatching { apiService.predictShort(ticker) }
+        runCatching { apiService.predictShort(ticker).recordDataFreshness() }
 
     suspend fun getHoldTime(ticker: String = "VOO"): Result<HoldTimeResponse> =
-        runCatching { apiService.getHoldTime(ticker) }
+        runCatching { apiService.getHoldTime(ticker).recordDataFreshness() }
 
     suspend fun getConfidenceHistory(
         ticker: String = "VOO",
         window: String = "7d"
     ): Result<List<ConfidenceHistoryResponse>> = runCatching {
-        val remote = apiService.getConfidenceHistory(ticker, window)
+        val remote = apiService.getConfidenceHistory(ticker, window).recordDataFreshness()
         // Cache for offline access
         val entities = remote.map { r ->
             ConfidenceHistoryEntity(
@@ -85,7 +96,7 @@ class NovaCycleRepository @Inject constructor(
         ticker: String = "VOO",
         window: String = "30d"
     ): Result<List<SignalResponse>> = runCatching {
-        val remote = apiService.getSignalHistory(ticker, window)
+        val remote = apiService.getSignalHistory(ticker, window).recordDataFreshness()
         val entities = remote.map { r ->
             SignalHistoryEntity(
                 id = r.id,
@@ -130,13 +141,13 @@ class NovaCycleRepository @Inject constructor(
         ticker: String = "VOO",
         window: String = "30d"
     ): Result<List<FilteredSignalResponse>> =
-        runCatching { apiService.getFilteredSignalHistory(ticker, window) }
+        runCatching { apiService.getFilteredSignalHistory(ticker, window).recordDataFreshness() }
 
     suspend fun getCandles(
         ticker: String = "VOO",
         window: String = "30d"
     ): Result<List<CandleResponse>> = runCatching {
-        val remote = apiService.getVooCandles(ticker, window)
+        val remote = apiService.getVooCandles(ticker, window).recordDataFreshness()
         val entities = remote.map { r ->
             CandleEntity(
                 ticker = ticker,
@@ -175,7 +186,7 @@ class NovaCycleRepository @Inject constructor(
     }
 
     suspend fun getIndicators(ticker: String = "VOO"): Result<IndicatorResponse> =
-        runCatching { apiService.getIndicators(ticker) }
+        runCatching { apiService.getIndicators(ticker).recordDataFreshness() }
 
     /** Backend health snapshot — used to surface the degraded-predictions warning. */
     suspend fun getHealth(): Result<HealthzResponse> =
@@ -190,7 +201,7 @@ class NovaCycleRepository @Inject constructor(
         ticker: String = "VOO",
         window: String = "30d"
     ): Result<TradeHistoryResponse> =
-        runCatching { apiService.getTradeHistory(ticker, window) }
+        runCatching { apiService.getTradeHistory(ticker, window).recordDataFreshness() }
 
     /**
      * Check whether the backend still holds this token.

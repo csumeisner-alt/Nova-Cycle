@@ -98,6 +98,9 @@ android {
 }
 
 dependencies {
+    // Unit tests (data-freshness contract behind the "last updated X ago" label)
+    testImplementation("junit:junit:4.13.2")
+
     // Material Components (provides Theme.Material3 used in AndroidManifest/themes)
     implementation(libs.material)
 
