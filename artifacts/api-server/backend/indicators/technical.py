@@ -19,6 +19,20 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# New indicator configuration (VOO-only, in-memory calculations)
+ADAPTIVE_RSI_PERIODS = {
+    "macro_shock": 7,
+    "trending": 10,
+    "compressed": 21,
+    "calm": 14,
+}
+EMA_RIBBON_PERIODS = [8, 13, 21, 34, 55]
+ATR_COMPRESSION_LOOKBACK = 100
+BOLLINGER_SLOPE_WINDOW = 10
+TREND_STRENGTH_ATR_WEIGHT = 0.25
+TREND_STRENGTH_RSI_WEIGHT = 0.25
+TREND_STRENGTH_EMA_WEIGHT = 0.50
+
 
 class TechnicalIndicators:
     """Compute all technical indicators needed by the signal engine."""
@@ -491,6 +505,270 @@ class TechnicalIndicators:
             return pd.Series("NORMAL", index=vix_values.index)
 
     # ──────────────────────────────────────────────────────────────────────────
+    # Volatility regime helper (for adaptive RSI and trend strength)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _compute_volatility_regime(
+        self,
+        close: pd.Series,
+        atr: pd.Series | None = None,
+        vix_regime: pd.Series | None = None,
+    ) -> pd.Series:
+        """
+        Classify volatility into one of four regimes used by the adaptive
+        RSI and the trend-strength index. Reuses the existing ATR and VIX
+        regime series to avoid recomputing volatility primitives.
+
+        Regimes:
+          macro_shock : rolling return std dev explodes (>2x median) or
+                        VIX regime is EXTREME
+          compressed  : volatility collapses (<0.5x median) or ATR is tiny
+                        relative to price (<0.1%)
+          trending    : ATR-normalised volatility is expanding
+          calm        : none of the above
+        """
+        try:
+            ret_std = close.pct_change().rolling(20, min_periods=5).std()
+            baseline = ret_std.rolling(100, min_periods=20).median()
+            ratio = (ret_std / baseline.replace(0, np.nan)).replace(
+                [np.inf, -np.inf], np.nan
+            ).fillna(1.0)
+
+            atr_norm = pd.Series(0.0, index=close.index)
+            if atr is not None and not atr.empty:
+                atr_norm = (
+                    (atr.reindex(close.index) / close.replace(0, np.nan))
+                    .replace([np.inf, -np.inf], np.nan)
+                    .fillna(0.0)
+                )
+
+            macro = ratio > 2.0
+            if vix_regime is not None and not vix_regime.empty:
+                vix_aligned = vix_regime.reindex(close.index, method="ffill").fillna(
+                    "NORMAL"
+                )
+                macro = macro | (vix_aligned == "EXTREME")
+
+            compressed = (ratio < 0.5) | (atr_norm < 0.001)
+            trending = atr_norm > atr_norm.rolling(20, min_periods=5).mean()
+
+            regimes = np.select(
+                [macro, compressed, trending],
+                ["macro_shock", "compressed", "trending"],
+                default="calm",
+            )
+            return pd.Series(regimes, index=close.index)
+        except Exception as exc:
+            logger.error("compute_volatility_regime error: %s", exc)
+            return pd.Series("calm", index=close.index)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Adaptive RSI
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def compute_adaptive_rsi(
+        self,
+        prices: pd.Series,
+        volatility_regime: pd.Series | None = None,
+        base_period: int = 14,
+    ) -> pd.Series:
+        """
+        RSI whose lookback period adapts to the current volatility regime.
+
+        Period mapping:
+          macro_shock → 7  (very sensitive)
+          trending    → 10
+          compressed  → 21 (smoother, range-bound)
+          calm        → base_period (14)
+
+        Falls back to the standard RSI on any error.
+        """
+        try:
+            if volatility_regime is None or volatility_regime.empty:
+                return self.compute_rsi(prices, base_period)
+
+            # Precompute only the distinct periods needed by the regime map.
+            rsi_by_period = {
+                period: self.compute_rsi(prices, period)
+                for period in set(ADAPTIVE_RSI_PERIODS.values())
+            }
+
+            regime = (
+                volatility_regime.reindex(prices.index, method="ffill")
+                .fillna("calm")
+            )
+            default_period = ADAPTIVE_RSI_PERIODS.get("calm", base_period)
+
+            adaptive = np.select(
+                [
+                    regime == "macro_shock",
+                    regime == "trending",
+                    regime == "compressed",
+                    regime == "calm",
+                ],
+                [
+                    rsi_by_period[ADAPTIVE_RSI_PERIODS["macro_shock"]],
+                    rsi_by_period[ADAPTIVE_RSI_PERIODS["trending"]],
+                    rsi_by_period[ADAPTIVE_RSI_PERIODS["compressed"]],
+                    rsi_by_period[default_period],
+                ],
+                default=rsi_by_period[default_period],
+            )
+            return pd.Series(adaptive, index=prices.index).fillna(50.0)
+        except Exception as exc:
+            logger.error("compute_adaptive_rsi error: %s", exc)
+            return self.compute_rsi(prices, base_period)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # EMA Ribbon Alignment
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def compute_ema_ribbon(self, prices: pd.Series) -> dict:
+        """
+        EMA ribbon (8, 13, 21, 34, 55) and its alignment state.
+
+        Alignment:
+          bullish : shorter EMAs above longer EMAs (8 > 13 > 21 > 34 > 55)
+          bearish : shorter EMAs below longer EMAs (8 < 13 < 21 < 34 < 55)
+          neutral : mixed / incomplete
+        """
+        try:
+            emas = {
+                f"ema{p}": prices.ewm(span=p, adjust=False).mean()
+                for p in EMA_RIBBON_PERIODS
+            }
+            e8, e13, e21, e34, e55 = (
+                emas["ema8"],
+                emas["ema13"],
+                emas["ema21"],
+                emas["ema34"],
+                emas["ema55"],
+            )
+
+            bullish = (e8 > e13) & (e13 > e21) & (e21 > e34) & (e34 > e55)
+            bearish = (e8 < e13) & (e13 < e21) & (e21 < e34) & (e34 < e55)
+
+            alignment = np.select(
+                [bullish, bearish],
+                ["bullish", "bearish"],
+                default="neutral",
+            )
+            emas["alignment"] = pd.Series(alignment, index=prices.index)
+            return emas
+        except Exception as exc:
+            logger.error("compute_ema_ribbon error: %s", exc)
+            emas = {
+                f"ema{p}": pd.Series(np.nan, index=prices.index)
+                for p in EMA_RIBBON_PERIODS
+            }
+            emas["alignment"] = pd.Series("neutral", index=prices.index)
+            return emas
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # ATR Compression
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def compute_atr_compression_score(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        period: int = 14,
+        lookback: int = ATR_COMPRESSION_LOOKBACK,
+    ) -> pd.Series:
+        """
+        ATR compression score in [0, 1].
+
+        Detects low-volatility squeezes by comparing the current ATR-normalised
+        range to its recent rolling median. A score near 1 means the current
+        volatility is far below its baseline (a squeeze); a score near 0 means
+        volatility is at or above baseline.
+        """
+        try:
+            atr = self.compute_atr(high, low, close, period)
+            atr_norm = (
+                (atr / close.replace(0, np.nan))
+                .replace([np.inf, -np.inf], np.nan)
+                .fillna(0.0)
+            )
+            median_atr_norm = atr_norm.rolling(lookback, min_periods=period).median()
+            score = 1.0 - (atr_norm / median_atr_norm.replace(0, np.nan))
+            return score.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(0.0, 1.0)
+        except Exception as exc:
+            logger.error("compute_atr_compression_score error: %s", exc)
+            return pd.Series(0.0, index=close.index)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Bollinger Band Slope
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def compute_bollinger_slope(
+        self,
+        prices: pd.Series,
+        bollinger_data: dict | None = None,
+        window: int = BOLLINGER_SLOPE_WINDOW,
+    ) -> pd.Series:
+        """
+        Slope of the Bollinger middle band (SMA20) normalised by its own level.
+
+        Reuses existing Bollinger band values when they are passed in; otherwise
+        recomputes the middle band only. Positive values indicate upward
+        directional pressure; negative values indicate downward pressure.
+        """
+        try:
+            if bollinger_data is not None and "middle" in bollinger_data:
+                middle = bollinger_data["middle"]
+            else:
+                middle = prices.rolling(20, min_periods=1).mean()
+            middle = middle.reindex(prices.index)
+            slope = middle.diff(window) / middle.shift(window).replace(0, np.nan)
+            return slope.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        except Exception as exc:
+            logger.error("compute_bollinger_slope error: %s", exc)
+            return pd.Series(0.0, index=prices.index)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Trend-Strength Index
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def compute_trend_strength_index(
+        self,
+        ema_alignment: pd.Series,
+        rsi: pd.Series,
+        atr_compression_score: pd.Series,
+    ) -> pd.Series:
+        """
+        Lightweight trend-strength score in [0, 1] combining EMA ribbon
+        alignment, RSI directional pressure, and ATR compression.
+
+        Components:
+          EMA alignment        : bullish=+1, bearish=-1, neutral=0
+          RSI pressure         : (RSI - 50) / 50, clipped to [-1, 1]
+          ATR compression      : 1 - 2*score (high compression → weak trend)
+
+        Weights: EMA 50%, RSI 25%, ATR 25%. The combined score is shifted to
+        [0, 1].
+        """
+        try:
+            ema_score = (
+                ema_alignment.map({"bullish": 1.0, "bearish": -1.0, "neutral": 0.0})
+                .fillna(0.0)
+            )
+            rsi_score = ((rsi - 50.0) / 50.0).fillna(0.0).clip(-1.0, 1.0)
+            atr_score = (1.0 - 2.0 * atr_compression_score).clip(-1.0, 1.0)
+
+            combined = (
+                TREND_STRENGTH_EMA_WEIGHT * ema_score
+                + TREND_STRENGTH_RSI_WEIGHT * rsi_score
+                + TREND_STRENGTH_ATR_WEIGHT * atr_score
+            )
+            score = (combined + 1.0) / 2.0
+            return score.clip(0.0, 1.0)
+        except Exception as exc:
+            logger.error("compute_trend_strength_index error: %s", exc)
+            return pd.Series(0.5, index=ema_alignment.index)
+
+    # ──────────────────────────────────────────────────────────────────────────
     # Time-decay weighting
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -613,11 +891,37 @@ class TechnicalIndicators:
             result["williams_r"] = self.compute_williams_r(high, low, close)
             result["atr_all"] = self.compute_atr(high, low, close)
 
+            # ── VOO-only upgraded indicators (in-memory, backward-compatible) ──────
+            volatility_regime = self._compute_volatility_regime(
+                close,
+                atr=result["atr"].reindex(close.index, method="ffill"),
+                vix_regime=result["vix_regime"].reindex(close.index, method="ffill"),
+            )
+            result["adaptive_rsi"] = self.compute_adaptive_rsi(close, volatility_regime)
+            result["ema_ribbon"] = self.compute_ema_ribbon(close)
+            result["atr_compression_score"] = self.compute_atr_compression_score(
+                high, low, close
+            )
+            result["bollinger_slope"] = self.compute_bollinger_slope(
+                close, result["bollinger"]
+            )
+            result["trend_strength_index"] = self.compute_trend_strength_index(
+                result["ema_ribbon"]["alignment"],
+                result["rsi"],
+                result["atr_compression_score"],
+            )
+
             # ── Scalars (latest values) ────────────────────────────────────────
             def _last(series: pd.Series) -> Optional[float]:
                 if series.empty or series.isna().all():
                     return None
                 return float(series.dropna().iloc[-1])
+
+            def _last_label(series: pd.Series) -> Optional[str]:
+                if series.empty or series.isna().all():
+                    return None
+                val = series.dropna().iloc[-1]
+                return str(val) if val is not None else None
 
             result["latest"] = {
                 "close": _last(close),
@@ -643,6 +947,12 @@ class TechnicalIndicators:
                 "williams_r": _last(result["williams_r"]),
                 "vix": result.get("vix_latest"),
                 "vix_regime": result.get("vix_regime_latest"),
+                # New VOO-only upgraded indicators
+                "adaptive_rsi": _last(result["adaptive_rsi"]),
+                "ema_ribbon_alignment": _last_label(result["ema_ribbon"]["alignment"]),
+                "atr_compression_score": _last(result["atr_compression_score"]),
+                "bollinger_slope": _last(result["bollinger_slope"]),
+                "trend_strength_index": _last(result["trend_strength_index"]),
             }
 
             # ── Return metrics ─────────────────────────────────────────────────
