@@ -269,9 +269,28 @@ class IngestionPipeline:
 
             if session_type == "pre_market" and prev_close is not None:
                 open_price = float(row.get("open", 0.0))
-                gap_info = await self.fetcher.detect_gap(prev_close, open_price)
+                # Pass the same day's regular-session candles (if already in
+                # this frame) so detect_gap can compute real gap_momentum.
+                # gap_momentum is additive and not persisted (no schema
+                # change); it is logged here and recomputed at read time by
+                # /api/gap_status.
+                post_open = None
+                try:
+                    if "session_type" in candles.columns:
+                        same_day = candles.index.normalize() == pd.Timestamp(ts_naive).normalize()
+                        post_open = candles[same_day & (candles["session_type"] == "regular")]
+                except Exception:
+                    post_open = None
+                gap_info = await self.fetcher.detect_gap(
+                    prev_close, open_price, post_open_candles=post_open
+                )
                 gap_percent = gap_info["gap_percent"]
                 gap_type = gap_info["gap_type"]
+                if gap_info.get("gap_momentum") is not None:
+                    logger.info(
+                        "gap_momentum ts=%s gap_percent=%.4f momentum=%.4f",
+                        ts_naive.isoformat(), gap_percent, gap_info["gap_momentum"],
+                    )
 
             # Update prev_close for regular-session closing bars
             if session_type == "regular":

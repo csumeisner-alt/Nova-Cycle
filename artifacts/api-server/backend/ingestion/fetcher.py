@@ -249,7 +249,10 @@ class DataFetcher:
             return pd.DataFrame()
 
     async def detect_gap(
-        self, prev_close: float, premarket_open: float
+        self,
+        prev_close: float,
+        premarket_open: float,
+        post_open_candles: Optional[pd.DataFrame] = None,
     ) -> dict:
         """
         Calculate the overnight gap.
@@ -268,12 +271,16 @@ class DataFetcher:
             macro : |GapPercent| > MACRO_GAP_THRESHOLD     (default 1.0 %)
             minor : otherwise (between micro and macro)
             none  : GapPercent == 0
-          gap_momentum: placeholder (None) — reserved for future
-            follow-through measurement; always present in the dict.
+          gap_momentum: real follow-through measurement (additive).
+            When `post_open_candles` (the day's regular-session 5-min
+            candles, oldest first) contains at least
+            GAP_MOMENTUM_CANDLES rows and the gap is non-zero, this is
+            computed by compute_gap_momentum(); otherwise it is None.
+            Always present in the dict.
 
         Returns:
             {"gap_percent": float, "gap_type": str,
-             "gap_class": str, "gap_momentum": None}
+             "gap_class": str, "gap_momentum": Optional[float]}
         """
         try:
             if prev_close == 0:
@@ -297,7 +304,7 @@ class DataFetcher:
                 "gap_percent": round(gap_pct, 4),
                 "gap_type": gap_type,
                 "gap_class": self.classify_gap_magnitude(gap_pct),
-                "gap_momentum": None,
+                "gap_momentum": self.compute_gap_momentum(gap_pct, post_open_candles),
             }
         except Exception as exc:
             logger.error("Error detecting gap: %s", exc)
@@ -307,6 +314,52 @@ class DataFetcher:
                 "gap_class": "none",
                 "gap_momentum": None,
             }
+
+    # Number of post-open regular-session 5-min candles required to measure
+    # gap follow-through (6 × 5 min = first 30 minutes of the regular session).
+    GAP_MOMENTUM_CANDLES: int = 6
+
+    @classmethod
+    def compute_gap_momentum(
+        cls, gap_pct: float, post_open_candles: Optional[pd.DataFrame]
+    ) -> Optional[float]:
+        """
+        Compute overnight-gap follow-through momentum (additive metric).
+
+        Formula:
+          Momentum = sign(GapPercent) ×
+                     (Close_N − Open_1) / Open_1 × 100
+
+          where Open_1 is the open of the first regular-session 5-min candle
+          and Close_N is the close of the GAP_MOMENTUM_CANDLES-th candle
+          (i.e. price movement over the first 30 minutes after the open,
+          signed relative to the gap direction).
+
+        Interpretation:
+          > 0 → price continued in the gap's direction (follow-through)
+          < 0 → price moved against the gap (fade)
+
+        Returns None (never raises) when:
+          - gap_pct is 0 (no gap to follow through on)
+          - post_open_candles is None/empty or has fewer than
+            GAP_MOMENTUM_CANDLES rows
+          - the first candle's open is 0 or data is malformed
+        """
+        try:
+            if not gap_pct:
+                return None
+            if post_open_candles is None or len(post_open_candles) < cls.GAP_MOMENTUM_CANDLES:
+                return None
+            candles = post_open_candles.sort_index()
+            open_1 = float(candles.iloc[0]["open"])
+            close_n = float(candles.iloc[cls.GAP_MOMENTUM_CANDLES - 1]["close"])
+            if open_1 == 0 or pd.isna(open_1) or pd.isna(close_n):
+                return None
+            direction = 1.0 if gap_pct > 0 else -1.0
+            return round(direction * (close_n - open_1) / open_1 * 100.0, 4)
+        except Exception as exc:
+            logger.error("Error computing gap momentum: %s", exc)
+            return None
 
     @staticmethod
     def classify_gap_magnitude(gap_pct: float) -> str:

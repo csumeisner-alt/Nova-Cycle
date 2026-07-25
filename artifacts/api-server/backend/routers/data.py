@@ -161,6 +161,61 @@ async def _load_vix_df(db: AsyncSession, limit: int = 300) -> pd.DataFrame:
     return df
 
 
+async def _compute_gap_momentum(db: AsyncSession) -> Optional[float]:
+    """
+    Compute gap follow-through momentum at read time (additive; no schema
+    changes — nothing is persisted).
+
+    Finds the most recent pre-market 5-min candle carrying a non-zero
+    gap_percent, loads that day's regular-session 5-min candles, and applies
+    DataFetcher.compute_gap_momentum (price movement over the first 30
+    minutes after the open, signed by the gap direction).
+
+    Returns None when there is no gap candle or not enough post-open candles.
+    Never raises.
+    """
+    try:
+        result = await db.execute(
+            select(VooCandle)
+            .where(
+                VooCandle.ticker == settings.TICKER,
+                VooCandle.timeframe == "5min",
+                VooCandle.session_type == "pre_market",
+                VooCandle.gap_percent != 0.0,
+            )
+            .order_by(VooCandle.timestamp.desc())
+            .limit(1)
+        )
+        gap_candle = result.scalars().first()
+        if not gap_candle or not gap_candle.timestamp:
+            return None
+
+        day_start = datetime.combine(gap_candle.timestamp.date(), datetime.min.time())
+        day_end = day_start + timedelta(days=1)
+        result = await db.execute(
+            select(VooCandle)
+            .where(
+                VooCandle.ticker == settings.TICKER,
+                VooCandle.timeframe == "5min",
+                VooCandle.session_type == "regular",
+                VooCandle.timestamp >= day_start,
+                VooCandle.timestamp < day_end,
+            )
+            .order_by(VooCandle.timestamp.asc())
+            .limit(DataFetcher.GAP_MOMENTUM_CANDLES)
+        )
+        rows = result.scalars().all()
+        if not rows:
+            return None
+        df = pd.DataFrame(
+            [{"timestamp": r.timestamp, "open": r.open, "close": r.close} for r in rows]
+        ).set_index("timestamp")
+        return DataFetcher.compute_gap_momentum(gap_candle.gap_percent, df)
+    except Exception as exc:
+        logger.error("_compute_gap_momentum error: %s", exc)
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,6 +377,10 @@ async def get_gap_status(
 
     gap_percent: GapPercent = (PreMarketOpen - PreviousClose) / PreviousClose × 100
     gap_type:    'gap_up' | 'gap_down' | 'none'
+    gap_momentum (additive): follow-through of the most recent non-zero gap,
+      computed at read time from that day's first 30 minutes of regular-session
+      5-min candles (see DataFetcher.compute_gap_momentum). Null when there is
+      no gap or not enough post-open candles yet.
     """
     _validate_ticker(ticker)
 
@@ -369,7 +428,7 @@ async def get_gap_status(
             "gap_type": latest.gap_type or "none",
             # Additive fields (computed at read time; existing fields unchanged)
             "gap_class": DataFetcher.classify_gap_magnitude(gap_percent),
-            "gap_momentum": None,
+            "gap_momentum": await _compute_gap_momentum(db),
             "timestamp": latest.timestamp.isoformat() if latest.timestamp else None,
             "session_type": latest.session_type,
             "close": latest.close,
