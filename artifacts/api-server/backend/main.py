@@ -18,6 +18,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from database.db import create_tables, get_session_factory
 from database.maintenance import reclassify_session_labels
 from ingestion.pipeline import IngestionPipeline
+from ml.trainer import ModelTrainer
+from ml.training_status import record_training_result
 from routers import predictions, data, history, notifications
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +30,7 @@ logger = logging.getLogger("novacycle")
 # ---------------------------------------------------------------------------
 scheduler = AsyncIOScheduler()
 pipeline = IngestionPipeline()
+trainer = ModelTrainer()
 
 
 @asynccontextmanager
@@ -61,6 +64,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Data initialization warning (will retry on schedule): {e}")
 
+        # Startup retrain check: catch up if models are stale (>7 days) or missing.
+        await _run_weekly_retrain()
+
     asyncio.create_task(_init_pipeline())
 
     # 3. Configure APScheduler for incremental updates
@@ -93,6 +99,23 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
+    # Weekly retrain check — Sundays 03:00 ET (market closed). retrain_if_needed()
+    # is a no-op when models were trained within the last 7 days, so running it
+    # both at startup and weekly is safe.
+    scheduler.add_job(
+        _run_weekly_retrain,
+        trigger=CronTrigger(
+            day_of_week="sun",
+            hour=3,
+            minute=0,
+            timezone="America/New_York"
+        ),
+        id="weekly_retrain",
+        name="Weekly model retrain check",
+        replace_existing=True,
+        misfire_grace_time=3600
+    )
+
     scheduler.start()
     logger.info("APScheduler started.")
 
@@ -123,6 +146,30 @@ async def _run_daily_update():
             await session.commit()
     except Exception as e:
         logger.error(f"Daily update failed: {e}")
+
+
+async def _run_weekly_retrain():
+    """Scheduled task: retrain models if they are older than the weekly threshold.
+
+    Failures are recorded in the training-status file so /api/healthz reports
+    a degraded training state instead of failing silently.
+    """
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            retrained = await trainer.retrain_if_needed(session)
+            await session.commit()
+        if retrained:
+            logger.info("Weekly retrain check: retraining performed.")
+        else:
+            logger.info("Weekly retrain check: models up-to-date.")
+    except Exception as e:
+        logger.error(f"Weekly retrain failed: {e}")
+        # Surface the failure through the training-status health flag.
+        for model_name in ("long_trend", "short_trend"):
+            record_training_result(
+                model_name, success=False, error=f"Weekly retrain job failed: {e}"
+            )
 
 
 # ---------------------------------------------------------------------------
