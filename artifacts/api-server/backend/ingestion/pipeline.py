@@ -39,14 +39,49 @@ _last_5min_recovery_status: dict = {
 
 
 def get_5min_recovery_status() -> dict:
-    """Return a copy of the last 5-min stall recovery attempt summary."""
-    return dict(_last_5min_recovery_status)
+    """Return the last 5-min stall recovery attempt summary for /healthz.
+
+    Uses the in-memory record when one exists (an attempt happened this
+    process lifetime); otherwise falls back to the persisted record so a
+    backend restart does not hide evidence that a recovery fired or failed
+    shortly before the restart. Always includes the persisted rolling
+    history and cumulative failure count. Never raises.
+    """
+    status = dict(_last_5min_recovery_status)
+    try:
+        from ingestion.recovery_history import get_persisted_recovery_status
+
+        persisted = get_persisted_recovery_status()
+        if status.get("last_attempt_at") is None and persisted["last_attempt"]:
+            last = persisted["last_attempt"]
+            status["last_attempt_at"] = last.get("last_attempt_at")
+            status["outcome"] = last.get("outcome")
+            status["bars_fetched"] = last.get("bars_fetched")
+            status["from_previous_run"] = True
+        else:
+            status["from_previous_run"] = False
+        status["history"] = persisted["history"]
+        status["failure_count"] = persisted["failure_count"]
+    except Exception as exc:
+        logger.error("recovery_status persisted lookup failed: %s", exc)
+        status.setdefault("from_previous_run", False)
+        status.setdefault("history", [])
+        status.setdefault("failure_count", 0)
+    return status
 
 
 def _record_5min_recovery(outcome: str, at: datetime, bars_fetched: Optional[int]) -> None:
     _last_5min_recovery_status["last_attempt_at"] = at.isoformat()
     _last_5min_recovery_status["outcome"] = outcome
     _last_5min_recovery_status["bars_fetched"] = bars_fetched
+    # Persist so the record (and rolling history / failure count) survives
+    # a backend restart. Never raises.
+    try:
+        from ingestion.recovery_history import record_recovery_attempt
+
+        record_recovery_attempt(outcome, at.isoformat(), bars_fetched)
+    except Exception as exc:
+        logger.error("recovery_status persist failed: %s", exc)
 
 
 class IngestionPipeline:
