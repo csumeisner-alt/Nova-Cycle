@@ -11,7 +11,7 @@ NOTE: "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
@@ -212,31 +212,6 @@ class IngestionPipeline:
         except Exception as exc:
             logger.error("ingest_duplicate_check_failed error=%s", exc)
 
-        # ── Missing-candle detection + targeted backfill (daily only) ─────────
-        # Detect trading days with no candle in the fetched window, then
-        # proactively re-fetch just those date ranges. Backfill failures are
-        # logged and never abort the regular ingestion run.
-        missing_days: list = []
-        try:
-            if timeframe == "daily" and len(candles) > 1 and not _is_backfill:
-                idx = candles.sort_index().index
-                have = {ts.date() for ts in idx}
-                missing_days = [
-                    d.date()
-                    for d in pd.date_range(idx[0].date(), idx[-1].date(), freq="D")
-                    if market_calendar.is_trading_day(d.date())
-                    and d.date() not in have
-                ]
-                if missing_days:
-                    logger.warning(
-                        "ingest_missing_candles timeframe=daily count=%d days=%s",
-                        len(missing_days),
-                        ",".join(d.isoformat() for d in missing_days[:20]),
-                    )
-        except Exception as exc:
-            logger.error("ingest_missing_check_failed error=%s", exc)
-            missing_days = []
-
         # Pre-load existing timestamps to avoid duplicate queries
         result = await db_session.execute(
             select(VooCandle.timestamp).where(
@@ -245,6 +220,50 @@ class IngestionPipeline:
             )
         )
         existing_timestamps = set(row[0] for row in result.fetchall())
+
+        # ── Missing-candle detection + targeted backfill (daily + 5min) ───────
+        # Detect trading days with no candle in the covered window, then
+        # proactively re-fetch just those date ranges. Backfill failures are
+        # logged and never abort the regular ingestion run.
+        missing_days: list = []
+        try:
+            if timeframe in ("daily", "5min") and len(candles) >= 1 and not _is_backfill:
+                idx = candles.sort_index().index
+                have = {ts.date() for ts in idx}
+                win_start = idx[0].date()
+                win_end = idx[-1].date()
+
+                if timeframe == "5min":
+                    # Also count sessions already in the DB, so gaps caused
+                    # by downtime (days present in neither the DB nor this
+                    # fetched frame) are detected. Clamp the window to
+                    # yfinance's ~60-day 5-min fetch limit and never look
+                    # earlier than the oldest 5-min session we know about.
+                    db_days = {ts.date() for ts in existing_timestamps}
+                    have |= db_days
+                    fetch_floor = (
+                        datetime.now(timezone.utc).date() - timedelta(days=58)
+                    )
+                    earliest_known = min(have) if have else win_start
+                    win_start = max(earliest_known, fetch_floor)
+
+                if win_start <= win_end:
+                    missing_days = [
+                        d.date()
+                        for d in pd.date_range(win_start, win_end, freq="D")
+                        if market_calendar.is_trading_day(d.date())
+                        and d.date() not in have
+                    ]
+                if missing_days:
+                    logger.warning(
+                        "ingest_missing_candles timeframe=%s count=%d days=%s",
+                        timeframe,
+                        len(missing_days),
+                        ",".join(d.isoformat() for d in missing_days[:20]),
+                    )
+        except Exception as exc:
+            logger.error("ingest_missing_check_failed error=%s", exc)
+            missing_days = []
 
         # Iterate sorted by time (oldest first for gap calc)
         prev_close: Optional[float] = None
@@ -323,9 +342,11 @@ class IngestionPipeline:
         # ── Targeted backfill of missing trading days ─────────────────────────
         if missing_days:
             try:
-                await self._backfill_missing_days(missing_days, db_session)
+                await self._backfill_missing_days(
+                    missing_days, db_session, timeframe=timeframe
+                )
             except Exception as exc:
-                logger.error("ingest_backfill_failed error=%s", exc)
+                logger.error("ingest_backfill_failed timeframe=%s error=%s", timeframe, exc)
 
     @staticmethod
     def _group_contiguous_days(days: list) -> list[tuple]:
@@ -346,9 +367,15 @@ class IngestionPipeline:
         ranges.append((start, prev))
         return ranges
 
-    async def _backfill_missing_days(self, missing_days: list, db_session: AsyncSession) -> None:
+    async def _backfill_missing_days(
+        self,
+        missing_days: list,
+        db_session: AsyncSession,
+        timeframe: str = "daily",
+    ) -> None:
         """
-        Re-fetch and store daily candles for the given missing trading days.
+        Re-fetch and store candles for the given missing trading days, for
+        either the daily or 5-min timeframe.
 
         Failures are logged per range and never propagate to the caller's
         regular ingestion flow.
@@ -357,8 +384,8 @@ class IngestionPipeline:
 
         ranges = self._group_contiguous_days(missing_days)
         logger.info(
-            "ingest_backfill_start days=%d ranges=%d",
-            len(missing_days), len(ranges),
+            "ingest_backfill_start timeframe=%s days=%d ranges=%d",
+            timeframe, len(missing_days), len(ranges),
         )
 
         filled = 0
@@ -366,26 +393,29 @@ class IngestionPipeline:
             try:
                 start = _dt.combine(start_d, _time.min)
                 end = _dt.combine(end_d, _time.min)
-                df = await self.fetcher.fetch_daily_range(start, end)
+                if timeframe == "5min":
+                    df = await self.fetcher.fetch_5min_range(start, end)
+                else:
+                    df = await self.fetcher.fetch_daily_range(start, end)
                 if df.empty:
                     logger.warning(
-                        "ingest_backfill_empty range=%s→%s",
-                        start_d.isoformat(), end_d.isoformat(),
+                        "ingest_backfill_empty timeframe=%s range=%s→%s",
+                        timeframe, start_d.isoformat(), end_d.isoformat(),
                     )
                     continue
                 await self.store_voo_candles(
-                    df, db_session, timeframe="daily", _is_backfill=True
+                    df, db_session, timeframe=timeframe, _is_backfill=True
                 )
                 filled += 1
             except Exception as exc:
                 logger.error(
-                    "ingest_backfill_range_failed range=%s→%s error=%s",
-                    start_d.isoformat(), end_d.isoformat(), exc,
+                    "ingest_backfill_range_failed timeframe=%s range=%s→%s error=%s",
+                    timeframe, start_d.isoformat(), end_d.isoformat(), exc,
                 )
 
         logger.info(
-            "ingest_backfill_complete ranges_ok=%d ranges_total=%d",
-            filled, len(ranges),
+            "ingest_backfill_complete timeframe=%s ranges_ok=%d ranges_total=%d",
+            timeframe, filled, len(ranges),
         )
 
     async def store_vix_candles(

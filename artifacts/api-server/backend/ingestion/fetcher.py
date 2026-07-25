@@ -209,6 +209,44 @@ class DataFetcher:
             logger.error("Error in backfill daily fetch %s→%s: %s", start_str, end_str, exc)
             return pd.DataFrame()
 
+    async def fetch_5min_range(self, start: datetime, end: datetime) -> pd.DataFrame:
+        """
+        Fetch 5-minute VOO candles (prepost=True) for a specific [start, end]
+        date range. Used for targeted backfill of missing intraday sessions
+        inside yfinance's 60-day 5-min window.
+
+        yfinance's `end` is exclusive, so one day is added to include it.
+
+        Returns:
+            pd.DataFrame (may be empty on error) with is_extended_hours /
+            session_type columns matching the regular 5-min ingestion path.
+        """
+        ticker = settings.TICKER
+        start_str = start.strftime("%Y-%m-%d")
+        end_str = (end + timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.info("Backfill fetch: VOO 5min %s → %s", start_str, end_str)
+        try:
+            df = await self._run_sync(
+                yf.download,
+                ticker,
+                start=start_str,
+                end=end_str,
+                interval="5m",
+                prepost=True,
+                auto_adjust=True,
+                progress=False,
+            )
+            df = self._normalise_columns(df)
+            if not df.empty:
+                sessions = [self._classify_session(ts) for ts in df.index]
+                df["is_extended_hours"] = [s[0] for s in sessions]
+                df["session_type"] = [s[1] for s in sessions]
+            logger.info("Backfill fetch: %d 5-min candles", len(df))
+            return df
+        except Exception as exc:
+            logger.error("Error in backfill 5-min fetch %s→%s: %s", start_str, end_str, exc)
+            return pd.DataFrame()
+
     async def fetch_5min_candles(self, period: str = "60d") -> pd.DataFrame:
         """
         Fetch 5-minute candles with extended-hours data (prepost=True).
