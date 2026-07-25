@@ -111,6 +111,35 @@ fun DualGaugeScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
+            // ── Backend-unreachable notice ───────────────────────────────
+            // Shown after several consecutive failed /healthz polls; visually
+            // distinct (red outline card) from the amber degraded banner.
+            if (uiState.backendUnreachable) {
+                OutlinedCard(
+                    colors = CardDefaults.outlinedCardColors(
+                        containerColor = NovaSellRed.copy(alpha = 0.08f)
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NovaSellRed),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text       = "🔌 Backend unreachable",
+                            style      = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color      = NovaSellRed
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text  = "Backend unreachable — data may be stale.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = NovaSellRed.copy(alpha = 0.9f)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             // ── Degraded-predictions warning banner ──────────────────────
             // Mirrors the web status page: shown while /healthz reports
             // status "degraded", naming the affected model(s) and alerts.
