@@ -657,192 +657,159 @@ class IngestionPipeline:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SPX futures staleness check (module-level: shared by ingestion + healthz)
+# Generic feed staleness check (module-level: shared by ingestion + healthz)
 # ─────────────────────────────────────────────────────────────────────────────
+
+async def _check_feed_staleness(
+    db_session: AsyncSession,
+    *,
+    model,
+    ticker: str,
+    max_lag: int,
+    feed_key: str,
+    missing_detail: str,
+    lag_detail: str,
+    log_event: str,
+) -> dict:
+    """
+    Generic quiet-data-stop detector for a daily candle feed.
+
+    Compares the latest stored daily candle of `model`/`ticker` against the
+    latest VOO daily trading day. When the feed candle lags by more than
+    `max_lag` *trading days* (or is missing entirely while VOO data exists),
+    the feed has silently gone stale.
+
+    Logs a WARNING (event name `log_event`) when stale and returns a
+    structured dict for the health endpoint:
+
+        {
+            "stale": bool,
+            "latest_<feed_key>": Optional[str],  # ISO date
+            "latest_voo": Optional[str],         # ISO date
+            "lag_trading_days": Optional[int],
+            "max_lag_trading_days": int,
+            "detail": Optional[str],             # set when stale
+        }
+
+    `missing_detail` is used verbatim when no feed candles exist; `lag_detail`
+    is a format string receiving latest_feed, latest_voo, lag, and max_lag.
+    """
+    result = await db_session.execute(
+        select(func.max(model.timestamp)).where(
+            model.ticker == ticker,
+            model.timeframe == "daily",
+        )
+    )
+    latest_feed: Optional[datetime] = result.scalar()
+
+    result = await db_session.execute(
+        select(func.max(VooCandle.timestamp)).where(
+            VooCandle.ticker == settings.TICKER,
+            VooCandle.timeframe == "daily",
+        )
+    )
+    latest_voo: Optional[datetime] = result.scalar()
+
+    latest_key = f"latest_{feed_key}"
+    status: dict = {
+        "stale": False,
+        latest_key: latest_feed.date().isoformat() if latest_feed else None,
+        "latest_voo": latest_voo.date().isoformat() if latest_voo else None,
+        "lag_trading_days": None,
+        "max_lag_trading_days": max_lag,
+        "detail": None,
+    }
+
+    if latest_voo is None:
+        # No VOO reference data yet — nothing meaningful to compare against.
+        return status
+
+    if latest_feed is None:
+        status["stale"] = True
+        status["detail"] = missing_detail
+        logger.warning(
+            "%s latest_%s=none latest_voo=%s — %s",
+            log_event, feed_key, status["latest_voo"], status["detail"],
+        )
+        return status
+
+    # Count trading days in (latest_feed, latest_voo]
+    lag = 0
+    if latest_feed.date() < latest_voo.date():
+        for d in pd.date_range(
+            latest_feed.date() + timedelta(days=1), latest_voo.date(), freq="D"
+        ):
+            if market_calendar.is_trading_day(d.date()):
+                lag += 1
+    status["lag_trading_days"] = lag
+
+    if lag > max_lag:
+        status["stale"] = True
+        status["detail"] = lag_detail.format(
+            latest_feed=status[latest_key],
+            latest_voo=status["latest_voo"],
+            lag=lag,
+            max_lag=max_lag,
+        )
+        logger.warning(
+            "%s latest_%s=%s latest_voo=%s lag_trading_days=%d max=%d — %s",
+            log_event, feed_key, status[latest_key], status["latest_voo"],
+            lag, max_lag, status["detail"],
+        )
+    return status
+
 
 async def check_spx_staleness(db_session: AsyncSession) -> dict:
     """
-    Detect quietly-stale SPX futures data.
+    Detect quietly-stale SPX futures data (see _check_feed_staleness).
 
-    Compares the latest stored SPX daily candle against the latest VOO daily
-    trading day. When the SPX candle lags by more than
-    settings.SPX_STALENESS_MAX_LAG_DAYS *trading days* (or is missing
-    entirely while VOO data exists), the macro sensitivity signal has
+    When SPX lags VOO by more than settings.SPX_STALENESS_MAX_LAG_DAYS
+    trading days (or is missing while VOO data exists), the macro signal has
     silently degraded to the VOO overnight proxy.
-
-    Logs a WARNING when stale and returns a structured dict for the health
-    endpoint:
-
-        {
-            "stale": bool,
-            "latest_spx": Optional[str],   # ISO date
-            "latest_voo": Optional[str],   # ISO date
-            "lag_trading_days": Optional[int],
-            "max_lag_trading_days": int,
-            "detail": Optional[str],       # set when stale
-        }
     """
-    max_lag = settings.SPX_STALENESS_MAX_LAG_DAYS
-
-    result = await db_session.execute(
-        select(func.max(SpxCandle.timestamp)).where(
-            SpxCandle.ticker == settings.SPX_FUTURES_TICKER,
-            SpxCandle.timeframe == "daily",
-        )
-    )
-    latest_spx: Optional[datetime] = result.scalar()
-
-    result = await db_session.execute(
-        select(func.max(VooCandle.timestamp)).where(
-            VooCandle.ticker == settings.TICKER,
-            VooCandle.timeframe == "daily",
-        )
-    )
-    latest_voo: Optional[datetime] = result.scalar()
-
-    status: dict = {
-        "stale": False,
-        "latest_spx": latest_spx.date().isoformat() if latest_spx else None,
-        "latest_voo": latest_voo.date().isoformat() if latest_voo else None,
-        "lag_trading_days": None,
-        "max_lag_trading_days": max_lag,
-        "detail": None,
-    }
-
-    if latest_voo is None:
-        # No VOO reference data yet — nothing meaningful to compare against.
-        return status
-
-    if latest_spx is None:
-        status["stale"] = True
-        status["detail"] = (
+    return await _check_feed_staleness(
+        db_session,
+        model=SpxCandle,
+        ticker=settings.SPX_FUTURES_TICKER,
+        max_lag=settings.SPX_STALENESS_MAX_LAG_DAYS,
+        feed_key="spx",
+        missing_detail=(
             "No SPX futures candles stored while VOO data exists — "
             "macro signal is running on the VOO overnight proxy."
-        )
-        logger.warning(
-            "spx_data_stale latest_spx=none latest_voo=%s — %s",
-            status["latest_voo"], status["detail"],
-        )
-        return status
-
-    # Count trading days in (latest_spx, latest_voo]
-    lag = 0
-    if latest_spx.date() < latest_voo.date():
-        for d in pd.date_range(
-            latest_spx.date() + timedelta(days=1), latest_voo.date(), freq="D"
-        ):
-            if market_calendar.is_trading_day(d.date()):
-                lag += 1
-    status["lag_trading_days"] = lag
-
-    if lag > max_lag:
-        status["stale"] = True
-        status["detail"] = (
-            f"Latest SPX futures candle ({status['latest_spx']}) lags the "
-            f"latest VOO trading day ({status['latest_voo']}) by {lag} "
-            f"trading days (max {max_lag}) — macro signal has degraded to "
+        ),
+        lag_detail=(
+            "Latest SPX futures candle ({latest_feed}) lags the "
+            "latest VOO trading day ({latest_voo}) by {lag} "
+            "trading days (max {max_lag}) — macro signal has degraded to "
             "the VOO overnight proxy."
-        )
-        logger.warning(
-            "spx_data_stale latest_spx=%s latest_voo=%s lag_trading_days=%d "
-            "max=%d — %s",
-            status["latest_spx"], status["latest_voo"], lag, max_lag,
-            status["detail"],
-        )
-    return status
+        ),
+        log_event="spx_data_stale",
+    )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VIX staleness check (module-level: shared by ingestion + healthz)
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def check_vix_staleness(db_session: AsyncSession) -> dict:
     """
-    Detect quietly-stale VIX data.
+    Detect quietly-stale VIX data (see _check_feed_staleness).
 
-    Compares the latest stored VIX daily candle against the latest VOO daily
-    trading day. When the VIX candle lags by more than
-    settings.VIX_STALENESS_MAX_LAG_DAYS *trading days* (or is missing
-    entirely while VOO data exists), the macro sensitivity signal has
-    silently degraded.
-
-    Logs a WARNING when stale and returns a structured dict for the health
-    endpoint:
-
-        {
-            "stale": bool,
-            "latest_vix": Optional[str],   # ISO date
-            "latest_voo": Optional[str],   # ISO date
-            "lag_trading_days": Optional[int],
-            "max_lag_trading_days": int,
-            "detail": Optional[str],       # set when stale
-        }
+    When VIX lags VOO by more than settings.VIX_STALENESS_MAX_LAG_DAYS
+    trading days (or is missing while VOO data exists), the macro sensitivity
+    signal has silently degraded.
     """
-    max_lag = settings.VIX_STALENESS_MAX_LAG_DAYS
-
-    result = await db_session.execute(
-        select(func.max(VixCandle.timestamp)).where(
-            VixCandle.ticker == settings.VIX_TICKER,
-            VixCandle.timeframe == "daily",
-        )
-    )
-    latest_vix: Optional[datetime] = result.scalar()
-
-    result = await db_session.execute(
-        select(func.max(VooCandle.timestamp)).where(
-            VooCandle.ticker == settings.TICKER,
-            VooCandle.timeframe == "daily",
-        )
-    )
-    latest_voo: Optional[datetime] = result.scalar()
-
-    status: dict = {
-        "stale": False,
-        "latest_vix": latest_vix.date().isoformat() if latest_vix else None,
-        "latest_voo": latest_voo.date().isoformat() if latest_voo else None,
-        "lag_trading_days": None,
-        "max_lag_trading_days": max_lag,
-        "detail": None,
-    }
-
-    if latest_voo is None:
-        # No VOO reference data yet — nothing meaningful to compare against.
-        return status
-
-    if latest_vix is None:
-        status["stale"] = True
-        status["detail"] = (
+    return await _check_feed_staleness(
+        db_session,
+        model=VixCandle,
+        ticker=settings.VIX_TICKER,
+        max_lag=settings.VIX_STALENESS_MAX_LAG_DAYS,
+        feed_key="vix",
+        missing_detail=(
             "No VIX candles stored while VOO data exists — "
             "the macro sensitivity signal has silently degraded."
-        )
-        logger.warning(
-            "vix_data_stale latest_vix=none latest_voo=%s — %s",
-            status["latest_voo"], status["detail"],
-        )
-        return status
-
-    # Count trading days in (latest_vix, latest_voo]
-    lag = 0
-    if latest_vix.date() < latest_voo.date():
-        for d in pd.date_range(
-            latest_vix.date() + timedelta(days=1), latest_voo.date(), freq="D"
-        ):
-            if market_calendar.is_trading_day(d.date()):
-                lag += 1
-    status["lag_trading_days"] = lag
-
-    if lag > max_lag:
-        status["stale"] = True
-        status["detail"] = (
-            f"Latest VIX candle ({status['latest_vix']}) lags the latest "
-            f"VOO trading day ({status['latest_voo']}) by {lag} trading "
-            f"days (max {max_lag}) — the macro sensitivity signal has "
+        ),
+        lag_detail=(
+            "Latest VIX candle ({latest_feed}) lags the latest "
+            "VOO trading day ({latest_voo}) by {lag} trading "
+            "days (max {max_lag}) — the macro sensitivity signal has "
             "degraded."
-        )
-        logger.warning(
-            "vix_data_stale latest_vix=%s latest_voo=%s lag_trading_days=%d "
-            "max=%d — %s",
-            status["latest_vix"], status["latest_voo"], lag, max_lag,
-            status["detail"],
-        )
-    return status
+        ),
+        log_event="vix_data_stale",
+    )
