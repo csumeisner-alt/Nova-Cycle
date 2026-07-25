@@ -9,7 +9,10 @@ Schedule: retrain weekly (checked on each startup).
 
 import json
 import logging
+import shutil
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 from sqlalchemy import select, func
@@ -26,6 +29,53 @@ from ml.training_status import get_last_successful_accuracy, record_training_res
 logger = logging.getLogger(__name__)
 
 _RETRAIN_INTERVAL_DAYS = 7
+
+
+def _backup_model_file(model_path: Path) -> Optional[Path]:
+    """Copy the current model file aside before retraining.
+
+    Returns the backup path when a backup was made, None when there was no
+    existing model file to back up. Never raises.
+    """
+    try:
+        if not model_path.exists():
+            return None
+        backup_path = model_path.with_suffix(model_path.suffix + ".bak")
+        shutil.copy2(model_path, backup_path)
+        logger.info(
+            "ml_model_backup model_file=%s backup=%s", model_path.name, backup_path.name
+        )
+        return backup_path
+    except Exception as exc:
+        logger.error("_backup_model_file error for %s: %s", model_path, exc)
+        return None
+
+
+def _restore_model_file(model_path: Path, backup_path: Optional[Path], model_name: str) -> bool:
+    """Restore the last known-good model file after a flagged retrain.
+
+    Returns True when the previous model was restored. Never raises.
+    """
+    try:
+        if backup_path is None or not backup_path.exists():
+            logger.warning(
+                "ml_model_rollback_unavailable model=%s reason=no_backup", model_name
+            )
+            return False
+        # Plain copy (not copy2): the restored file must get a *fresh* mtime so
+        # the models' _maybe_reload() detects the change and drops the
+        # regressed in-memory model in favour of the restored one.
+        shutil.copy(backup_path, model_path)
+        logger.warning(
+            "ml_model_rollback model=%s restored=%s reason=flagged_retrain "
+            "— predictions continue on last known-good model",
+            model_name,
+            model_path.name,
+        )
+        return True
+    except Exception as exc:
+        logger.error("_restore_model_file error for %s: %s", model_path, exc)
+        return False
 
 
 class ModelTrainer:
@@ -92,6 +142,9 @@ class ModelTrainer:
 
         # ── Train long-trend model ─────────────────────────────────────────────
         logger.info("Training long-trend model…")
+        from ml.long_trend import MODEL_PATH as LONG_MODEL_PATH
+
+        long_backup = _backup_model_file(LONG_MODEL_PATH)
         try:
             long_result = self.long_model.train(daily_df, indicators)
             if self.long_model.model is None:
@@ -101,6 +154,7 @@ class ModelTrainer:
                     success=False,
                     error="Training produced no model (see server logs)",
                 )
+                _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
             elif long_result.get("degenerate"):
                 record_training_result(
                     "long_trend",
@@ -108,6 +162,7 @@ class ModelTrainer:
                     error="Degenerate model: "
                     + (long_result.get("degeneracy_reason") or "predictions do not vary"),
                 )
+                _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
             else:
                 new_acc = long_result.get("accuracy", 0.0)
                 prev_acc = get_last_successful_accuracy("long_trend")
@@ -117,6 +172,7 @@ class ModelTrainer:
                     record_training_result(
                         "long_trend", success=False, error=reason, accuracy=new_acc
                     )
+                    _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
                 else:
                     record_training_result(
                         "long_trend", success=True, accuracy=new_acc
@@ -135,6 +191,7 @@ class ModelTrainer:
         except Exception as exc:
             logger.error("Long-trend training failed: %s", exc)
             record_training_result("long_trend", success=False, error=str(exc))
+            _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
 
         # ── Load 5-min VOO candles ─────────────────────────────────────────────
         fivemin_df = await self._load_fivemin_voo(db_session)
@@ -160,6 +217,9 @@ class ModelTrainer:
 
         # ── Train short-trend model ────────────────────────────────────────────
         logger.info("Training short-trend model…")
+        from ml.short_trend import MODEL_PATH as SHORT_MODEL_PATH
+
+        short_backup = _backup_model_file(SHORT_MODEL_PATH)
         try:
             short_result = self.short_model.train(fivemin_df, short_indicators)
             if self.short_model.model is None:
@@ -168,6 +228,7 @@ class ModelTrainer:
                     success=False,
                     error="Training produced no model (see server logs)",
                 )
+                _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
             elif short_result.get("degenerate"):
                 record_training_result(
                     "short_trend",
@@ -175,6 +236,7 @@ class ModelTrainer:
                     error="Degenerate model: "
                     + (short_result.get("degeneracy_reason") or "predictions do not vary"),
                 )
+                _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
             else:
                 new_acc = short_result.get("accuracy", 0.0)
                 prev_acc = get_last_successful_accuracy("short_trend")
@@ -184,6 +246,7 @@ class ModelTrainer:
                     record_training_result(
                         "short_trend", success=False, error=reason, accuracy=new_acc
                     )
+                    _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
                 else:
                     record_training_result(
                         "short_trend", success=True, accuracy=new_acc
@@ -203,6 +266,7 @@ class ModelTrainer:
         except Exception as exc:
             logger.error("Short-trend training failed: %s", exc)
             record_training_result("short_trend", success=False, error=str(exc))
+            _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
 
         logger.info("Initial model training complete.")
 
