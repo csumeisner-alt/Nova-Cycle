@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from config import settings
+from ml import features as ml_features
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,11 @@ FEATURE_NAMES = [
     "volume_ratio",
     "atr_norm",
     "sma20_distance",
+    # Additive VOO-specific features (in-memory only)
+    "volatility_regime_enc",
+    "macro_sensitivity_score",
+    "macro_override_flag",
+    "overnight_return_weighted",
 ]
 
 
@@ -110,6 +116,18 @@ class LongTrendModel:
 
         # Volume 20-day rolling avg
         vol_avg20 = volume.rolling(20).mean()
+
+        # ── Additive features (vectorized, in-memory) ─────────────────────────
+        open_col = df["open"] if "open" in df.columns else close
+        liq_class = df["liquidity_class"] if "liquidity_class" in df.columns else None
+        vol_regime_enc = ml_features.encode_volatility_regime(
+            ml_features.compute_volatility_regime(close, atr=atr, liquidity_class=liq_class)
+        )
+        macro_sens = ml_features.compute_macro_sensitivity(
+            close, open_=open_col, vix_regime=vix_regime if not vix_regime.empty else None
+        )
+        macro_flag = ml_features.macro_override_flag(df.index)
+        overnight_weighted = ml_features.compute_overnight_return_weighted(open_col, close)
 
         for i, (ts, row) in enumerate(df.iterrows()):
             try:
@@ -172,6 +190,10 @@ class LongTrendModel:
                     vol_ratio,
                     atr_norm,
                     sma20_dist,
+                    float(vol_regime_enc.iloc[i]),
+                    float(macro_sens.iloc[i]),
+                    float(macro_flag.iloc[i]),
+                    float(overnight_weighted.iloc[i]),
                 ]
                 rows.append(feature_row)
 
@@ -333,7 +355,21 @@ class LongTrendModel:
         try:
             if MODEL_PATH.exists():
                 with open(MODEL_PATH, "rb") as f:
-                    self.model = pickle.load(f)
+                    model = pickle.load(f)
+                # Guard: a model pickled before the feature-set extension has
+                # a smaller feature count. Never crash prediction on it —
+                # discard, log, and fall back to neutral until retraining.
+                n_in = getattr(model, "n_features_in_", None)
+                if n_in is not None and int(n_in) != len(FEATURE_NAMES):
+                    logger.warning(
+                        "ml_model_stale model=long_trend expected_features=%d "
+                        "found=%d action=discard_await_retrain",
+                        len(FEATURE_NAMES), int(n_in),
+                    )
+                    self.model = None
+                    self._model_loaded = True
+                    return False
+                self.model = model
                 self._model_loaded = True
                 logger.info("Long-trend model loaded from %s", MODEL_PATH)
                 return True

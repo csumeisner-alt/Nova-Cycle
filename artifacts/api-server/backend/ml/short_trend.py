@@ -41,6 +41,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
 from config import settings
+from ml import features as ml_features
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,13 @@ FEATURE_NAMES = [
     "liquidity_score",
     "return_overnight",
     "volume_ratio",
+    # Additive VOO-specific features (in-memory only)
+    "volatility_regime_enc",
+    "macro_sensitivity_score",
+    "macro_override_flag",
+    "gap_momentum",
+    "gap_momentum_class_enc",
+    "liquidity_compression_score",
 ]
 
 N_FEATURES = len(FEATURE_NAMES)
@@ -128,6 +136,20 @@ class ShortTrendModel:
         atr_s = indicators.get("atr_all", pd.Series(0.0, index=df.index))
 
         vol_avg20 = volume.rolling(20).mean()
+
+        # ── Additive features (vectorized, in-memory) ─────────────────────────
+        liq_class = df["liquidity_class"] if "liquidity_class" in df.columns else None
+        vol_regime_enc = ml_features.encode_volatility_regime(
+            ml_features.compute_volatility_regime(close, atr=atr_s, liquidity_class=liq_class)
+        )
+        macro_sens = ml_features.compute_macro_sensitivity(
+            close,
+            open_=open_col,
+            vix_regime=indicators.get("vix_regime"),
+        )
+        macro_flag = ml_features.macro_override_flag(df.index)
+        gap_momentum_s, gap_momentum_cls = ml_features.compute_gap_momentum_features(df)
+        liq_compression = ml_features.compute_liquidity_compression_score(df)
 
         # Bars per period at 5-min resolution
         BARS_1H = 12
@@ -204,6 +226,12 @@ class ShortTrendModel:
                     liquidity_score,
                     ret_overnight,
                     vol_ratio,
+                    float(vol_regime_enc.iloc[i]),
+                    float(macro_sens.iloc[i]),
+                    float(macro_flag.iloc[i]),
+                    float(gap_momentum_s.iloc[i]) / 100.0,
+                    float(gap_momentum_cls.iloc[i]),
+                    float(liq_compression.iloc[i]),
                 ]
                 rows.append(feature_row)
 
@@ -274,7 +302,20 @@ class ShortTrendModel:
                 n_iter_no_change=10,
                 verbose=False,
             )
-            model.fit(X_train, y_train, sample_weight=w_train)
+            # MLPClassifier does not support sample_weight — approximate the
+            # recency weighting by oversampling the most recent (highest-
+            # weight) rows instead of passing weights to fit().
+            try:
+                threshold = np.percentile(w_train, 75) if len(w_train) else 0.0
+                recent_mask = w_train >= threshold
+                if 0 < recent_mask.sum() < len(X_train):
+                    X_fit = np.vstack([X_train, X_train[recent_mask]])
+                    y_fit = np.concatenate([y_train, y_train[recent_mask]])
+                else:
+                    X_fit, y_fit = X_train, y_train
+            except Exception:
+                X_fit, y_fit = X_train, y_train
+            model.fit(X_fit, y_fit)
 
             train_acc = float(model.score(X_train, y_train))
             val_acc = float(model.score(X_val, y_val)) if len(X_val) > 0 else 0.0
@@ -338,8 +379,26 @@ class ShortTrendModel:
             if MODEL_PATH.exists():
                 with open(MODEL_PATH, "rb") as f:
                     data = pickle.load(f)
-                self.model = data["model"]
-                self.scaler = data.get("scaler")
+                model = data["model"]
+                scaler = data.get("scaler")
+                # Guard: models pickled before the feature-set extension have
+                # a smaller feature count. Never crash prediction on them —
+                # discard, log, and fall back to neutral until retraining.
+                n_in = getattr(scaler, "n_features_in_", None) or getattr(
+                    model, "n_features_in_", None
+                )
+                if n_in is not None and int(n_in) != N_FEATURES:
+                    logger.warning(
+                        "ml_model_stale model=short_trend expected_features=%d "
+                        "found=%d action=discard_await_retrain",
+                        N_FEATURES, int(n_in),
+                    )
+                    self.model = None
+                    self.scaler = None
+                    self._model_loaded = True
+                    return False
+                self.model = model
+                self.scaler = scaler
                 self._model_loaded = True
                 logger.info("Short-trend model loaded from %s", MODEL_PATH)
                 return True
