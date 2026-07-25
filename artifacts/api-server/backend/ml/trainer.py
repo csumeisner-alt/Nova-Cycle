@@ -24,11 +24,19 @@ from indicators.technical import TechnicalIndicators
 from ml.long_trend import LongTrendModel
 from ml.short_trend import ShortTrendModel
 from ml.model_health import check_accuracy_regression
-from ml.training_status import get_last_successful_accuracy, record_training_result
+from ml.training_status import (
+    any_model_failed_last_attempt,
+    get_last_successful_accuracy,
+    record_training_result,
+)
 
 logger = logging.getLogger(__name__)
 
 _RETRAIN_INTERVAL_DAYS = 7
+# When the last training attempt failed (e.g. a regressed retrain rolled back
+# to the previous model), retry much sooner instead of waiting a full week —
+# the fresh ModelMetadata row would otherwise mask the failure for 7 days.
+_FAILED_RETRAIN_INTERVAL_DAYS = 1
 
 
 def _backup_model_file(model_path: Path) -> Optional[Path]:
@@ -297,11 +305,22 @@ class ModelTrainer:
         now = datetime.utcnow()
         age_days = (now - last_trained).days
 
-        if age_days >= _RETRAIN_INTERVAL_DAYS:
+        if any_model_failed_last_attempt():
+            interval_days = _FAILED_RETRAIN_INTERVAL_DAYS
+            logger.warning(
+                "Last training attempt failed for at least one model — using "
+                "shortened retry interval (%d day(s) instead of %d).",
+                _FAILED_RETRAIN_INTERVAL_DAYS,
+                _RETRAIN_INTERVAL_DAYS,
+            )
+        else:
+            interval_days = _RETRAIN_INTERVAL_DAYS
+
+        if age_days >= interval_days:
             logger.info(
                 "Models last trained %d days ago (threshold=%d). Retraining…",
                 age_days,
-                _RETRAIN_INTERVAL_DAYS,
+                interval_days,
             )
             await self.run_initial_training(db_session)
             return True

@@ -96,6 +96,24 @@ def get_training_status() -> dict:
     return out
 
 
+def any_model_failed_last_attempt() -> bool:
+    """Return True when the most recent recorded training attempt failed for
+    any model (e.g. a regressed retrain that was rolled back).
+
+    Models with no recorded attempt yet are not counted as failed.
+    Never raises.
+    """
+    try:
+        data = _load_raw()
+        for name in MODEL_NAMES:
+            entry = data.get(name)
+            if isinstance(entry, dict) and entry.get("success") is False:
+                return True
+    except Exception as exc:
+        logger.error("training_status any_model_failed_last_attempt error: %s", exc)
+    return False
+
+
 def get_last_successful_accuracy(model_name: str) -> Optional[float]:
     """Return the accuracy of the most recent *successful* training run.
 
