@@ -135,6 +135,45 @@ async def _load_vix_candles(session: AsyncSession, limit: int = 300) -> pd.DataF
     } for r in rows])
 
 
+def _compute_gap_momentum_from_df(df_5min: pd.DataFrame) -> Optional[float]:
+    """
+    Compute gap follow-through momentum from the already-loaded 5-min frame
+    (additive; no extra DB queries, nothing persisted).
+
+    Finds the most recent pre-market candle carrying a non-zero gap_percent,
+    takes that day's regular-session candles, and applies
+    DataFetcher.compute_gap_momentum (signed % move over the first 30 minutes
+    of the regular session relative to the gap direction).
+
+    Returns None (never raises) when there is no gap or not enough
+    post-open candles yet.
+    """
+    from ingestion.fetcher import DataFetcher
+
+    try:
+        if df_5min.empty or "gap_percent" not in df_5min.columns:
+            return None
+        gap_rows = df_5min[
+            (df_5min["session_type"] == "pre_market")
+            & (df_5min["gap_percent"].fillna(0.0) != 0.0)
+        ]
+        if gap_rows.empty:
+            return None
+        gap_row = gap_rows.iloc[-1]
+        gap_day = pd.Timestamp(gap_row["timestamp"]).date()
+        day_regular = df_5min[
+            (df_5min["session_type"] == "regular")
+            & (pd.to_datetime(df_5min["timestamp"]).dt.date == gap_day)
+        ].sort_values("timestamp")
+        if day_regular.empty:
+            return None
+        post_open = day_regular.head(DataFetcher.GAP_MOMENTUM_CANDLES).set_index("timestamp")
+        return DataFetcher.compute_gap_momentum(float(gap_row["gap_percent"]), post_open)
+    except Exception as exc:
+        logger.error("_compute_gap_momentum_from_df error: %s", exc)
+        return None
+
+
 async def _store_confidence(session: AsyncSession, ticker: str, long_buy: float,
                             long_sell: float, short_buy: float, short_sell: float,
                             session_type: str, is_extended: bool):
@@ -392,6 +431,8 @@ async def predict_short(
         is_extended = bool(latest.get("is_extended_hours", False))
         session_type = str(latest.get("session_type", "regular"))
         gap_type = str(latest.get("gap_type", "none"))
+        # Gap follow-through momentum (additive; None when no gap / no data yet)
+        gap_momentum = _compute_gap_momentum_from_df(df_5min)
 
         # Compute liquidity score: extended volume / regular volume over last session
         regular_mask = df_5min["session_type"] == "regular"
@@ -418,7 +459,8 @@ async def predict_short(
             is_extended=is_extended,
             liquidity_score=liquidity_score,
             gap_type=gap_type,
-            age_in_minutes=0
+            age_in_minutes=0,
+            gap_momentum=gap_momentum
         )
         _last_short_score = result["score"]
 
@@ -471,6 +513,7 @@ async def predict_short(
             "ml_confidence": ml_confidence,
             "liquidity_score": liquidity_score,
             "gap_type": gap_type,
+            "gap_momentum": gap_momentum,
             "macro_override_applied": macro_override_applied,
             "macro_override_reason": override_result.get("reason", ""),
             "session_type": session_type,

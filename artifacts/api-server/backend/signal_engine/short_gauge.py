@@ -53,6 +53,7 @@ class ShortTrendGauge:
         is_extended: bool,
         liquidity_score: float,
         gap_type: str,
+        gap_momentum: float | None = None,
     ) -> tuple[float, dict]:
         """
         Compute the raw indicator score for the short-trend gauge.
@@ -160,6 +161,32 @@ class ShortTrendGauge:
             total = min(total + gap_adjustment, total + 10.0)
             breakdown["gap_influence"] = f"gap_down: −10 on sell score"
 
+        # ── Gap follow-through (momentum) influence ───────────────────────────
+        # Additive layer on top of gap influence. gap_momentum is the signed %
+        # move over the first 30 minutes of the regular session relative to
+        # the gap direction (see DataFetcher.compute_gap_momentum):
+        #   momentum > +threshold → gap is following through: boost the score
+        #     toward the gap direction (gap_up → more bullish, gap_down →
+        #     more bearish).
+        #   momentum < -threshold → gap is fading: push the score away from
+        #     the gap direction (downgrades signals that chase a fading gap).
+        # None (no gap / not enough post-open data) → no effect.
+        if gap_momentum is not None and g in ("gap_up", "gap_down"):
+            direction = 1.0 if g == "gap_up" else -1.0
+            boost = settings.GAP_MOMENTUM_SCORE_BOOST
+            if gap_momentum >= settings.GAP_MOMENTUM_THRESHOLD:
+                adj = direction * boost
+                total += adj
+                breakdown["gap_momentum_influence"] = (
+                    f"follow-through ({gap_momentum:+.2f}%): {adj:+.1f}"
+                )
+            elif gap_momentum <= -settings.GAP_MOMENTUM_THRESHOLD:
+                adj = -direction * boost
+                total += adj
+                breakdown["gap_momentum_influence"] = (
+                    f"fading ({gap_momentum:+.2f}%): {adj:+.1f}"
+                )
+
         return total, breakdown
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -174,6 +201,7 @@ class ShortTrendGauge:
         liquidity_score: float,
         gap_type: str,
         age_in_minutes: float = 0.0,
+        gap_momentum: float | None = None,
     ) -> dict:
         """
         Compute the final short-trend gauge score.
@@ -223,7 +251,7 @@ class ShortTrendGauge:
         try:
             # ── Indicator contributions ────────────────────────────────────────
             indicator_score, breakdown = self.compute_indicator_score(
-                indicators, is_extended, liquidity_score, gap_type
+                indicators, is_extended, liquidity_score, gap_type, gap_momentum
             )
             liquidity_adjusted = liquidity_score < settings.LIQUIDITY_SCORE_THRESHOLD
 
@@ -274,6 +302,7 @@ class ShortTrendGauge:
                 "indicator_score": round(indicator_score, 4),
                 "liquidity_adjusted": liquidity_adjusted,
                 "gap_type": gap_type,
+                "gap_momentum": gap_momentum,
                 "macro_override_applied": False,  # will be set by caller
             }
 

@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # Additive gap-magnitude classification (does not affect gap_type)
     MICRO_GAP_THRESHOLD: float = 0.1  # % – |gap| below this is 'micro'
     MACRO_GAP_THRESHOLD: float = 1.0  # % – |gap| above this is 'macro'
+    # Gap follow-through (momentum) influence on the short gauge (additive).
+    # |gap_momentum| must exceed this % move before it affects the score:
+    GAP_MOMENTUM_THRESHOLD: float = 0.1   # %
+    # Score points added toward the gap direction on follow-through, or
+    # away from it on a fading gap:
+    GAP_MOMENTUM_SCORE_BOOST: float = 10.0
 
     # ── Firebase Cloud Messaging ───────────────────────────────────────────────
     FCM_SERVER_KEY: str = ""
