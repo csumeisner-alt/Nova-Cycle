@@ -935,7 +935,9 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         }
 
     # ── SPX futures staleness ────────────────────────────────────────────
-    from ingestion.pipeline import check_spx_staleness, check_vix_staleness
+    from ingestion.pipeline import (
+        check_spx_staleness, check_vix_staleness, check_5min_staleness
+    )
 
     spx_data = None
     try:
@@ -954,11 +956,22 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     except Exception as exc:
         logger.error("healthz: VIX staleness check failed: %s", exc)
 
+    # ── VOO 5-min staleness ───────────────────────────────────────────────
+    fivemin_data = None
+    try:
+        fivemin_data = await check_5min_staleness(session)
+        if fivemin_data.get("stale"):
+            degraded = True
+    except Exception as exc:
+        logger.error("healthz: 5-min staleness check failed: %s", exc)
+
     alerts = []
     if spx_data and spx_data.get("stale"):
         alerts.append(f"spx_futures: {spx_data.get('detail')}")
     if vix_data and vix_data.get("stale"):
         alerts.append(f"vix: {vix_data.get('detail')}")
+    if fivemin_data and fivemin_data.get("stale"):
+        alerts.append(f"voo_5min: {fivemin_data.get('detail')}")
     for name, info in models.items():
         if info["last_training_success"] is False:
             alerts.append(
@@ -981,6 +994,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "models": models,
         "spx_futures": spx_data,
         "vix": vix_data,
+        "voo_5min": fivemin_data,
         "alerts": alerts,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
     }

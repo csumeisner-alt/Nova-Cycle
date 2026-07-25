@@ -181,6 +181,14 @@ class IngestionPipeline:
         except Exception as exc:
             logger.error("vix_staleness_check_failed error=%s", exc)
 
+        # ── VOO 5-min staleness check ─────────────────────────────────────────
+        # If yfinance quietly stops returning intraday bars, the short-trend
+        # signal silently goes stale during market hours. Surface it loudly.
+        try:
+            await check_5min_staleness(db_session)
+        except Exception as exc:
+            logger.error("fivemin_staleness_check_failed error=%s", exc)
+
         logger.info("Incremental update complete.")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -813,3 +821,100 @@ async def check_vix_staleness(db_session: AsyncSession) -> dict:
         ),
         log_event="vix_data_stale",
     )
+
+
+async def check_5min_staleness(
+    db_session: AsyncSession,
+    now: Optional[datetime] = None,
+) -> dict:
+    """
+    Detect a quietly-stalled VOO 5-minute feed during market hours.
+
+    Only meaningful while the regular market session is open (per
+    ingestion.market_calendar): when open, the latest stored 5-min bar must
+    be no older than settings.FIVEMIN_STALENESS_MAX_AGE_MINUTES minutes.
+    The first max-age minutes after the open are grace time (yesterday's
+    last bar is legitimately the latest one right at the bell).
+
+    Logs a WARNING (event `fivemin_data_stale`) when stale and returns a
+    structured dict for the health endpoint:
+
+        {
+            "stale": bool,
+            "market_open": bool,
+            "latest_5min": Optional[str],        # ISO timestamp (UTC)
+            "age_minutes": Optional[float],
+            "max_age_minutes": int,
+            "detail": Optional[str],             # set when stale
+        }
+
+    `now` is injectable for tests; defaults to current UTC (naive, matching
+    the DB's UTC-naive timestamps).
+    """
+    if now is None:
+        now = datetime.utcnow()
+    if now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
+
+    max_age = settings.FIVEMIN_STALENESS_MAX_AGE_MINUTES
+
+    result = await db_session.execute(
+        select(func.max(VooCandle.timestamp)).where(
+            VooCandle.ticker == settings.TICKER,
+            VooCandle.timeframe == "5min",
+        )
+    )
+    latest_5min: Optional[datetime] = result.scalar()
+
+    is_extended, session_type, _ = market_calendar.classify_session(now)
+    market_open = session_type == "regular" and not is_extended
+
+    status: dict = {
+        "stale": False,
+        "market_open": market_open,
+        "latest_5min": latest_5min.isoformat() if latest_5min else None,
+        "age_minutes": (
+            round((now - latest_5min).total_seconds() / 60.0, 1)
+            if latest_5min else None
+        ),
+        "max_age_minutes": max_age,
+        "detail": None,
+    }
+
+    if not market_open:
+        # Outside regular hours a quiet feed is expected — never alarm.
+        return status
+
+    # Grace period right after the open: the latest bar may legitimately be
+    # yesterday's last bar until the first bars of today arrive.
+    now_et = market_calendar.to_eastern(now)
+    open_et = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    minutes_since_open = (now_et - open_et).total_seconds() / 60.0
+    if minutes_since_open < max_age:
+        return status
+
+    if latest_5min is None:
+        status["stale"] = True
+        status["detail"] = (
+            "No VOO 5-min bars stored while the market is open — "
+            "the short-trend signal has no intraday data."
+        )
+        logger.warning(
+            "fivemin_data_stale latest_5min=none — %s", status["detail"]
+        )
+        return status
+
+    if status["age_minutes"] > max_age:
+        status["stale"] = True
+        status["detail"] = (
+            f"Latest VOO 5-min bar ({status['latest_5min']}) is "
+            f"{status['age_minutes']:.1f} minutes old during market hours "
+            f"(max {max_age}) — the short-trend signal is running on stale "
+            f"intraday data."
+        )
+        logger.warning(
+            "fivemin_data_stale latest_5min=%s age_minutes=%.1f max=%d — %s",
+            status["latest_5min"], status["age_minutes"], max_age,
+            status["detail"],
+        )
+    return status

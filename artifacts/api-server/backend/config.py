@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Warn when the latest stored VIX daily candle lags the latest VOO
     # trading day by more than this many trading days (staleness check).
     VIX_STALENESS_MAX_LAG_DAYS: int = 3
+    # Warn when the latest stored VOO 5-min bar is older than this many
+    # minutes while the regular market session is open (staleness check).
+    FIVEMIN_STALENESS_MAX_AGE_MINUTES: int = 20
 
     # ── Time-decay lambdas ────────────────────────────────────────────────────
     # Weight(t) = exp(-lambda * age)
