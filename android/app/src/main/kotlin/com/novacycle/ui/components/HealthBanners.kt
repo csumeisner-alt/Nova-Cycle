@@ -1,23 +1,43 @@
 package com.novacycle.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.novacycle.data.remote.models.HealthzResponse
+import com.novacycle.data.remote.models.ModelHealth
 import com.novacycle.ui.theme.NovaSellRed
 import com.novacycle.viewmodel.HealthUiState
+import java.time.Instant
+import java.time.format.DateTimeParseException
+
+private val Amber = Color(0xFFFFB300)
 
 /**
  * App-level health banners shown at the top of every data screen.
@@ -25,7 +45,9 @@ import com.novacycle.viewmodel.HealthUiState
  * - Red outlined card while the backend is unreachable (several consecutive
  *   failed /healthz polls).
  * - Amber card while /healthz reports status "degraded", naming the affected
- *   model(s) and alerts — mirrors the web status page banner.
+ *   model(s) and alerts — mirrors the web status page banner. Tapping it opens
+ *   a bottom sheet with full per-model health details (last training
+ *   success/error, last trained time, neutral-fallback flag) and active alerts.
  *
  * Renders nothing when the backend is healthy and reachable.
  */
@@ -34,6 +56,8 @@ fun HealthBanners(
     state: HealthUiState,
     modifier: Modifier = Modifier
 ) {
+    var showDetailSheet by remember { mutableStateOf(false) }
+
     Column(modifier = modifier) {
         // ── Backend-unreachable notice ───────────────────────────────
         if (state.backendUnreachable) {
@@ -72,20 +96,21 @@ fun HealthBanners(
         // ── Degraded-predictions warning banner ──────────────────────
         val health = state.health
         if (health?.isDegraded == true) {
-            val amber = Color(0xFFFFB300)
             val degradedModels = health.degradedModels
             Card(
                 colors = CardDefaults.cardColors(
-                    containerColor = amber.copy(alpha = 0.15f)
+                    containerColor = Amber.copy(alpha = 0.15f)
                 ),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showDetailSheet = true }
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         text       = "⚠️ Predictions degraded",
                         style      = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        color      = amber
+                        color      = Amber
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -97,18 +122,194 @@ fun HealthBanners(
                             "Some system components are degraded."
                         },
                         style = MaterialTheme.typography.bodyMedium,
-                        color = amber.copy(alpha = 0.9f)
+                        color = Amber.copy(alpha = 0.9f)
                     )
                     health.alerts.orEmpty().forEach { alert ->
                         Text(
                             text  = "• $alert",
                             style = MaterialTheme.typography.bodySmall,
-                            color = amber.copy(alpha = 0.7f)
+                            color = Amber.copy(alpha = 0.7f)
                         )
                     }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text  = "Tap for details",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Amber.copy(alpha = 0.6f)
+                    )
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
+
+            if (showDetailSheet) {
+                HealthDetailSheet(
+                    health = health,
+                    onDismiss = { showDetailSheet = false }
+                )
+            }
         }
+    }
+}
+
+/**
+ * Bottom sheet with the full /healthz payload: per-model training status
+ * (last training success/error, last trained time, neutral-fallback flag)
+ * and the list of active alerts.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HealthDetailSheet(
+    health: HealthzResponse,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(
+                text       = "Backend health",
+                style      = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text  = "Status: ${health.status}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (health.isDegraded) Amber else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // ── Active alerts ────────────────────────────────────────
+            val alerts = health.alerts.orEmpty()
+            if (alerts.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text       = "Active alerts",
+                    style      = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                alerts.forEach { alert ->
+                    Text(
+                        text  = "• $alert",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Amber.copy(alpha = 0.9f)
+                    )
+                }
+            }
+
+            // ── Per-model status ─────────────────────────────────────
+            val models = health.models.orEmpty()
+            if (models.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text       = "Models",
+                    style      = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                models.entries.forEachIndexed { index, (name, model) ->
+                    if (index > 0) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    } else {
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                    ModelHealthRow(name = name, model = model)
+                }
+            } else {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text  = "No per-model health reported.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelHealthRow(name: String, model: ModelHealth) {
+    val degraded = model.neutralFallback == true || model.lastTrainingSuccess == false
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text       = name,
+                style      = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text       = if (degraded) "Degraded" else "OK",
+                style      = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color      = if (degraded) Amber else MaterialTheme.colorScheme.primary
+            )
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+
+        val lastTrainingSuccess = model.lastTrainingSuccess
+        if (lastTrainingSuccess != null) {
+            DetailLine(
+                label = "Last training",
+                value = if (lastTrainingSuccess) "Succeeded" else "Failed"
+            )
+        }
+        model.lastTrainingError?.takeIf { it.isNotBlank() }?.let { error ->
+            DetailLine(label = "Training error", value = error, valueColor = NovaSellRed)
+        }
+        model.lastTrainedAt?.takeIf { it.isNotBlank() }?.let { trainedAt ->
+            val now = rememberTickingNow()
+            DetailLine(label = "Last trained", value = formatTrainedAt(now, trainedAt))
+        }
+        if (model.neutralFallback == true) {
+            DetailLine(
+                label = "Neutral fallback",
+                value = "Active — predictions pinned to neutral (0.5)",
+                valueColor = Amber
+            )
+        }
+    }
+}
+
+@Composable
+private fun DetailLine(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text  = "$label: ",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text  = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = valueColor
+        )
+    }
+}
+
+/**
+ * Renders the backend's ISO-8601 `last_trained_at` as a relative age
+ * ("3 h 12 min ago"); falls back to the raw string when unparseable.
+ */
+internal fun formatTrainedAt(nowMillis: Long, isoTimestamp: String): String {
+    return try {
+        val millis = Instant.parse(isoTimestamp).toEpochMilli()
+        "${formatRelativeAge(nowMillis, millis)} ($isoTimestamp)"
+    } catch (_: DateTimeParseException) {
+        isoTimestamp
     }
 }
