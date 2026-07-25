@@ -119,6 +119,8 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
+    // Compose Material (M2) — pullRefresh modifier + PullRefreshIndicator (no M3 equivalent in this BOM)
+    implementation(libs.compose.material)
     implementation(libs.compose.foundation)
     implementation(libs.compose.animation)
     debugImplementation(libs.compose.ui.tooling)

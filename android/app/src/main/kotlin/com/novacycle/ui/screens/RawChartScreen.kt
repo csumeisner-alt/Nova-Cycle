@@ -21,6 +21,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.SignalData
+import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
@@ -55,11 +56,14 @@ fun RawChartScreen(
     var selectedSignal by remember { mutableStateOf<SignalData?>(null) }
     val windows = listOf("7d", "30d", "90d")
 
-    Column(
+    PullRefreshBox(
+        refreshing = uiState.isLoading,
+        onRefresh = { viewModel.loadData() },
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         // Toolbar
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -109,6 +113,7 @@ fun RawChartScreen(
 
         // Legend
         ChartLegend(modifier = Modifier.padding(12.dp))
+    }
     }
 
     // Signal story bottom sheet

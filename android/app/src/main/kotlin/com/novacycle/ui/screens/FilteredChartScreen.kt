@@ -21,6 +21,7 @@ import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.domain.model.SignalData
 import com.novacycle.domain.usecase.ApplyFilteredSignalsUseCase
 import com.novacycle.ui.components.ConfidenceRibbon
+import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
@@ -46,7 +47,12 @@ fun FilteredChartScreen(
     var selectedSignal by remember { mutableStateOf<SignalData?>(null) }
     val windows = listOf("7d", "30d", "90d")
 
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    PullRefreshBox(
+        refreshing = uiState.isLoading,
+        onRefresh = { viewModel.loadData() },
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Text("Filtered Signals", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text("VOO", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
@@ -84,6 +90,7 @@ fun FilteredChartScreen(
             if (i == 0) 0f else s.confidence - uiState.filteredSignals[i - 1].confidence
         }
         ConfidenceRibbon(momentumPoints = momentumProxy, modifier = Modifier.padding(12.dp))
+    }
     }
 
     selectedSignal?.let { signal ->

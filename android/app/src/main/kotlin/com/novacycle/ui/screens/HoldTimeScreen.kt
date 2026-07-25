@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.HoldTimeViewModel
@@ -34,7 +35,12 @@ fun HoldTimeScreen(
             )
         }
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding), Alignment.Center) {
+        PullRefreshBox(
+            refreshing = uiState.isLoading,
+            onRefresh = { viewModel.loadHoldTime() },
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize().padding(padding)
+        ) {
             when {
                 uiState.isLoading -> CircularProgressIndicator()
 

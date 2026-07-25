@@ -13,6 +13,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.data.remote.models.IndicatorResponse
+import androidx.compose.foundation.layout.fillMaxSize
+import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.IndicatorViewModel
@@ -21,6 +23,12 @@ import com.novacycle.viewmodel.IndicatorViewModel
 fun IndicatorListScreen(viewModel: IndicatorViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
+    PullRefreshBox(
+        refreshing = uiState.isLoading,
+        onRefresh = { viewModel.loadIndicators() },
+        contentIsScrollable = true,
+        modifier = Modifier.fillMaxSize()
+    ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Text("Indicators", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -43,6 +51,7 @@ fun IndicatorListScreen(viewModel: IndicatorViewModel = hiltViewModel()) {
             }
         }
         Spacer(modifier = Modifier.height(16.dp))
+    }
     }
 }
 

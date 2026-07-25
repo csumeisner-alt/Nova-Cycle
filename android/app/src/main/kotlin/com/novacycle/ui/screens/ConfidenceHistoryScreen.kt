@@ -15,6 +15,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.ConfidencePoint
 import com.novacycle.domain.model.SmoothingMode
+import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.ConfidenceHistoryViewModel
@@ -37,7 +38,12 @@ fun ConfidenceHistoryScreen(
 
     val windows = listOf("24h", "7d", "30d")
 
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    PullRefreshBox(
+        refreshing = uiState.isLoading,
+        onRefresh = { viewModel.loadHistory() },
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Text("Confidence History", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -69,6 +75,7 @@ fun ConfidenceHistoryScreen(
         }
 
         ConfidenceLegend(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+    }
     }
 }
 

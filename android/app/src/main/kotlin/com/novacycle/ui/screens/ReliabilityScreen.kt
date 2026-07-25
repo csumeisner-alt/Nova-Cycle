@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.novacycle.data.remote.models.ReliabilityMetricsResponse
 import com.novacycle.data.remote.models.TradeCycleResponse
+import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.NovaBuyGreen
 import com.novacycle.ui.theme.NovaSellRed
@@ -74,10 +75,17 @@ fun ReliabilityScreen(
             )
         }
     ) { padding ->
-        LazyColumn(
+        PullRefreshBox(
+            refreshing = uiState.isLoading,
+            onRefresh = { viewModel.refresh() },
+            contentIsScrollable = true,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+        ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -152,6 +160,7 @@ fun ReliabilityScreen(
             }
 
             item { Spacer(Modifier.height(16.dp)) }
+        }
         }
     }
 }
