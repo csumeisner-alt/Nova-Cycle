@@ -31,6 +31,8 @@ class IngestionPipeline:
 
     def __init__(self):
         self.fetcher = DataFetcher()
+        # Timestamp of the last 5-min stall recovery attempt (cooldown guard).
+        self._last_5min_recovery_attempt: Optional[datetime] = None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Initialisation
@@ -185,11 +187,122 @@ class IngestionPipeline:
         # If yfinance quietly stops returning intraday bars, the short-trend
         # signal silently goes stale during market hours. Surface it loudly.
         try:
-            await check_5min_staleness(db_session)
+            fivemin_status = await check_5min_staleness(db_session)
+            if fivemin_status.get("stale"):
+                # ── Immediate targeted re-fetch on stall detection ────────────
+                # One-shot recovery attempt (cooldown-guarded, never a tight
+                # loop); recovery failures never abort the ingestion run.
+                try:
+                    await self.recover_5min_stall(fivemin_status, db_session)
+                except Exception as exc:
+                    logger.error("fivemin_stall_recovery_error error=%s", exc)
         except Exception as exc:
             logger.error("fivemin_staleness_check_failed error=%s", exc)
 
         logger.info("Incremental update complete.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 5-min stall recovery (immediate targeted re-fetch on staleness)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Minimum minutes between recovery attempts so repeated stale runs (the
+    # scheduler fires every 5 min) can't turn into a re-fetch loop.
+    FIVEMIN_RECOVERY_COOLDOWN_MINUTES: int = 15
+
+    async def recover_5min_stall(
+        self,
+        status: dict,
+        db_session: AsyncSession,
+        now: Optional[datetime] = None,
+    ) -> dict:
+        """
+        One-shot targeted re-fetch of the missing intraday window after
+        check_5min_staleness flips to stale.
+
+        Behaviour:
+          - Cooldown-guarded (FIVEMIN_RECOVERY_COOLDOWN_MINUTES) so back-to-back
+            stale scheduler runs don't hammer yfinance; skipped attempts log
+            `fivemin_stall_recovery_skipped`.
+          - Fetches only the gap window: from the last stored 5-min bar (or
+            today's session when none exists) through now via fetch_5min_range.
+          - Re-runs the staleness check afterwards and logs the outcome
+            distinctly: `fivemin_stall_recovered` (INFO) on success,
+            `fivemin_stall_recovery_failed` (WARNING) on continued staleness.
+
+        Returns a summary dict:
+            {"attempted": bool, "recovered": Optional[bool],
+             "bars_fetched": int, "reason": Optional[str]}
+        """
+        if now is None:
+            now = datetime.utcnow()
+        if now.tzinfo is not None:
+            now = now.astimezone(timezone.utc).replace(tzinfo=None)
+
+        summary: dict = {
+            "attempted": False, "recovered": None,
+            "bars_fetched": 0, "reason": None,
+        }
+
+        last = getattr(self, "_last_5min_recovery_attempt", None)
+        cooldown = self.FIVEMIN_RECOVERY_COOLDOWN_MINUTES
+        if last is not None:
+            since = (now - last).total_seconds() / 60.0
+            if since < cooldown:
+                summary["reason"] = "cooldown"
+                logger.info(
+                    "fivemin_stall_recovery_skipped reason=cooldown "
+                    "minutes_since_last=%.1f cooldown=%d",
+                    since, cooldown,
+                )
+                return summary
+
+        self._last_5min_recovery_attempt = now
+        summary["attempted"] = True
+
+        # Gap window: from the last stored bar's day (or today) through now.
+        latest_iso = status.get("latest_5min")
+        if latest_iso:
+            try:
+                start = datetime.fromisoformat(latest_iso)
+            except ValueError:
+                start = now
+        else:
+            start = now
+
+        logger.warning(
+            "fivemin_stall_recovery_attempt window=%s→%s age_minutes=%s",
+            start.date().isoformat(), now.date().isoformat(),
+            status.get("age_minutes"),
+        )
+
+        df = await self.fetcher.fetch_5min_range(start, now)
+        if not df.empty and latest_iso:
+            # Keep only bars newer than what we already have.
+            df = df[df.index > pd.Timestamp(start)]
+        summary["bars_fetched"] = int(len(df))
+
+        if not df.empty:
+            await self.store_voo_candles(
+                df, db_session, timeframe="5min", _is_backfill=True
+            )
+
+        recheck = await check_5min_staleness(db_session, now=now)
+        summary["recovered"] = not recheck.get("stale", True)
+
+        if summary["recovered"]:
+            logger.info(
+                "fivemin_stall_recovered bars_fetched=%d latest_5min=%s",
+                summary["bars_fetched"], recheck.get("latest_5min"),
+            )
+        else:
+            logger.warning(
+                "fivemin_stall_recovery_failed bars_fetched=%d latest_5min=%s "
+                "age_minutes=%s — feed still stale after targeted re-fetch; "
+                "next attempt after cooldown.",
+                summary["bars_fetched"], recheck.get("latest_5min"),
+                recheck.get("age_minutes"),
+            )
+        return summary
 
     # ─────────────────────────────────────────────────────────────────────────
     # Scheduled updates (called by APScheduler)
