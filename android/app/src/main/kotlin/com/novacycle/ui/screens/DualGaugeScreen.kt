@@ -111,78 +111,9 @@ fun DualGaugeScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // ── Backend-unreachable notice ───────────────────────────────
-            // Shown after several consecutive failed /healthz polls; visually
-            // distinct (red outline card) from the amber degraded banner.
-            if (uiState.backendUnreachable) {
-                OutlinedCard(
-                    colors = CardDefaults.outlinedCardColors(
-                        containerColor = NovaSellRed.copy(alpha = 0.08f)
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, NovaSellRed),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text       = "🔌 Backend unreachable",
-                            style      = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color      = NovaSellRed
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text  = "Backend unreachable — data may be stale.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = NovaSellRed.copy(alpha = 0.9f)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // ── Degraded-predictions warning banner ──────────────────────
-            // Mirrors the web status page: shown while /healthz reports
-            // status "degraded", naming the affected model(s) and alerts.
-            val health = uiState.health
-            if (health?.isDegraded == true) {
-                val amber = Color(0xFFFFB300)
-                val degradedModels = health.degradedModels
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = amber.copy(alpha = 0.15f)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text       = "⚠️ Predictions degraded",
-                            style      = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color      = amber
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (degradedModels.isNotEmpty()) {
-                                "Predictions may be unreliable — affected model" +
-                                    (if (degradedModels.size > 1) "s" else "") +
-                                    ": ${degradedModels.joinToString(", ")}."
-                            } else {
-                                "Some system components are degraded."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = amber.copy(alpha = 0.9f)
-                        )
-                        health.alerts.orEmpty().forEach { alert ->
-                            Text(
-                                text  = "• $alert",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = amber.copy(alpha = 0.7f)
-                            )
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
+            // NOTE: the backend-unreachable and degraded-predictions banners
+            // are now rendered app-wide by HealthBanners in NavGraph, driven
+            // by the shared HealthViewModel — not per-screen.
 
             // ── Dual Gauge widgets ────────────────────────────────────────
             Row(

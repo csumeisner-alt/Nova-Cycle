@@ -1,5 +1,8 @@
 package com.novacycle.ui.navigation
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -7,10 +10,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.*
+import com.novacycle.ui.components.HealthBanners
 import com.novacycle.ui.screens.*
+import com.novacycle.viewmodel.HealthViewModel
 
 /** Route constants — single source of truth for navigation destinations */
 object Routes {
@@ -45,10 +53,26 @@ private val bottomNavItems = listOf(
  * reachable via in-screen navigation (e.g., tapping hold time card → HoldTimeScreen).
  */
 @Composable
-fun NovaCycleNavHost() {
+fun NovaCycleNavHost(
+    healthViewModel: HealthViewModel = hiltViewModel()
+) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    val healthState by healthViewModel.uiState.collectAsStateWithLifecycle()
+
+    // Screens that display backend-derived data — the shared health banners
+    // appear on all of these. Settings is the only non-data screen.
+    val dataScreenRoutes = setOf(
+        Routes.DUAL_GAUGE,
+        Routes.RAW_CHART,
+        Routes.FILTERED_CHART,
+        Routes.CONFIDENCE_HISTORY,
+        Routes.INDICATOR_LIST,
+        Routes.HOLD_TIME,
+        Routes.RELIABILITY
+    )
+    val showHealthBanners = currentDestination?.route in dataScreenRoutes
 
     // Destinations that show the bottom nav bar
     val bottomNavRoutes = bottomNavItems.map { it.route }.toSet()
@@ -87,11 +111,26 @@ fun NovaCycleNavHost() {
             }
         }
     ) { innerPadding ->
-        NavHost(
-            navController = navController,
-            startDestination = Routes.DUAL_GAUGE,
-            modifier = Modifier.padding(innerPadding)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
         ) {
+            // App-level banner slot: one shared /healthz poll drives the
+            // degraded / unreachable banners across every data screen.
+            if (showHealthBanners) {
+                HealthBanners(
+                    state = healthState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                )
+            }
+            NavHost(
+                navController = navController,
+                startDestination = Routes.DUAL_GAUGE,
+                modifier = Modifier.fillMaxSize()
+            ) {
             composable(Routes.DUAL_GAUGE) {
                 DualGaugeScreen(
                     onNavigateToRawChart      = { navController.navigate(Routes.RAW_CHART) },
@@ -123,6 +162,7 @@ fun NovaCycleNavHost() {
                 ReliabilityScreen(
                     onBack = { navController.popBackStack() }
                 )
+            }
             }
         }
     }
