@@ -26,6 +26,38 @@ MIN_PROBA_STD = 1e-4
 # Sample cap so the check stays cheap on large training sets.
 _MAX_SAMPLE = 2000
 
+# Maximum tolerated drop in accuracy (in absolute terms, i.e. percentage
+# points / 100) between the previous successful training run and the new one.
+# A retrain that varies its predictions but loses more than this vs the last
+# good model is flagged as a regression.
+MAX_ACCURACY_DROP = 0.10
+
+
+def check_accuracy_regression(
+    new_accuracy: Optional[float],
+    previous_accuracy: Optional[float],
+) -> Tuple[bool, Optional[str]]:
+    """Return (regressed, reason) comparing a new model's accuracy to the
+    last successful run's accuracy.
+
+    Never raises — a failure to run the check is logged and treated as
+    non-regressed so it cannot break training itself.
+    """
+    try:
+        if new_accuracy is None or previous_accuracy is None:
+            return False, None
+        drop = float(previous_accuracy) - float(new_accuracy)
+        if drop > MAX_ACCURACY_DROP:
+            return True, (
+                f"accuracy regression: dropped from {float(previous_accuracy):.4f} "
+                f"to {float(new_accuracy):.4f} "
+                f"({drop * 100:.1f} pp > {MAX_ACCURACY_DROP * 100:.0f} pp threshold)"
+            )
+        return False, None
+    except Exception as exc:
+        logger.error("check_accuracy_regression error: %s", exc)
+        return False, None
+
 
 def check_model_degeneracy(model, X: np.ndarray) -> Tuple[bool, Optional[str]]:
     """Return (degenerate, reason) for a freshly trained classifier.

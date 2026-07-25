@@ -20,7 +20,8 @@ from database.models import ModelMetadata, VooCandle, VixCandle, SpxCandle
 from indicators.technical import TechnicalIndicators
 from ml.long_trend import LongTrendModel
 from ml.short_trend import ShortTrendModel
-from ml.training_status import record_training_result
+from ml.model_health import check_accuracy_regression
+from ml.training_status import get_last_successful_accuracy, record_training_result
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +109,18 @@ class ModelTrainer:
                     + (long_result.get("degeneracy_reason") or "predictions do not vary"),
                 )
             else:
-                record_training_result(
-                    "long_trend",
-                    success=True,
-                    accuracy=long_result.get("accuracy", 0.0),
-                )
+                new_acc = long_result.get("accuracy", 0.0)
+                prev_acc = get_last_successful_accuracy("long_trend")
+                regressed, reason = check_accuracy_regression(new_acc, prev_acc)
+                if regressed:
+                    logger.error("Long-trend %s", reason)
+                    record_training_result(
+                        "long_trend", success=False, error=reason, accuracy=new_acc
+                    )
+                else:
+                    record_training_result(
+                        "long_trend", success=True, accuracy=new_acc
+                    )
             await self._save_metadata(
                 db_session,
                 model_name="long_trend",
@@ -168,11 +176,18 @@ class ModelTrainer:
                     + (short_result.get("degeneracy_reason") or "predictions do not vary"),
                 )
             else:
-                record_training_result(
-                    "short_trend",
-                    success=True,
-                    accuracy=short_result.get("accuracy", 0.0),
-                )
+                new_acc = short_result.get("accuracy", 0.0)
+                prev_acc = get_last_successful_accuracy("short_trend")
+                regressed, reason = check_accuracy_regression(new_acc, prev_acc)
+                if regressed:
+                    logger.error("Short-trend %s", reason)
+                    record_training_result(
+                        "short_trend", success=False, error=reason, accuracy=new_acc
+                    )
+                else:
+                    record_training_result(
+                        "short_trend", success=True, accuracy=new_acc
+                    )
             await self._save_metadata(
                 db_session,
                 model_name="short_trend",

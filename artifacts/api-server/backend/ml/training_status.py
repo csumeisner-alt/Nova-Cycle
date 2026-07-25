@@ -46,10 +46,20 @@ def record_training_result(
     """
     try:
         data = _load_raw()
+        prev = data.get(model_name) if isinstance(data.get(model_name), dict) else {}
+        if success and accuracy is not None:
+            last_success_accuracy = float(accuracy)
+        else:
+            # Carry the last known good accuracy forward through failures so
+            # a later retrain can still be compared against it.
+            last_success_accuracy = prev.get("last_success_accuracy")
+            if last_success_accuracy is None and prev.get("success") and prev.get("accuracy") is not None:
+                last_success_accuracy = prev.get("accuracy")
         data[model_name] = {
             "success": bool(success),
             "error": (str(error)[:500] if error else None),
             "accuracy": (float(accuracy) if accuracy is not None else None),
+            "last_success_accuracy": last_success_accuracy,
             "attempted_at": datetime.now(timezone.utc).isoformat(),
         }
         STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -84,3 +94,23 @@ def get_training_status() -> dict:
                 "attempted_at": None,
             }
     return out
+
+
+def get_last_successful_accuracy(model_name: str) -> Optional[float]:
+    """Return the accuracy of the most recent *successful* training run.
+
+    Falls back through the carried-forward ``last_success_accuracy`` so a
+    failed attempt in between does not erase the reference point.
+    Never raises.
+    """
+    try:
+        entry = _load_raw().get(model_name)
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("success") and entry.get("accuracy") is not None:
+            return float(entry["accuracy"])
+        if entry.get("last_success_accuracy") is not None:
+            return float(entry["last_success_accuracy"])
+    except Exception as exc:
+        logger.error("training_status get_last_successful_accuracy error: %s", exc)
+    return None
