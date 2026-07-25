@@ -21,6 +21,10 @@ STATUS_PATH = Path(__file__).parent / "models" / "training_status.json"
 
 MODEL_NAMES = ("long_trend", "short_trend")
 
+# Number of consecutive failed training attempts after which the health
+# endpoint flags a model as "stuck" (retrying daily but never succeeding).
+CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 3
+
 
 def _load_raw() -> dict:
     try:
@@ -55,11 +59,19 @@ def record_training_result(
             last_success_accuracy = prev.get("last_success_accuracy")
             if last_success_accuracy is None and prev.get("success") and prev.get("accuracy") is not None:
                 last_success_accuracy = prev.get("accuracy")
+        if success:
+            consecutive_failures = 0
+        else:
+            try:
+                consecutive_failures = int(prev.get("consecutive_failures") or 0) + 1
+            except (TypeError, ValueError):
+                consecutive_failures = 1
         data[model_name] = {
             "success": bool(success),
             "error": (str(error)[:500] if error else None),
             "accuracy": (float(accuracy) if accuracy is not None else None),
             "last_success_accuracy": last_success_accuracy,
+            "consecutive_failures": consecutive_failures,
             "attempted_at": datetime.now(timezone.utc).isoformat(),
         }
         STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +79,27 @@ def record_training_result(
             json.dump(data, f, indent=2)
     except Exception as exc:
         logger.error("training_status write error: %s", exc)
+
+
+def _safe_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def get_consecutive_failures(model_name: str) -> int:
+    """Return the current consecutive-failure count for one model.
+
+    Never raises.
+    """
+    try:
+        entry = _load_raw().get(model_name)
+        if isinstance(entry, dict):
+            return _safe_int(entry.get("consecutive_failures"))
+    except Exception as exc:
+        logger.error("training_status get_consecutive_failures error: %s", exc)
+    return 0
 
 
 def get_training_status() -> dict:
@@ -85,6 +118,7 @@ def get_training_status() -> dict:
                 "error": entry.get("error"),
                 "accuracy": entry.get("accuracy"),
                 "attempted_at": entry.get("attempted_at"),
+                "consecutive_failures": _safe_int(entry.get("consecutive_failures")),
             }
         else:
             out[name] = {
@@ -92,6 +126,7 @@ def get_training_status() -> dict:
                 "error": None,
                 "accuracy": None,
                 "attempted_at": None,
+                "consecutive_failures": 0,
             }
     return out
 

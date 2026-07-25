@@ -900,7 +900,10 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     Overall status becomes "degraded" if either model failed its last
     training attempt or is running in neutral-fallback mode.
     """
-    from ml.training_status import get_training_status
+    from ml.training_status import (
+        get_training_status,
+        CONSECUTIVE_FAILURE_ALERT_THRESHOLD,
+    )
     from ml.fallback_stats import get_persisted_fallback_stats, get_last_reset_at
     from database.models import ModelMetadata
 
@@ -935,6 +938,8 @@ async def healthz(session: AsyncSession = Depends(get_session)):
 
         status = training_status.get(name, {})
         failed = status.get("success") is False
+        consecutive_failures = status.get("consecutive_failures") or 0
+        training_stuck = consecutive_failures >= CONSECUTIVE_FAILURE_ALERT_THRESHOLD
         fallback_stats = _ml_fallback_stats.get(name, {})
         persisted = persisted_fallbacks.get(name, {})
         if failed or neutral or fallback_stats.get("count", 0) > 0:
@@ -942,6 +947,8 @@ async def healthz(session: AsyncSession = Depends(get_session)):
 
         models[name] = {
             "last_training_success": status.get("success"),
+            "consecutive_training_failures": consecutive_failures,
+            "training_stuck": training_stuck,
             "last_training_error": status.get("error"),
             "last_training_attempted_at": status.get("attempted_at"),
             "last_training_accuracy": status.get("accuracy"),
@@ -1012,6 +1019,13 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             alerts.append(
                 f"{name}: last training attempt failed"
                 + (f" ({info['last_training_error']})" if info["last_training_error"] else "")
+            )
+        if info["training_stuck"]:
+            alerts.append(
+                f"{name}: training stuck — {info['consecutive_training_failures']} "
+                f"consecutive failed retrain attempts (threshold "
+                f"{CONSECUTIVE_FAILURE_ALERT_THRESHOLD}); model is running on an "
+                "increasingly stale last-good version"
             )
         if info["neutral_fallback"]:
             alerts.append(f"{name}: model unavailable — serving neutral 0.5 predictions")
