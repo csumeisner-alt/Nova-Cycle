@@ -22,7 +22,9 @@ data class ConfidenceHistoryUiState(
     val error: String? = null,
     val selectedWindow: String = "7d",
     val ticker: String = "VOO",
-    val smoothingEnabled: Boolean = false
+    val smoothingEnabled: Boolean = false,
+    /** Epoch millis of the last successful data refresh on this screen; null if none yet */
+    val lastUpdatedAtMillis: Long? = null
 )
 
 /**
@@ -59,7 +61,10 @@ class ConfidenceHistoryViewModel @Inject constructor(
                             longMomentumPoints = points.map { it.longMomentum },
                             shortMomentumPoints = points.map { it.shortMomentum },
                             isLoading = false,
-                            error = null
+                            error = null,
+                            // Shared DataFreshnessTracker is updated by the repository;
+                            // this timestamp drives the screen's own "Updated X ago" label.
+                            lastUpdatedAtMillis = System.currentTimeMillis()
                         )
                     }
                 },

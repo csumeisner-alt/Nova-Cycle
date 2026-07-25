@@ -51,7 +51,9 @@ data class ReliabilityUiState(
     val sortAscending: Boolean = false,
     val expandedCycleId: String? = null,
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    /** Epoch millis of the last successful data refresh on this screen; null if none yet */
+    val lastUpdatedAtMillis: Long? = null
 )
 
 /**
@@ -94,7 +96,10 @@ class ReliabilityViewModel @Inject constructor(
                             cycles = response.cycles,
                             summary = response.summary,
                             isLoading = false,
-                            error = null
+                            error = null,
+                            // Shared DataFreshnessTracker is updated by the repository;
+                            // this timestamp drives the screen's own "Updated X ago" label.
+                            lastUpdatedAtMillis = System.currentTimeMillis()
                         ).applyFiltersAndSort()
                     }
                 },

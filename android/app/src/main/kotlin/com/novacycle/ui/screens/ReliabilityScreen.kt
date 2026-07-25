@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.novacycle.data.remote.models.ReliabilityMetricsResponse
 import com.novacycle.data.remote.models.TradeCycleResponse
+import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.NovaBuyGreen
 import com.novacycle.ui.theme.NovaSellRed
 import com.novacycle.viewmodel.CycleSortColumn
@@ -81,6 +82,11 @@ fun ReliabilityScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item { Spacer(Modifier.height(8.dp)) }
+
+            item {
+                // "Updated X ago" freshness label, ticking as time passes
+                UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis)
+            }
 
             item {
                 SummaryPanel(

@@ -16,7 +16,9 @@ data class IndicatorUiState(
     val indicators: IndicatorResponse? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
-    val ticker: String = "VOO"
+    val ticker: String = "VOO",
+    /** Epoch millis of the last successful data refresh on this screen; null if none yet */
+    val lastUpdatedAtMillis: Long? = null
 )
 
 /**
@@ -41,7 +43,15 @@ class IndicatorViewModel @Inject constructor(
             val result = repository.getIndicators(_uiState.value.ticker)
             result.fold(
                 onSuccess = { indicators ->
-                    _uiState.update { it.copy(indicators = indicators, isLoading = false) }
+                    // Shared DataFreshnessTracker is updated by the repository;
+                    // this timestamp drives the screen's own "Updated X ago" label.
+                    _uiState.update {
+                        it.copy(
+                            indicators = indicators,
+                            isLoading = false,
+                            lastUpdatedAtMillis = System.currentTimeMillis()
+                        )
+                    }
                 },
                 onFailure = { error ->
                     _uiState.update {

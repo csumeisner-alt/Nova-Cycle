@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.HoldTimeViewModel
 
@@ -50,6 +51,8 @@ fun HoldTimeScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
+                        // "Updated X ago" freshness label, ticking as time passes
+                        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis)
 
                         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                             Column(

@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.data.remote.models.IndicatorResponse
+import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.IndicatorViewModel
 
@@ -25,6 +26,9 @@ fun IndicatorListScreen(viewModel: IndicatorViewModel = hiltViewModel()) {
             Text("Indicators", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             TextButton(onClick = { viewModel.loadIndicators() }) { Text("Refresh") }
         }
+
+        // "Updated X ago" freshness label, ticking as time passes
+        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp))
 
         if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (uiState.error != null) Text("⚠️ ${uiState.error}", color = NovaSellRed, modifier = Modifier.padding(12.dp))

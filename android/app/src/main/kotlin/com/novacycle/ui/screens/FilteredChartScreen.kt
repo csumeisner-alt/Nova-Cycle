@@ -22,6 +22,7 @@ import com.novacycle.domain.model.SignalData
 import com.novacycle.domain.usecase.ApplyFilteredSignalsUseCase
 import com.novacycle.ui.components.ConfidenceRibbon
 import com.novacycle.ui.components.SignalStoryCard
+import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.FilteredChartViewModel
 import com.novacycle.viewmodel.SettingsViewModel
@@ -50,6 +51,9 @@ fun FilteredChartScreen(
             Text("Filtered Signals", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text("VOO", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
         }
+
+        // "Updated X ago" freshness label, ticking as time passes
+        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp))
 
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }

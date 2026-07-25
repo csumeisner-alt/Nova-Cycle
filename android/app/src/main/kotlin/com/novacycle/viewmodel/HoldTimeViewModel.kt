@@ -16,7 +16,9 @@ data class HoldTimeUiState(
     val holdTime: HoldTimeResponse? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
-    val ticker: String = "VOO"
+    val ticker: String = "VOO",
+    /** Epoch millis of the last successful data refresh on this screen; null if none yet */
+    val lastUpdatedAtMillis: Long? = null
 )
 
 /**
@@ -40,7 +42,15 @@ class HoldTimeViewModel @Inject constructor(
             val result = repository.getHoldTime(_uiState.value.ticker)
             result.fold(
                 onSuccess = { holdTime ->
-                    _uiState.update { it.copy(holdTime = holdTime, isLoading = false) }
+                    // Shared DataFreshnessTracker is updated by the repository;
+                    // this timestamp drives the screen's own "Updated X ago" label.
+                    _uiState.update {
+                        it.copy(
+                            holdTime = holdTime,
+                            isLoading = false,
+                            lastUpdatedAtMillis = System.currentTimeMillis()
+                        )
+                    }
                 },
                 onFailure = { error ->
                     _uiState.update {

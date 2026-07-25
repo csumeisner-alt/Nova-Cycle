@@ -22,6 +22,7 @@ import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.SignalData
 import com.novacycle.ui.components.SignalStoryCard
+import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.RawChartViewModel
 import com.novacycle.viewmodel.SettingsViewModel
@@ -68,6 +69,12 @@ fun RawChartScreen(
             Text("Raw Chart", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text("VOO", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
         }
+
+        // "Updated X ago" freshness label, ticking as time passes
+        UpdatedAgoLabel(
+            lastUpdatedAtMillis = uiState.lastUpdatedAtMillis,
+            modifier = Modifier.padding(horizontal = 12.dp)
+        )
 
         // Window selector
         Row(modifier = Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

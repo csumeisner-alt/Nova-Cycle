@@ -24,7 +24,9 @@ data class FilteredChartUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val selectedWindow: String = "30d",
-    val ticker: String = "VOO"
+    val ticker: String = "VOO",
+    /** Epoch millis of the last successful data refresh on this screen; null if none yet */
+    val lastUpdatedAtMillis: Long? = null
 )
 
 /**
@@ -64,11 +66,17 @@ class FilteredChartViewModel @Inject constructor(
             // Apply client-side strongest-confidence filtering with user settings
             val filterResult = applyFilteredSignalsUseCase(rawSignals, currentSettings)
 
+            // Freshness is reported to the shared DataFreshnessTracker by the
+            // repository on remote success; here we only track this screen's label.
+            val anySuccess = candlesResult.isSuccess || signalsResult.isSuccess
+
             _uiState.update { state ->
                 state.copy(
                     candles = candlesResult.getOrDefault(state.candles),
                     filteredSignals = filterResult.signals,
                     tradeCycles = filterResult.cycles,
+                    lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()
+                                          else state.lastUpdatedAtMillis,
                     isLoading = false,
                     error = when {
                         candlesResult.isFailure -> candlesResult.exceptionOrNull()?.message

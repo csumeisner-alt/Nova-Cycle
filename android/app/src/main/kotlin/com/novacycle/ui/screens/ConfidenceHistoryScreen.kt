@@ -15,6 +15,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.ConfidencePoint
 import com.novacycle.domain.model.SmoothingMode
+import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.ConfidenceHistoryViewModel
 import com.novacycle.viewmodel.SettingsViewModel
@@ -48,6 +49,9 @@ fun ConfidenceHistoryScreen(
                 )
             }
         }
+
+        // "Updated X ago" freshness label, ticking as time passes
+        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp))
 
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }
