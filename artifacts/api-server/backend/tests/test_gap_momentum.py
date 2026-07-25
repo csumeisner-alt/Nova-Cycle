@@ -221,6 +221,52 @@ async def test_gap_status_stale_gap_from_earlier_day_is_null(client):
 
 
 @pytest.mark.asyncio
+async def test_gap_status_same_trading_day_across_utc_midnight(client):
+    """
+    Timestamps are stored UTC-naive. An after-hours candle at 00:00 UTC on
+    July 25 is still 20:00 ET on July 24 — the same US trading day as that
+    morning's gap. A raw UTC-date comparison would wrongly reject it.
+    """
+    ac, session_maker = client
+    day = datetime(2026, 7, 24)
+    candles = [five_min_candle(day.replace(hour=9), "pre_market", gap_percent=1.5)]
+    for i in range(N):
+        close = 101.0 if i == N - 1 else 100.0
+        candles.append(
+            five_min_candle(
+                day.replace(hour=13, minute=30) + timedelta(minutes=5 * i),
+                "regular", open_=100.0, close=close,
+            )
+        )
+    # Latest candle: 2026-07-25 00:00 UTC == 2026-07-24 20:00 ET (same trading day)
+    candles.append(five_min_candle(datetime(2026, 7, 25, 0, 0), "after_hours"))
+    await seed(session_maker, candles)
+    body = (await ac.get("/api/gap_status", params={"ticker": "VOO"})).json()
+    assert body["gap_momentum"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_gap_status_next_trading_day_after_utc_midnight_is_null(client):
+    """A candle from the next ET trading day must not reuse yesterday's gap."""
+    ac, session_maker = client
+    day = datetime(2026, 7, 24)
+    candles = [five_min_candle(day.replace(hour=9), "pre_market", gap_percent=1.5)]
+    for i in range(N):
+        close = 101.0 if i == N - 1 else 100.0
+        candles.append(
+            five_min_candle(
+                day.replace(hour=13, minute=30) + timedelta(minutes=5 * i),
+                "regular", open_=100.0, close=close,
+            )
+        )
+    # Latest candle: 2026-07-25 09:00 UTC == 05:00 ET on July 25 (next trading day)
+    candles.append(five_min_candle(datetime(2026, 7, 25, 9, 0), "pre_market"))
+    await seed(session_maker, candles)
+    body = (await ac.get("/api/gap_status", params={"ticker": "VOO"})).json()
+    assert body["gap_momentum"] is None
+
+
+@pytest.mark.asyncio
 async def test_gap_status_gap_down_fade_is_negative(client):
     ac, session_maker = client
     day = datetime(2026, 7, 24)

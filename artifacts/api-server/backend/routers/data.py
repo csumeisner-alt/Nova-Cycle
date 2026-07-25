@@ -10,8 +10,9 @@ GET /api/gap_status?ticker=VOO
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,6 +30,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["data"])
 
 _INDICATORS = TechnicalIndicators()
+
+_MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _trading_day(ts: datetime) -> date:
+    """
+    Map a stored candle timestamp to its US-market trading day.
+
+    Candle timestamps are stored as UTC-naive datetimes (see DataFetcher /
+    market_calendar). Converting to America/New_York before taking the date
+    keeps pre-market and regular-session candles on the same trading day even
+    if a session crosses midnight UTC.
+    """
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(_MARKET_TZ).date()
+
+
+def _trading_day_utc_bounds(day: date) -> tuple[datetime, datetime]:
+    """Return the UTC-naive [start, end) datetimes covering an ET trading day."""
+    start_et = datetime.combine(day, datetime.min.time(), tzinfo=_MARKET_TZ)
+    end_et = start_et + timedelta(days=1)
+    return (
+        start_et.astimezone(timezone.utc).replace(tzinfo=None),
+        end_et.astimezone(timezone.utc).replace(tzinfo=None),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,13 +224,15 @@ async def _compute_gap_momentum(
         if not gap_candle or not gap_candle.timestamp:
             return None
 
-        # Only report momentum for a gap that belongs to the same trading day
-        # as the candle whose gap status we're returning.
-        if as_of is not None and gap_candle.timestamp.date() != as_of.date():
+        # Only report momentum for a gap that belongs to the same US-market
+        # trading day (America/New_York) as the candle whose gap status we're
+        # returning. Comparing exchange-local dates instead of raw UTC calendar
+        # dates keeps pre-market candles paired with that day's regular session
+        # even when the session straddles midnight UTC.
+        if as_of is not None and _trading_day(gap_candle.timestamp) != _trading_day(as_of):
             return None
 
-        day_start = datetime.combine(gap_candle.timestamp.date(), datetime.min.time())
-        day_end = day_start + timedelta(days=1)
+        day_start, day_end = _trading_day_utc_bounds(_trading_day(gap_candle.timestamp))
         result = await db.execute(
             select(VooCandle)
             .where(
