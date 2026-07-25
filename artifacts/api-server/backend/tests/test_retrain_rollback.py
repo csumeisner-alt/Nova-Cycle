@@ -1,0 +1,250 @@
+"""Rollback tests: a flagged (regressed/degenerate) retrain must restore the
+previous model file on disk, and the models must reload the restored file —
+not keep serving the regressed in-memory model — on the next predict.
+
+Covers:
+  1. ModelTrainer.run_initial_training rolls the .pkl back to the pre-retrain
+     bytes when the accuracy-regression or degeneracy check flags the retrain.
+  2. LongTrendModel/ShortTrendModel _maybe_reload() picks up the restored file
+     (fresh mtime) and predictions come from the last known-good model.
+"""
+
+import asyncio
+import pickle
+import time
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from ml import long_trend as lt
+from ml import short_trend as st
+from ml import training_status as ts
+from ml.long_trend import LongTrendModel, FEATURE_NAMES as LONG_FEATURES
+from ml.short_trend import ShortTrendModel, N_FEATURES
+from ml.trainer import ModelTrainer, _backup_model_file, _restore_model_file
+
+
+def _daily_df(n=200, seed=42):
+    idx = pd.bdate_range("2025-06-02", periods=n)
+    rng = np.random.default_rng(seed)
+    close = pd.Series(100 + np.cumsum(rng.normal(0.05, 1.0, n)), index=idx)
+    return pd.DataFrame({
+        "open": close.shift(1).fillna(100.0),
+        "high": close + 0.5,
+        "low": close - 0.5,
+        "close": close,
+        "volume": rng.uniform(1e6, 5e6, n),
+        "is_extended_hours": False,
+        "session_type": "regular",
+    }, index=idx)
+
+
+def _fivemin_df(n=400, seed=7):
+    idx = pd.date_range("2026-07-20 13:30", periods=n, freq="5min")
+    rng = np.random.default_rng(seed)
+    close = pd.Series(100 + np.cumsum(rng.normal(0, 0.15, n)), index=idx)
+    return pd.DataFrame({
+        "open": close.shift(1).fillna(100.0),
+        "high": close + 0.1,
+        "low": close - 0.1,
+        "close": close,
+        "volume": rng.uniform(1e4, 5e4, n),
+        "is_extended_hours": False,
+        "session_type": "regular",
+        "gap_percent": 0.5,
+        "gap_type": "none",
+    }, index=idx)
+
+
+@pytest.fixture
+def isolated_paths(tmp_path, monkeypatch):
+    """Redirect model pickles and training-status JSON away from real files."""
+    long_path = tmp_path / "long_trend_model.pkl"
+    short_path = tmp_path / "short_trend_model.pkl"
+    status_path = tmp_path / "training_status.json"
+    monkeypatch.setattr(lt, "MODEL_PATH", long_path)
+    monkeypatch.setattr(st, "MODEL_PATH", short_path)
+    monkeypatch.setattr(ts, "STATUS_PATH", status_path)
+    return long_path, short_path
+
+
+async def _noop_save_metadata(*args, **kwargs):
+    return None
+
+
+def _empty_df(*args, **kwargs):
+    async def _inner(db):
+        return pd.DataFrame()
+    return _inner
+
+
+class TestTrainerRollsBackOnFlaggedRetrain:
+    """run_initial_training must leave the pre-retrain model bytes on disk
+    when the retrain is flagged as regressed or degenerate."""
+
+    def _make_trainer(self, monkeypatch, daily=None, fivemin=None):
+        trainer = ModelTrainer()
+
+        async def _load_daily(db):
+            return daily if daily is not None else pd.DataFrame()
+
+        async def _load_fivemin(db):
+            return fivemin if fivemin is not None else pd.DataFrame()
+
+        async def _load_vix(db):
+            return pd.DataFrame()
+
+        async def _load_spx(db):
+            return pd.Series(dtype=float)
+
+        monkeypatch.setattr(ModelTrainer, "_load_daily_voo", staticmethod(_load_daily))
+        monkeypatch.setattr(ModelTrainer, "_load_fivemin_voo", staticmethod(_load_fivemin))
+        monkeypatch.setattr(ModelTrainer, "_load_vix", staticmethod(_load_vix))
+        monkeypatch.setattr(ModelTrainer, "_load_spx_close", staticmethod(_load_spx))
+        monkeypatch.setattr(
+            ModelTrainer, "_save_metadata", staticmethod(_noop_save_metadata)
+        )
+        return trainer
+
+    def test_regressed_long_retrain_restores_previous_pkl(
+        self, isolated_paths, monkeypatch
+    ):
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        # Establish a last known-good model + recorded success accuracy.
+        LongTrendModel().train(df, {})
+        assert long_path.exists()
+        good_bytes = long_path.read_bytes()
+        ts.record_training_result("long_trend", success=True, accuracy=0.90)
+
+        trainer = self._make_trainer(monkeypatch, daily=df)
+
+        # Simulated regressed retrain: overwrites the pkl and reports an
+        # accuracy far below the recorded 0.90 (> MAX_ACCURACY_DROP).
+        def _regressed_train(self, d, indicators):
+            time.sleep(0.01)
+            lt.MODEL_PATH.write_bytes(b"regressed-model-bytes")
+            self.model = object()  # non-None so the trainer reaches the regression check
+            return {"accuracy": 0.10, "feature_importances": {}, "degenerate": False}
+
+        monkeypatch.setattr(LongTrendModel, "train", _regressed_train)
+
+        asyncio.run(trainer.run_initial_training(object()))
+
+        # Rollback happened: pre-retrain bytes are back on disk.
+        assert long_path.read_bytes() == good_bytes
+        # And the failure was recorded (so the health surface + shortened
+        # retry interval kick in).
+        status = ts.get_training_status()["long_trend"]
+        assert status["success"] is False
+        assert "regression" in (status["error"] or "")
+
+    def test_degenerate_short_retrain_restores_previous_pkl(
+        self, isolated_paths, monkeypatch
+    ):
+        _, short_path = isolated_paths
+        daily = _daily_df()
+        fivemin = _fivemin_df()
+
+        # Last known-good short model on disk.
+        ShortTrendModel().train(fivemin, {})
+        assert short_path.exists()
+        good_bytes = short_path.read_bytes()
+        ts.record_training_result("short_trend", success=True, accuracy=0.80)
+
+        trainer = self._make_trainer(monkeypatch, daily=daily, fivemin=fivemin)
+
+        # Long-trend retrain succeeds without touching anything.
+        def _long_ok(self, d, indicators):
+            self.model = object()
+            return {"accuracy": 0.90, "feature_importances": {}, "degenerate": False}
+
+        # Short-trend retrain writes a broken pkl and is flagged degenerate.
+        def _degenerate_train(self, d, indicators):
+            time.sleep(0.01)
+            st.MODEL_PATH.write_bytes(b"degenerate-model-bytes")
+            self.model = object()
+            return {
+                "accuracy": 0.55,
+                "val_accuracy": 0.55,
+                "degenerate": True,
+                "degeneracy_reason": "constant predictions",
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _long_ok)
+        monkeypatch.setattr(ShortTrendModel, "train", _degenerate_train)
+
+        asyncio.run(trainer.run_initial_training(object()))
+
+        assert short_path.read_bytes() == good_bytes
+        status = ts.get_training_status()["short_trend"]
+        assert status["success"] is False
+        assert "Degenerate" in (status["error"] or "")
+
+
+class TestPredictReloadsRestoredModel:
+    """After a rollback, the next predict() must serve the restored on-disk
+    model (via mtime-based _maybe_reload), not the regressed in-memory one."""
+
+    def test_long_trend_reloads_restored_model(self, isolated_paths):
+        long_path, _ = isolated_paths
+        df_good = _daily_df(seed=42)
+        df_bad = _daily_df(seed=123)
+
+        model = LongTrendModel()
+        model.train(df_good, {})
+        good_bytes = long_path.read_bytes()
+
+        X, _ = model.build_features(df_good, {})
+        x = X[-1:]
+        good_pred = model.predict(x)
+
+        # Backup (as the trainer does), then a "regressed" retrain replaces
+        # both the on-disk pkl and the in-memory model.
+        backup = _backup_model_file(long_path)
+        time.sleep(0.02)
+        model.train(df_bad, {})
+        regressed_model = model.model
+        regressed_pred = float(regressed_model.predict_proba(x)[0][1])
+        assert abs(regressed_pred - good_pred) > 1e-9  # models actually differ
+
+        # Rollback restores the good pkl with a fresh mtime.
+        time.sleep(0.02)
+        assert _restore_model_file(long_path, backup, "long_trend") is True
+        assert long_path.read_bytes() == good_bytes
+
+        # Next predict reloads the restored file, not the in-memory model.
+        pred_after_rollback = model.predict(x)
+        assert pred_after_rollback == pytest.approx(good_pred, abs=1e-9)
+        assert model.model is not regressed_model
+
+    def test_short_trend_reloads_restored_model(self, isolated_paths):
+        _, short_path = isolated_paths
+        df_good = _fivemin_df(seed=7)
+        df_bad = _fivemin_df(seed=99)
+
+        model = ShortTrendModel()
+        model.train(df_good, {})
+        good_bytes = short_path.read_bytes()
+
+        X, _ = model.build_features(df_good, {})
+        x = X[-1:]
+        good_pred = model.predict(x)
+
+        backup = _backup_model_file(short_path)
+        time.sleep(0.02)
+        model.train(df_bad, {})
+        regressed_model = model.model
+        scaled = model.scaler.transform(x)
+        regressed_pred = float(regressed_model.predict_proba(scaled)[0][1])
+        assert abs(regressed_pred - good_pred) > 1e-9
+
+        time.sleep(0.02)
+        assert _restore_model_file(short_path, backup, "short_trend") is True
+        assert short_path.read_bytes() == good_bytes
+
+        pred_after_rollback = model.predict(x)
+        assert pred_after_rollback == pytest.approx(good_pred, abs=1e-9)
+        assert model.model is not regressed_model
