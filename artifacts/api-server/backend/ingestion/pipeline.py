@@ -25,6 +25,29 @@ from ingestion.fetcher import DataFetcher
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Last 5-min stall recovery attempt (module-level so /healthz can report it
+# regardless of which pipeline instance ran the recovery).
+#   {"last_attempt_at": iso|None, "outcome": "recovered"|"failed"|"skipped_cooldown"|None,
+#    "bars_fetched": int|None}
+# ─────────────────────────────────────────────────────────────────────────────
+_last_5min_recovery_status: dict = {
+    "last_attempt_at": None,
+    "outcome": None,
+    "bars_fetched": None,
+}
+
+
+def get_5min_recovery_status() -> dict:
+    """Return a copy of the last 5-min stall recovery attempt summary."""
+    return dict(_last_5min_recovery_status)
+
+
+def _record_5min_recovery(outcome: str, at: datetime, bars_fetched: Optional[int]) -> None:
+    _last_5min_recovery_status["last_attempt_at"] = at.isoformat()
+    _last_5min_recovery_status["outcome"] = outcome
+    _last_5min_recovery_status["bars_fetched"] = bars_fetched
+
 
 class IngestionPipeline:
     """Manages full and incremental ingestion of VOO and VIX market data."""
@@ -249,6 +272,7 @@ class IngestionPipeline:
             since = (now - last).total_seconds() / 60.0
             if since < cooldown:
                 summary["reason"] = "cooldown"
+                _record_5min_recovery("skipped_cooldown", now, None)
                 logger.info(
                     "fivemin_stall_recovery_skipped reason=cooldown "
                     "minutes_since_last=%.1f cooldown=%d",
@@ -288,6 +312,10 @@ class IngestionPipeline:
 
         recheck = await check_5min_staleness(db_session, now=now)
         summary["recovered"] = not recheck.get("stale", True)
+        _record_5min_recovery(
+            "recovered" if summary["recovered"] else "failed",
+            now, summary["bars_fetched"],
+        )
 
         if summary["recovered"]:
             logger.info(

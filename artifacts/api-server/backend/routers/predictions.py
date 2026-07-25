@@ -957,7 +957,8 @@ async def healthz(session: AsyncSession = Depends(get_session)):
 
     # ── SPX futures staleness ────────────────────────────────────────────
     from ingestion.pipeline import (
-        check_spx_staleness, check_vix_staleness, check_5min_staleness
+        check_spx_staleness, check_vix_staleness, check_5min_staleness,
+        get_5min_recovery_status,
     )
 
     spx_data = None
@@ -986,6 +987,13 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     except Exception as exc:
         logger.error("healthz: 5-min staleness check failed: %s", exc)
 
+    # ── VOO 5-min stall auto-recovery (last attempt, if any) ─────────────
+    fivemin_recovery = None
+    try:
+        fivemin_recovery = get_5min_recovery_status()
+    except Exception as exc:
+        logger.error("healthz: 5-min recovery status lookup failed: %s", exc)
+
     alerts = []
     if spx_data and spx_data.get("stale"):
         alerts.append(f"spx_futures: {spx_data.get('detail')}")
@@ -993,6 +1001,12 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         alerts.append(f"vix: {vix_data.get('detail')}")
     if fivemin_data and fivemin_data.get("stale"):
         alerts.append(f"voo_5min: {fivemin_data.get('detail')}")
+    if fivemin_recovery and fivemin_recovery.get("outcome") == "failed":
+        alerts.append(
+            "voo_5min_recovery: last auto-recovery attempt failed "
+            f"(at {fivemin_recovery.get('last_attempt_at')}, "
+            f"bars_fetched={fivemin_recovery.get('bars_fetched')})"
+        )
     for name, info in models.items():
         if info["last_training_success"] is False:
             alerts.append(
@@ -1016,6 +1030,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "spx_futures": spx_data,
         "vix": vix_data,
         "voo_5min": fivemin_data,
+        "voo_5min_recovery": fivemin_recovery,
         "alerts": alerts,
         "fallback_stats_last_reset_at": fallback_last_reset_at,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."

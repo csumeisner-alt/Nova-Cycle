@@ -156,6 +156,75 @@ async def test_cooldown_prevents_tight_retry_loop(db_session, caplog):
 
 
 @pytest.mark.asyncio
+async def test_recovery_status_recorded_for_healthz(db_session):
+    """Each recovery attempt records outcome/time/bars for /healthz."""
+    from ingestion.pipeline import get_5min_recovery_status
+
+    db_session.add(_bar(NOW - timedelta(minutes=MAX_AGE + 30)))
+    await db_session.flush()
+
+    pipeline = IngestionPipeline()
+    pipeline.fetcher.fetch_5min_range = AsyncMock(return_value=_fresh_frame(NOW))
+
+    status = await check_5min_staleness(db_session, now=NOW)
+    await pipeline.recover_5min_stall(status, db_session, now=NOW)
+
+    rec = get_5min_recovery_status()
+    assert rec["outcome"] == "recovered"
+    assert rec["last_attempt_at"] == NOW.isoformat()
+    assert rec["bars_fetched"] > 0
+
+    # A cooldown-skipped attempt is recorded distinctly.
+    skip_at = NOW + timedelta(minutes=5)
+    await pipeline.recover_5min_stall(status, db_session, now=skip_at)
+    rec = get_5min_recovery_status()
+    assert rec["outcome"] == "skipped_cooldown"
+    assert rec["last_attempt_at"] == skip_at.isoformat()
+    assert rec["bars_fetched"] is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_status_records_failure(db_session):
+    from ingestion.pipeline import get_5min_recovery_status
+
+    db_session.add(_bar(NOW - timedelta(minutes=MAX_AGE + 30)))
+    await db_session.flush()
+
+    pipeline = IngestionPipeline()
+    pipeline.fetcher.fetch_5min_range = AsyncMock(return_value=pd.DataFrame())
+
+    status = await check_5min_staleness(db_session, now=NOW)
+    await pipeline.recover_5min_stall(status, db_session, now=NOW)
+
+    rec = get_5min_recovery_status()
+    assert rec["outcome"] == "failed"
+    assert rec["bars_fetched"] == 0
+
+
+@pytest.mark.asyncio
+async def test_healthz_includes_recovery_fields(db_session):
+    """/healthz payload carries the last recovery attempt summary + alert."""
+    from ingestion.pipeline import get_5min_recovery_status
+    from routers.predictions import healthz
+
+    db_session.add(_bar(NOW - timedelta(minutes=MAX_AGE + 30)))
+    await db_session.flush()
+
+    pipeline = IngestionPipeline()
+    pipeline.fetcher.fetch_5min_range = AsyncMock(return_value=pd.DataFrame())
+    status = await check_5min_staleness(db_session, now=NOW)
+    await pipeline.recover_5min_stall(status, db_session, now=NOW)
+
+    body = await healthz(session=db_session)
+    rec = body["voo_5min_recovery"]
+    assert rec == get_5min_recovery_status()
+    assert rec["outcome"] == "failed"
+    assert rec["last_attempt_at"] == NOW.isoformat()
+    assert rec["bars_fetched"] == 0
+    assert any(a.startswith("voo_5min_recovery:") for a in body["alerts"])
+
+
+@pytest.mark.asyncio
 async def test_incremental_run_triggers_recovery_when_stale(db_session):
     """run_incremental_update wires staleness → recovery."""
     pipeline = IngestionPipeline()
