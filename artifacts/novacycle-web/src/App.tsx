@@ -33,6 +33,14 @@ function StatusDashboard() {
     retry: 2,
   });
 
+  const isDegraded = !isLoading && !isError && health?.status === 'degraded';
+  const degradedModels: string[] = health?.models
+    ? Object.entries(health.models as Record<string, { neutral_fallback?: boolean; last_training_success?: boolean | null }>)
+        .filter(([, m]) => m.neutral_fallback || m.last_training_success === false)
+        .map(([name]) => name)
+    : [];
+  const alerts: string[] = Array.isArray(health?.alerts) ? health.alerts : [];
+
   return (
     <div className="min-h-[100dvh] w-full flex flex-col items-center justify-center relative overflow-hidden bg-background selection:bg-primary selection:text-primary-foreground">
       <Scanlines />
@@ -74,6 +82,11 @@ function StatusDashboard() {
                     <AlertTriangle className="w-3.5 h-3.5" />
                     <span className="font-mono font-medium">OFFLINE</span>
                   </div>
+                ) : isDegraded ? (
+                  <div className="flex items-center space-x-2 text-amber-400 bg-amber-400/10 px-3 py-1 rounded-full text-sm border border-amber-400/20">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span className="font-mono font-medium">DEGRADED</span>
+                  </div>
                 ) : (
                   <div className="flex items-center space-x-2 text-primary bg-primary/10 px-3 py-1 rounded-full text-sm border border-primary/20">
                     <div className="w-2 h-2 rounded-full bg-primary animate-pulse glow-primary" />
@@ -82,6 +95,27 @@ function StatusDashboard() {
                 )}
               </div>
             </div>
+
+            {isDegraded && (
+              <div className="mb-8 p-4 bg-amber-400/5 rounded-lg border border-amber-400/20" data-testid="banner-degraded">
+                <div className="flex items-center space-x-2 text-amber-400 mb-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span className="font-mono font-medium text-sm">SYSTEM DEGRADED</span>
+                </div>
+                <p className="text-sm text-amber-200/80 mb-2">
+                  {degradedModels.length > 0
+                    ? `Predictions may be unreliable — affected model${degradedModels.length > 1 ? 's' : ''}: ${degradedModels.join(', ')}.`
+                    : 'Some system components are degraded.'}
+                </p>
+                {alerts.length > 0 && (
+                  <ul className="space-y-1 font-mono text-xs text-amber-200/60 list-disc list-inside">
+                    {alerts.map((a, i) => (
+                      <li key={i}>{a}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
