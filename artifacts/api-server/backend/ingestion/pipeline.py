@@ -140,9 +140,10 @@ class IngestionPipeline:
         if last_vix:
             vix_df = await self.fetcher.fetch_historical_vix(years=1)
             if not vix_df.empty:
-                vix_df = vix_df[vix_df.index > pd.Timestamp(last_vix)]
-                if not vix_df.empty:
-                    await self.store_vix_candles(vix_df, db_session, timeframe="daily")
+                # Store the full fetched window (duplicates are skipped) so
+                # missing-day detection can heal downtime holes older than
+                # the last stored VIX timestamp.
+                await self.store_vix_candles(vix_df, db_session, timeframe="daily")
 
         logger.info("Incremental update complete.")
 
@@ -423,9 +424,15 @@ class IngestionPipeline:
         candles: pd.DataFrame,
         db_session: AsyncSession,
         timeframe: str,
+        _is_backfill: bool = False,
     ) -> None:
         """
         Persist VIX candles to DB, skipping duplicates.
+
+        For daily candles, missing trading days inside the covered window are
+        detected (same trading-day calendar logic as VOO) and re-fetched via a
+        targeted backfill. Backfill failures are logged and never abort the
+        main run.
         """
         if candles.empty:
             return
@@ -441,6 +448,38 @@ class IngestionPipeline:
             )
         )
         existing_timestamps = set(row[0] for row in result.fetchall())
+
+        # ── Missing-candle detection (daily only) ─────────────────────────────
+        missing_days: list = []
+        try:
+            if timeframe == "daily" and len(candles) >= 1 and not _is_backfill:
+                if not isinstance(candles.index, pd.DatetimeIndex):
+                    candles = candles.copy()
+                    candles.index = pd.to_datetime(candles.index)
+                idx = candles.sort_index().index
+                have = {ts.date() for ts in idx}
+                # Include days already in the DB so downtime holes (days in
+                # neither the DB nor this frame) are detected within the window.
+                have |= {ts.date() for ts in existing_timestamps}
+                win_start = idx[0].date()
+                win_end = idx[-1].date()
+
+                if win_start <= win_end:
+                    missing_days = [
+                        d.date()
+                        for d in pd.date_range(win_start, win_end, freq="D")
+                        if market_calendar.is_trading_day(d.date())
+                        and d.date() not in have
+                    ]
+                if missing_days:
+                    logger.warning(
+                        "vix_ingest_missing_candles count=%d days=%s",
+                        len(missing_days),
+                        ",".join(d.isoformat() for d in missing_days[:20]),
+                    )
+        except Exception as exc:
+            logger.error("vix_ingest_missing_check_failed error=%s", exc)
+            missing_days = []
 
         for ts, row in candles.sort_index().iterrows():
             ts_naive = ts.to_pydatetime()
@@ -469,4 +508,56 @@ class IngestionPipeline:
         logger.info(
             "VIX %s candles: inserted=%d, skipped=%d (duplicates)",
             timeframe, inserted, skipped,
+        )
+
+        # ── Targeted backfill of missing VIX trading days ─────────────────────
+        if missing_days:
+            try:
+                await self._backfill_missing_vix_days(missing_days, db_session)
+            except Exception as exc:
+                logger.error("vix_ingest_backfill_failed error=%s", exc)
+
+    async def _backfill_missing_vix_days(
+        self,
+        missing_days: list,
+        db_session: AsyncSession,
+    ) -> None:
+        """
+        Re-fetch and store daily VIX candles for the given missing trading
+        days. Failures are logged per range and never propagate to the
+        caller's regular ingestion flow.
+        """
+        from datetime import datetime as _dt, time as _time
+
+        ranges = self._group_contiguous_days(missing_days)
+        logger.info(
+            "vix_ingest_backfill_start days=%d ranges=%d",
+            len(missing_days), len(ranges),
+        )
+
+        filled = 0
+        for start_d, end_d in ranges:
+            try:
+                start = _dt.combine(start_d, _time.min)
+                end = _dt.combine(end_d, _time.min)
+                df = await self.fetcher.fetch_vix_daily_range(start, end)
+                if df.empty:
+                    logger.warning(
+                        "vix_ingest_backfill_empty range=%s→%s",
+                        start_d.isoformat(), end_d.isoformat(),
+                    )
+                    continue
+                await self.store_vix_candles(
+                    df, db_session, timeframe="daily", _is_backfill=True
+                )
+                filled += 1
+            except Exception as exc:
+                logger.error(
+                    "vix_ingest_backfill_range_failed range=%s→%s error=%s",
+                    start_d.isoformat(), end_d.isoformat(), exc,
+                )
+
+        logger.info(
+            "vix_ingest_backfill_complete ranges_ok=%d ranges_total=%d",
+            filled, len(ranges),
         )

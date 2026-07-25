@@ -127,6 +127,37 @@ class DataFetcher:
             logger.error("Error fetching VIX data: %s", exc)
             return pd.DataFrame()
 
+    async def fetch_vix_daily_range(self, start: datetime, end: datetime) -> pd.DataFrame:
+        """
+        Fetch daily VIX candles for a specific [start, end] date range.
+        Used for targeted backfill of missing VIX trading days.
+
+        yfinance's `end` is exclusive, so one day is added to include it.
+
+        Returns:
+            pd.DataFrame (may be empty on error).
+        """
+        vix_ticker = settings.VIX_TICKER
+        start_str = start.strftime("%Y-%m-%d")
+        end_str = (end + timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.info("Backfill fetch: VIX daily %s → %s", start_str, end_str)
+        try:
+            df = await self._run_sync(
+                yf.download,
+                vix_ticker,
+                start=start_str,
+                end=end_str,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+            df = self._normalise_columns(df)
+            logger.info("Backfill fetch: %d daily VIX candles", len(df))
+            return df
+        except Exception as exc:
+            logger.error("Error in backfill VIX fetch %s→%s: %s", start_str, end_str, exc)
+            return pd.DataFrame()
+
     async def fetch_incremental_voo(self, last_timestamp: datetime) -> dict[str, pd.DataFrame]:
         """
         Fetch only new candles since `last_timestamp`.
