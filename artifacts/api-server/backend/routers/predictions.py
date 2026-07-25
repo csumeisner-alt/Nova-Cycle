@@ -864,7 +864,20 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             "neutral_fallback": neutral,
         }
 
+    # ── SPX futures staleness ────────────────────────────────────────────
+    from ingestion.pipeline import check_spx_staleness
+
+    spx_data = None
+    try:
+        spx_data = await check_spx_staleness(session)
+        if spx_data.get("stale"):
+            degraded = True
+    except Exception as exc:
+        logger.error("healthz: SPX staleness check failed: %s", exc)
+
     alerts = []
+    if spx_data and spx_data.get("stale"):
+        alerts.append(f"spx_futures: {spx_data.get('detail')}")
     for name, info in models.items():
         if info["last_training_success"] is False:
             alerts.append(
@@ -880,6 +893,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "timestamp": datetime.utcnow().isoformat(),
         "service": "NovaCycle API",
         "models": models,
+        "spx_futures": spx_data,
         "alerts": alerts,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
     }

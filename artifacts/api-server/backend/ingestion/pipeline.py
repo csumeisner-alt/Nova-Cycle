@@ -165,6 +165,14 @@ class IngestionPipeline:
         if not spx_df.empty:
             await self.store_spx_candles(spx_df, db_session, timeframe="daily")
 
+        # ── SPX staleness check ───────────────────────────────────────────────
+        # If yfinance quietly stops returning ES=F data, the macro signal
+        # silently degrades to the VOO proxy. Surface it loudly here.
+        try:
+            await check_spx_staleness(db_session)
+        except Exception as exc:
+            logger.error("spx_staleness_check_failed error=%s", exc)
+
         logger.info("Incremental update complete.")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -638,3 +646,99 @@ class IngestionPipeline:
             "vix_ingest_backfill_complete ranges_ok=%d ranges_total=%d",
             filled, len(ranges),
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPX futures staleness check (module-level: shared by ingestion + healthz)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def check_spx_staleness(db_session: AsyncSession) -> dict:
+    """
+    Detect quietly-stale SPX futures data.
+
+    Compares the latest stored SPX daily candle against the latest VOO daily
+    trading day. When the SPX candle lags by more than
+    settings.SPX_STALENESS_MAX_LAG_DAYS *trading days* (or is missing
+    entirely while VOO data exists), the macro sensitivity signal has
+    silently degraded to the VOO overnight proxy.
+
+    Logs a WARNING when stale and returns a structured dict for the health
+    endpoint:
+
+        {
+            "stale": bool,
+            "latest_spx": Optional[str],   # ISO date
+            "latest_voo": Optional[str],   # ISO date
+            "lag_trading_days": Optional[int],
+            "max_lag_trading_days": int,
+            "detail": Optional[str],       # set when stale
+        }
+    """
+    max_lag = settings.SPX_STALENESS_MAX_LAG_DAYS
+
+    result = await db_session.execute(
+        select(func.max(SpxCandle.timestamp)).where(
+            SpxCandle.ticker == settings.SPX_FUTURES_TICKER,
+            SpxCandle.timeframe == "daily",
+        )
+    )
+    latest_spx: Optional[datetime] = result.scalar()
+
+    result = await db_session.execute(
+        select(func.max(VooCandle.timestamp)).where(
+            VooCandle.ticker == settings.TICKER,
+            VooCandle.timeframe == "daily",
+        )
+    )
+    latest_voo: Optional[datetime] = result.scalar()
+
+    status: dict = {
+        "stale": False,
+        "latest_spx": latest_spx.date().isoformat() if latest_spx else None,
+        "latest_voo": latest_voo.date().isoformat() if latest_voo else None,
+        "lag_trading_days": None,
+        "max_lag_trading_days": max_lag,
+        "detail": None,
+    }
+
+    if latest_voo is None:
+        # No VOO reference data yet — nothing meaningful to compare against.
+        return status
+
+    if latest_spx is None:
+        status["stale"] = True
+        status["detail"] = (
+            "No SPX futures candles stored while VOO data exists — "
+            "macro signal is running on the VOO overnight proxy."
+        )
+        logger.warning(
+            "spx_data_stale latest_spx=none latest_voo=%s — %s",
+            status["latest_voo"], status["detail"],
+        )
+        return status
+
+    # Count trading days in (latest_spx, latest_voo]
+    lag = 0
+    if latest_spx.date() < latest_voo.date():
+        for d in pd.date_range(
+            latest_spx.date() + timedelta(days=1), latest_voo.date(), freq="D"
+        ):
+            if market_calendar.is_trading_day(d.date()):
+                lag += 1
+    status["lag_trading_days"] = lag
+
+    if lag > max_lag:
+        status["stale"] = True
+        status["detail"] = (
+            f"Latest SPX futures candle ({status['latest_spx']}) lags the "
+            f"latest VOO trading day ({status['latest_voo']}) by {lag} "
+            f"trading days (max {max_lag}) — macro signal has degraded to "
+            "the VOO overnight proxy."
+        )
+        logger.warning(
+            "spx_data_stale latest_spx=%s latest_voo=%s lag_trading_days=%d "
+            "max=%d — %s",
+            status["latest_spx"], status["latest_voo"], lag, max_lag,
+            status["detail"],
+        )
+    return status

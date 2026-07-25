@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     TICKER: str = "VOO"
     VIX_TICKER: str = "^VIX"
     SPX_FUTURES_TICKER: str = "ES=F"   # S&P 500 E-mini futures (yfinance)
+    # Warn when the latest stored SPX futures candle lags the latest VOO
+    # trading day by more than this many trading days (staleness check).
+    SPX_STALENESS_MAX_LAG_DAYS: int = 3
 
     # ── Time-decay lambdas ────────────────────────────────────────────────────
     # Weight(t) = exp(-lambda * age)
