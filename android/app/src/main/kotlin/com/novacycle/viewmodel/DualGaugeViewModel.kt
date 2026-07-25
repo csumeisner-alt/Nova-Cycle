@@ -2,6 +2,7 @@ package com.novacycle.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novacycle.data.remote.models.HealthzResponse
 import com.novacycle.data.remote.models.HoldTimeResponse
 import com.novacycle.data.remote.models.IndicatorResponse
 import com.novacycle.data.remote.models.PredictionResponse
@@ -24,6 +25,8 @@ data class DualGaugeUiState(
     val indicators: IndicatorResponse? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
+    /** Latest backend health snapshot; null until the first successful poll */
+    val health: HealthzResponse? = null,
     /** Currently selected ticker — only "VOO" supported, placeholder for multi-ticker */
     val selectedTicker: String = "VOO"
 )
@@ -44,6 +47,7 @@ class DualGaugeViewModel @Inject constructor(
     init {
         loadPredictions()
         startAutoRefresh()
+        startHealthPolling()
     }
 
     /** Parallel fetch of all dashboard data */
@@ -97,6 +101,23 @@ class DualGaugeViewModel @Inject constructor(
             while (isActive) {
                 delay(5 * 60 * 1000L) // 5 minutes
                 loadPredictions()
+            }
+        }
+    }
+
+    /**
+     * Poll /healthz every 60 seconds so a degraded backend (failed retrain or
+     * neutral-fallback model) is surfaced as a warning banner, matching the
+     * web status page. A failed poll keeps the last known health rather than
+     * flashing/clearing the banner on transient network errors.
+     */
+    private fun startHealthPolling() {
+        viewModelScope.launch {
+            while (isActive) {
+                repository.getHealth().onSuccess { health ->
+                    _uiState.update { it.copy(health = health) }
+                }
+                delay(60 * 1000L) // 60 seconds
             }
         }
     }

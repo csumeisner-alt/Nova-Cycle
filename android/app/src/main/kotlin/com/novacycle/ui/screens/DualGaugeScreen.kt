@@ -111,6 +111,50 @@ fun DualGaugeScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
+            // ── Degraded-predictions warning banner ──────────────────────
+            // Mirrors the web status page: shown while /healthz reports
+            // status "degraded", naming the affected model(s) and alerts.
+            val health = uiState.health
+            if (health?.isDegraded == true) {
+                val amber = Color(0xFFFFB300)
+                val degradedModels = health.degradedModels
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = amber.copy(alpha = 0.15f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text       = "⚠️ Predictions degraded",
+                            style      = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color      = amber
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (degradedModels.isNotEmpty()) {
+                                "Predictions may be unreliable — affected model" +
+                                    (if (degradedModels.size > 1) "s" else "") +
+                                    ": ${degradedModels.joinToString(", ")}."
+                            } else {
+                                "Some system components are degraded."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = amber.copy(alpha = 0.9f)
+                        )
+                        health.alerts.orEmpty().forEach { alert ->
+                            Text(
+                                text  = "• $alert",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = amber.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             // ── Dual Gauge widgets ────────────────────────────────────────
             Row(
                 modifier = Modifier.fillMaxWidth(),

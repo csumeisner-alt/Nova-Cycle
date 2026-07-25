@@ -104,7 +104,7 @@ interface NovaCycleApiService {
         @Query("token") token: String
     ): Map<String, Any>
 
-    /** Health check endpoint */
+    /** Health check endpoint — reports "ok" or "degraded" plus per-model health */
     @GET("healthz")
-    suspend fun healthz(): Map<String, Any>
+    suspend fun healthz(): HealthzResponse
 }

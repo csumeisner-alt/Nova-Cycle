@@ -177,6 +177,10 @@ class NovaCycleRepository @Inject constructor(
     suspend fun getIndicators(ticker: String = "VOO"): Result<IndicatorResponse> =
         runCatching { apiService.getIndicators(ticker) }
 
+    /** Backend health snapshot — used to surface the degraded-predictions warning. */
+    suspend fun getHealth(): Result<HealthzResponse> =
+        runCatching { apiService.healthz() }
+
     /**
      * Fetch trade cycles and reliability metrics from /trade_history.
      * Kept as a simple remote call because the backend is the source of truth
