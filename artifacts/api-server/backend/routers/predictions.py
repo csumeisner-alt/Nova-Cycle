@@ -394,9 +394,14 @@ async def predict_long(
 
         # Build features and run ML model
         try:
-            features = _long_model.build_features(daily_df, indicators)
-            ml_confidence = float(_long_model.predict(features))
+            features = _long_model.build_latest_features(daily_df, indicators)
+            if features is None:
+                logger.warning("predict_long: insufficient data for features; using neutral 0.5")
+                ml_confidence = 0.5
+            else:
+                ml_confidence = float(_long_model.predict(features))
         except Exception as e:
+            logger.error("predict_long ML error: %s", e)
             ml_confidence = 0.5  # Default to neutral if model not trained
 
         # Compute gauge score (age_in_days=0 = latest candle, full weight)
@@ -511,9 +516,14 @@ async def predict_short(
 
         # Build features and predict
         try:
-            features = _short_model.build_features(df_5min, indicators)
-            ml_confidence = float(_short_model.predict(features))
-        except Exception:
+            features = _short_model.build_latest_features(df_5min, indicators)
+            if features is None:
+                logger.warning("predict_short: insufficient data for features; using neutral 0.5")
+                ml_confidence = 0.5
+            else:
+                ml_confidence = float(_short_model.predict(features))
+        except Exception as e:
+            logger.error("predict_short ML error: %s", e)
             ml_confidence = 0.5
 
         # Compute short gauge score
@@ -601,7 +611,12 @@ async def hold_time_estimate(
     """Estimate expected hold time based on current market conditions."""
     _validate_ticker(ticker)
     try:
-        vix_regime = _last_indicators.get("vix_regime", "NORMAL")
+        # NOTE: _last_indicators["vix_regime"] is a per-row pandas Series;
+        # the scalar regime lives in the "latest" sub-dict. Passing the Series
+        # here used to crash (.upper() on a Series) and 500 the endpoint.
+        vix_regime = _last_indicators.get("latest", {}).get("vix_regime") or "NORMAL"
+        if not isinstance(vix_regime, str):
+            vix_regime = "NORMAL"
         result = _hold_engine.estimate_hold_time(
             indicators=_last_indicators,
             long_score=_last_long_score,

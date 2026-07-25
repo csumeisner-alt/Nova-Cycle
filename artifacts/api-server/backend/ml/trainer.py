@@ -199,6 +199,15 @@ class ModelTrainer:
         Returns:
             True if retraining was performed, False otherwise.
         """
+        missing_files = self._missing_model_files()
+        if missing_files:
+            logger.warning(
+                "Model file(s) missing on disk (%s). Training regardless of metadata.",
+                ", ".join(missing_files),
+            )
+            await self.run_initial_training(db_session)
+            return True
+
         last_trained = await self._get_last_trained(db_session)
 
         if last_trained is None:
@@ -227,6 +236,24 @@ class ModelTrainer:
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _missing_model_files() -> list:
+        """Return names of expected model files that are absent on disk.
+
+        The deployment image may ship the SQLite DB (with recent trained_at
+        metadata) but not the trained .pkl files, so the metadata check alone
+        can wrongly skip training on a fresh instance.
+        """
+        from ml.long_trend import MODEL_PATH as LONG_MODEL_PATH
+        from ml.short_trend import MODEL_PATH as SHORT_MODEL_PATH
+
+        missing = []
+        if not LONG_MODEL_PATH.exists():
+            missing.append(LONG_MODEL_PATH.name)
+        if not SHORT_MODEL_PATH.exists():
+            missing.append(SHORT_MODEL_PATH.name)
+        return missing
 
     @staticmethod
     async def _load_daily_voo(db_session: AsyncSession) -> pd.DataFrame:

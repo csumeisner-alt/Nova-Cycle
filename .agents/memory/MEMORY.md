@@ -3,3 +3,4 @@
 - [Prediction frame index alignment](prediction-frame-index-alignment.md) — router candle frames use integer index + timestamp column; align datetime-indexed series before feature computation
 - [Macro override threshold backtest](macro-override-threshold-backtest.md) — VIX threshold HIGH (not EXTREME) validated on real COVID/CPI shock days; rerun backtest script before changing
 - [XGBoost time-decay weights](xgboost-time-decay-weights.md) — normalize exp-decay sample weights to mean 1 or XGBoost degenerates to a constant predictor with zero importances
+- [Prediction router neutral fallbacks](prediction-router-neutral-fallbacks.md) — silent 0.5 causes: tuple passed to predict(), missing .pkl despite fresh metadata, Series vs scalar vix_regime

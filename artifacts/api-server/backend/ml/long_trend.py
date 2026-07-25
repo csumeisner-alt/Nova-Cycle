@@ -69,7 +69,23 @@ class LongTrendModel:
     def __init__(self):
         self.model = None
         self._model_loaded = False
+        self._loaded_mtime: Optional[float] = None
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _maybe_reload(self) -> None:
+        """
+        Load the model on first use, and reload it when the on-disk file has
+        appeared or changed since the last load (e.g. after a retrain in
+        another component of the same process).
+        """
+        try:
+            mtime = MODEL_PATH.stat().st_mtime if MODEL_PATH.exists() else None
+        except OSError:
+            mtime = None
+
+        if not self._model_loaded or mtime != self._loaded_mtime:
+            self.load_model()
+            self._loaded_mtime = mtime
 
     # ──────────────────────────────────────────────────────────────────────────
     # Feature engineering
@@ -359,8 +375,7 @@ class LongTrendModel:
             float in [0.0, 1.0]
         """
         try:
-            if not self._model_loaded:
-                self.load_model()
+            self._maybe_reload()
 
             if self.model is None:
                 logger.warning("Long-trend model not available; returning 0.5")
@@ -421,8 +436,7 @@ class LongTrendModel:
         True when the model is unavailable (missing, stale, or failed to load)
         and predict() would return the neutral 0.5 fallback.
         """
-        if not self._model_loaded:
-            self.load_model()
+        self._maybe_reload()
         return self.model is None
 
     def build_latest_features(
