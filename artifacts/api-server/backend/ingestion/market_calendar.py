@@ -179,12 +179,29 @@ def classify_session(ts: datetime) -> tuple[bool, str, str]:
         return _fallback_classify(ts)
 
 
+def _fallback_utc_offset_hours(ts_utc: datetime) -> int:
+    """
+    Approximate US/Eastern UTC offset without zoneinfo.
+
+    US DST (since 2007): starts second Sunday of March, ends first Sunday
+    of November, transitions at 2:00 local (07:00 UTC start / 06:00 UTC end).
+    Returns -4 (EDT) or -5 (EST).
+    """
+    year = ts_utc.year
+    dst_start = datetime.combine(
+        _nth_weekday(year, 3, 6, 2), datetime.min.time()
+    ) + timedelta(hours=7)   # 2:00 EST == 07:00 UTC
+    dst_end = datetime.combine(
+        _nth_weekday(year, 11, 6, 1), datetime.min.time()
+    ) + timedelta(hours=6)   # 2:00 EDT == 06:00 UTC
+    return -4 if dst_start <= ts_utc < dst_end else -5
+
+
 def _fallback_classify(ts: datetime) -> tuple[bool, str, str]:
-    """Fixed-offset (EDT) heuristic used when the calendar classifier fails."""
+    """DST-approximate fixed-offset heuristic used when the calendar classifier fails."""
     if ts.tzinfo is not None:
-        ts_local = ts + timedelta(hours=-4)
-    else:
-        ts_local = ts + timedelta(hours=-4)
+        ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+    ts_local = ts + timedelta(hours=_fallback_utc_offset_hours(ts))
     hour = ts_local.hour + ts_local.minute / 60.0
     if 4.0 <= hour < 9.5:
         return True, "pre_market", "fallback"

@@ -168,6 +168,35 @@ class TestFallback:
         assert mc._fallback_classify(datetime(2026, 6, 15, 20, 0)) == (True, "after_hours", "fallback")
         assert mc._fallback_classify(datetime(2026, 6, 15, 2, 0)) == (True, "after_hours", "fallback")
 
+    def test_fallback_winter_est_regular_open(self):
+        # 2026-01-15 14:30 UTC == 09:30 EST → regular (not pre_market)
+        assert mc._fallback_classify(datetime(2026, 1, 15, 14, 30)) == (False, "regular", "fallback")
+
+    def test_fallback_winter_est_pre_market(self):
+        # 14:29 UTC == 09:29 EST → pre_market
+        assert mc._fallback_classify(datetime(2026, 1, 15, 14, 29)) == (True, "pre_market", "fallback")
+
+    def test_fallback_winter_est_close(self):
+        # 21:00 UTC == 16:00 EST → after_hours; 20:55 UTC == 15:55 EST → regular
+        assert mc._fallback_classify(datetime(2026, 1, 15, 21, 0)) == (True, "after_hours", "fallback")
+        assert mc._fallback_classify(datetime(2026, 1, 15, 20, 55)) == (False, "regular", "fallback")
+
+    def test_fallback_used_when_calendar_fails_winter(self):
+        with patch.object(mc, "is_trading_day", side_effect=RuntimeError("boom")):
+            res = mc.classify_session(datetime(2026, 1, 15, 14, 30))
+        assert res == (False, "regular", "fallback")
+
+    def test_fallback_dst_transition_days(self):
+        # DST begins 2026-03-08 07:00 UTC; ends 2026-11-01 06:00 UTC
+        assert mc._fallback_utc_offset_hours(datetime(2026, 3, 8, 6, 59)) == -5
+        assert mc._fallback_utc_offset_hours(datetime(2026, 3, 8, 7, 0)) == -4
+        assert mc._fallback_utc_offset_hours(datetime(2026, 11, 1, 5, 59)) == -4
+        assert mc._fallback_utc_offset_hours(datetime(2026, 11, 1, 6, 0)) == -5
+
+    def test_fallback_aware_timestamp(self):
+        ts = datetime(2026, 1, 15, 14, 30, tzinfo=timezone.utc)
+        assert mc._fallback_classify(ts) == (False, "regular", "fallback")
+
     def test_fetcher_uses_calendar_classifier(self):
         # DataFetcher wrapper drops the method but keeps classification
         is_ext, session = DataFetcher._classify_session(datetime(2026, 6, 15, 14, 0))
