@@ -42,6 +42,29 @@ _last_long_score: float = 0.0
 _last_short_score: float = 0.0
 _last_indicators: dict = {}
 
+# ---------------------------------------------------------------------------
+# ML fallback tracking: counts how often each endpoint served the neutral 0.5
+# fallback instead of a real model prediction, so /api/healthz makes repeated
+# fallbacks visible to operators instead of them hiding in logs.
+# ---------------------------------------------------------------------------
+_ml_fallback_stats: dict = {
+    "long_trend": {"count": 0, "last_at": None, "last_reason": None},
+    "short_trend": {"count": 0, "last_at": None, "last_reason": None},
+}
+
+
+def _record_ml_fallback(model_name: str, reason: str) -> None:
+    """Record that a prediction served the neutral fallback (never raises)."""
+    try:
+        stats = _ml_fallback_stats[model_name]
+        stats["count"] += 1
+        stats["last_at"] = datetime.utcnow().isoformat()
+        stats["last_reason"] = str(reason)[:300]
+        logger.warning("ml_fallback model=%s reason=%s count=%d",
+                       model_name, reason, stats["count"])
+    except Exception as exc:
+        logger.error("_record_ml_fallback error: %s", exc)
+
 # Singleton instances
 _indicators_engine = TechnicalIndicators()
 _long_gauge = LongTrendGauge()
@@ -376,6 +399,7 @@ async def predict_long(
             return {
                 "score": 0, "signal": "neutral", "confidence": 0.5,
                 "indicator_breakdown": {}, "ml_confidence": 0.5,
+                "ml_fallback": True,
                 "liquidity_score": 1.0, "gap_type": "none",
                 "macro_override_applied": False,
                 "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
@@ -393,16 +417,28 @@ async def predict_long(
         _last_indicators = indicators
 
         # Build features and run ML model
+        ml_fallback = False
         try:
             features = _long_model.build_latest_features(daily_df, indicators)
             if features is None:
-                logger.warning("predict_long: insufficient data for features; using neutral 0.5")
                 ml_confidence = 0.5
+                ml_fallback = True
+                _record_ml_fallback("long_trend", "insufficient data for features")
+            elif _long_model.is_neutral_fallback():
+                # Model missing/stale/failed to load — predict() would silently
+                # return 0.5, so flag it explicitly instead.
+                ml_confidence = 0.5
+                ml_fallback = True
+                _record_ml_fallback("long_trend", "model unavailable (missing, stale, or failed to load)")
             else:
                 ml_confidence = float(_long_model.predict(features))
+                if getattr(_long_model, "last_prediction_was_fallback", False):
+                    ml_fallback = True
+                    _record_ml_fallback("long_trend", "predict() error fallback (see model logs)")
         except Exception as e:
-            logger.error("predict_long ML error: %s", e)
-            ml_confidence = 0.5  # Default to neutral if model not trained
+            ml_confidence = 0.5  # Default to neutral if prediction errors out
+            ml_fallback = True
+            _record_ml_fallback("long_trend", f"prediction error: {e}")
 
         # Compute gauge score (age_in_days=0 = latest candle, full weight)
         result = _long_gauge.compute_score(indicators, ml_confidence, age_in_days=0)
@@ -449,6 +485,7 @@ async def predict_long(
             "confidence": result["confidence"],
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
+            "ml_fallback": ml_fallback,
             "liquidity_score": 1.0,
             "gap_type": str(latest.get("gap_type", "none")),
             "macro_override_applied": False,
@@ -484,6 +521,7 @@ async def predict_short(
             return {
                 "score": 0, "signal": "neutral", "confidence": 0.5,
                 "indicator_breakdown": {}, "ml_confidence": 0.5,
+                "ml_fallback": True,
                 "liquidity_score": 1.0, "gap_type": "none",
                 "macro_override_applied": False,
                 "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
@@ -515,16 +553,28 @@ async def predict_short(
             indicators["spx_futures_close"] = spx_aligned
 
         # Build features and predict
+        ml_fallback = False
         try:
             features = _short_model.build_latest_features(df_5min, indicators)
             if features is None:
-                logger.warning("predict_short: insufficient data for features; using neutral 0.5")
                 ml_confidence = 0.5
+                ml_fallback = True
+                _record_ml_fallback("short_trend", "insufficient data for features")
+            elif _short_model.is_neutral_fallback():
+                # Model missing/stale/failed to load — predict() would silently
+                # return 0.5, so flag it explicitly instead.
+                ml_confidence = 0.5
+                ml_fallback = True
+                _record_ml_fallback("short_trend", "model unavailable (missing, stale, or failed to load)")
             else:
                 ml_confidence = float(_short_model.predict(features))
+                if getattr(_short_model, "last_prediction_was_fallback", False):
+                    ml_fallback = True
+                    _record_ml_fallback("short_trend", "predict() error fallback (see model logs)")
         except Exception as e:
-            logger.error("predict_short ML error: %s", e)
             ml_confidence = 0.5
+            ml_fallback = True
+            _record_ml_fallback("short_trend", f"prediction error: {e}")
 
         # Compute short gauge score
         # age_in_minutes=0 = latest candle gets full weight
@@ -585,6 +635,7 @@ async def predict_short(
             "confidence": result["confidence"],
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
+            "ml_fallback": ml_fallback,
             "liquidity_score": liquidity_score,
             "gap_type": gap_type,
             "gap_momentum": gap_momentum,
@@ -867,7 +918,8 @@ async def healthz(session: AsyncSession = Depends(get_session)):
 
         status = training_status.get(name, {})
         failed = status.get("success") is False
-        if failed or neutral:
+        fallback_stats = _ml_fallback_stats.get(name, {})
+        if failed or neutral or fallback_stats.get("count", 0) > 0:
             degraded = True
 
         models[name] = {
@@ -877,6 +929,9 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             "last_training_accuracy": status.get("accuracy"),
             "last_trained_at": last_trained_at,
             "neutral_fallback": neutral,
+            "ml_fallback_count": fallback_stats.get("count", 0),
+            "ml_fallback_last_at": fallback_stats.get("last_at"),
+            "ml_fallback_last_reason": fallback_stats.get("last_reason"),
         }
 
     # ── SPX futures staleness ────────────────────────────────────────────
@@ -912,6 +967,11 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             )
         if info["neutral_fallback"]:
             alerts.append(f"{name}: model unavailable — serving neutral 0.5 predictions")
+        if info["ml_fallback_count"] > 0:
+            alerts.append(
+                f"{name}: served neutral-fallback predictions {info['ml_fallback_count']} time(s) "
+                f"since startup (last: {info['ml_fallback_last_reason']} at {info['ml_fallback_last_at']})"
+            )
 
     return {
         "status": "degraded" if degraded else "ok",

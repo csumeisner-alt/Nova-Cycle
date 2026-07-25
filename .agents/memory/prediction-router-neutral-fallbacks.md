@@ -10,3 +10,5 @@ Rules learned fixing the "live backend serves neutral 0.5" incident:
 - Model classes cache `_model_loaded=True` even when the .pkl file is absent. They now reload based on file mtime (`_maybe_reload`), so a retrain in the same process is picked up without a restart — keep that pattern for any new model class.
 - `retrain_if_needed()` must check model files on disk, not just ModelMetadata timestamps: the committed SQLite DB can carry fresh `trained_at` rows while the deployment image lacks the .pkl files.
 - `indicators["vix_regime"]` is a per-row pandas Series; the scalar regime is `indicators["latest"]["vix_regime"]`. Passing the Series into string handling (`.upper()`) 500s endpoints.
+
+**Update (July 2026):** Fallbacks are no longer silent — prediction responses carry an `ml_fallback` flag, models set `last_prediction_was_fallback` in predict(), and /api/healthz exposes per-model fallback counters (in-memory, reset on restart) that flip status to degraded.

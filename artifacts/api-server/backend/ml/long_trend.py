@@ -379,15 +379,18 @@ class LongTrendModel:
 
             if self.model is None:
                 logger.warning("Long-trend model not available; returning 0.5")
+                self.last_prediction_was_fallback = True
                 return 0.5
 
             if features.ndim == 1:
                 features = features.reshape(1, -1)
 
             prob = self.model.predict_proba(features)[0][1]
+            self.last_prediction_was_fallback = False
             return float(prob)
         except Exception as exc:
             logger.error("Long-trend predict error: %s", exc)
+            self.last_prediction_was_fallback = True
             return 0.5
 
     # ──────────────────────────────────────────────────────────────────────────

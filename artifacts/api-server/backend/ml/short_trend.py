@@ -392,6 +392,7 @@ class ShortTrendModel:
 
             if self.model is None:
                 logger.warning("Short-trend model not available; returning 0.5")
+                self.last_prediction_was_fallback = True
                 return 0.5
 
             if features.ndim == 1:
@@ -402,10 +403,12 @@ class ShortTrendModel:
 
             probs = self.model.predict_proba(features)
             # predict_proba returns [[p_class0, p_class1]]
+            self.last_prediction_was_fallback = False
             return float(probs[0][1]) if probs.shape[1] > 1 else float(probs[0][0])
 
         except Exception as exc:
             logger.error("Short-trend predict error: %s", exc)
+            self.last_prediction_was_fallback = True
             return 0.5
 
     # ──────────────────────────────────────────────────────────────────────────
