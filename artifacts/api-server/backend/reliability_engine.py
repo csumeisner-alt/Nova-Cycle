@@ -14,15 +14,19 @@ logic is untouched.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 from statistics import median
 from typing import Any, Dict, List, Optional, Tuple
 
+import pandas as pd
 from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import SignalHistory, TradeCycles, VooCandle
+from database.models import SignalHistory, TradeCycles, VixCandle, VooCandle
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Window parsing (compatible with routers/predictions.py)
@@ -38,6 +42,15 @@ _WINDOW_MAP = {
     "5y": timedelta(days=1825),
     "10y": timedelta(days=3650),
 }
+
+
+# VIX regime thresholds (mirrors indicators/technical.py conventions)
+_VIX_LOW_THRESHOLD = 15.0
+_VIX_NORMAL_THRESHOLD = 25.0
+_VIX_HIGH_THRESHOLD = 35.0
+
+# Default reliability score when no historical data exists for a segment
+_DEFAULT_RELIABILITY_SCORE = 0.5
 
 
 def _parse_window(window: str) -> timedelta:
@@ -236,6 +249,214 @@ def _classify_liquidity(liquidity_score: float) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Volatility regime & VIX helpers (in-memory, VOO-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _load_vix_close_series(
+    session: AsyncSession, since: datetime, ticker: str = "^VIX"
+) -> pd.Series:
+    """
+    Load the VIX close series for the requested lookback window.
+
+    Returns a pandas Series indexed by calendar date (timezone-naive) for
+    efficient as-of lookups when a cycle buy occurred at an intraday time.
+    """
+    try:
+        result = await session.execute(
+            select(VixCandle.timestamp, VixCandle.close)
+            .where(
+                and_(
+                    VixCandle.ticker == ticker,
+                    VixCandle.timestamp >= since,
+                )
+            )
+            .order_by(VixCandle.timestamp)
+        )
+        rows = result.all()
+        if not rows:
+            return pd.Series(dtype=float)
+
+        index = pd.to_datetime([r[0] for r in rows]).tz_localize(None).normalize()
+        values = [float(r[1]) for r in rows]
+        series = pd.Series(values, index=index)
+        # Multiple candles may map to the same calendar date; keep the last
+        # close per date. Do NOT drop duplicate values across different dates.
+        return series[~series.index.duplicated(keep="last")]
+    except Exception as exc:
+        logger.error("reliability_load_vix_error error=%s", exc)
+        return pd.Series(dtype=float)
+
+
+def _classify_vix_regime(vix_close: float) -> str:
+    """Classify a single VIX close into LOW, NORMAL, HIGH, or EXTREME."""
+    if vix_close < _VIX_LOW_THRESHOLD:
+        return "LOW"
+    if vix_close < _VIX_NORMAL_THRESHOLD:
+        return "NORMAL"
+    if vix_close < _VIX_HIGH_THRESHOLD:
+        return "HIGH"
+    return "EXTREME"
+
+
+def _lookup_vix_close(vix_series: pd.Series, ts: datetime) -> Optional[float]:
+    """Return the most recent VIX close on or before the given timestamp."""
+    try:
+        if vix_series.empty:
+            return None
+        target = pd.Timestamp(ts).tz_localize(None).normalize()
+        asof = vix_series.asof(target)
+        return float(asof) if pd.notna(asof) else None
+    except Exception as exc:
+        logger.error("reliability_lookup_vix_error error=%s ts=%s", exc, ts)
+        return None
+
+
+def _compute_volatility_regime(
+    cycle: Dict[str, Any], vix_close: Optional[float]
+) -> str:
+    """
+    Infer a volatility regime for the cycle in memory.
+
+    Uses the VIX close at cycle buy time when available, and falls back to
+    the cycle's own volatility_class. This keeps the computation VOO-only and
+    does not require any schema changes.
+    """
+    try:
+        macro_override = bool(cycle.get("macro_override_applied", False))
+        volatility_class = cycle.get("volatility_class", "medium")
+        vix_regime = _classify_vix_regime(vix_close) if vix_close is not None else None
+
+        if macro_override or vix_regime == "EXTREME":
+            return "macro_shock"
+        if vix_regime == "HIGH" or volatility_class == "high":
+            return "trending"
+        if vix_regime == "LOW" and volatility_class == "low":
+            return "compressed"
+        if volatility_class == "low":
+            return "calm"
+        return "trending"
+    except Exception as exc:
+        logger.error("reliability_compute_volatility_regime_error error=%s", exc)
+        return "calm"
+
+
+def _compute_cycle_cluster_id(cycle: Dict[str, Any], volatility_regime: str) -> str:
+    """Cluster ID combines the inferred volatility regime with the buy gap type."""
+    gap_type = cycle.get("gap_type_at_buy") or "none"
+    return f"{volatility_regime}_{gap_type}"
+
+
+def _compute_win_loss_regime(cycle: Dict[str, Any]) -> str:
+    """
+    Win/loss regime segmentation.
+
+    Examples: high_vol_win, low_vol_win, macro_loss, medium_vol_win, etc.
+    """
+    try:
+        ret = float(cycle.get("return_percent", 0.0))
+        is_win = ret > 0.0
+        volatility_class = cycle.get("volatility_class", "medium")
+        macro_override = bool(cycle.get("macro_override_applied", False))
+
+        if macro_override:
+            return "macro_win" if is_win else "macro_loss"
+        if volatility_class == "high":
+            return "high_vol_win" if is_win else "high_vol_loss"
+        if volatility_class == "low":
+            return "low_vol_win" if is_win else "low_vol_loss"
+        return "medium_vol_win" if is_win else "medium_vol_loss"
+    except Exception as exc:
+        logger.error("reliability_compute_win_loss_regime_error error=%s", exc)
+        return "unknown"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# In-memory segmentation enrichment
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _enrich_cycles_with_segmentation(
+    cycles: List[Dict[str, Any]], vix_series: pd.Series
+) -> List[Dict[str, Any]]:
+    """
+    Add VOO-only in-memory segmentation fields to each cycle dict.
+
+    New fields:
+      - volatility_regime
+      - cycle_cluster_id
+      - win_loss_regime
+      - gap_reliability_score
+      - liquidity_reliability_score
+      - session_reliability_score
+
+    No fields are persisted; these are computed on the fly for /trade_history.
+    """
+    if not cycles:
+        return []
+
+    try:
+        # First pass: regime + cluster labels (no aggregate dependency)
+        for c in cycles:
+            vix_close = _lookup_vix_close(vix_series, c.get("buy_timestamp"))
+            volatility_regime = _compute_volatility_regime(c, vix_close)
+            c["volatility_regime"] = volatility_regime
+            c["cycle_cluster_id"] = _compute_cycle_cluster_id(c, volatility_regime)
+            c["win_loss_regime"] = _compute_win_loss_regime(c)
+
+        # Second pass: per-segment reliability scores (need aggregate stats)
+        _assign_segment_reliability_score(
+            cycles, segment_key="gap_type_at_buy", score_key="gap_reliability_score"
+        )
+        _assign_segment_reliability_score(
+            cycles, segment_key="liquidity_class", score_key="liquidity_reliability_score"
+        )
+        _assign_segment_reliability_score(
+            cycles, segment_key="session_type_at_buy", score_key="session_reliability_score"
+        )
+    except Exception as exc:
+        logger.error("reliability_enrich_cycles_error error=%s", exc)
+        # Graceful fallback: ensure every cycle has the new fields with safe defaults
+        for c in cycles:
+            c.setdefault("volatility_regime", "calm")
+            c.setdefault("cycle_cluster_id", "calm_none")
+            c.setdefault("win_loss_regime", "unknown")
+            c.setdefault("gap_reliability_score", _DEFAULT_RELIABILITY_SCORE)
+            c.setdefault("liquidity_reliability_score", _DEFAULT_RELIABILITY_SCORE)
+            c.setdefault("session_reliability_score", _DEFAULT_RELIABILITY_SCORE)
+
+    return cycles
+
+
+def _assign_segment_reliability_score(
+    cycles: List[Dict[str, Any]], segment_key: str, score_key: str
+) -> Dict[str, float]:
+    """
+    Compute per-segment win rates and assign them back to each cycle as a score.
+
+    Efficient single-pass aggregation: O(n) for the segment grouping and O(n)
+    for the assignment, regardless of history size.
+    """
+    try:
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for c in cycles:
+            value = c.get(segment_key) or "unknown"
+            groups.setdefault(value, []).append(c)
+
+        scores: Dict[str, float] = {}
+        for value, group in groups.items():
+            wins = sum(1 for c in group if c.get("return_percent", 0.0) > 0.0)
+            scores[value] = wins / len(group) if group else _DEFAULT_RELIABILITY_SCORE
+
+        for c in cycles:
+            c[score_key] = scores.get(c.get(segment_key) or "unknown", _DEFAULT_RELIABILITY_SCORE)
+        return scores
+    except Exception as exc:
+        logger.error("reliability_segment_score_error key=%s error=%s", score_key, exc)
+        for c in cycles:
+            c[score_key] = _DEFAULT_RELIABILITY_SCORE
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -303,6 +524,12 @@ def compute_metrics(cycles: List[Dict[str, Any]]) -> Dict[str, Any]:
       - reliability_by_volatility_class
       - reliability_by_liquidity_class
       - reliability_by_session_type
+      - reliability_by_gap_type
+      - reliability_by_cycle_cluster
+      - reliability_by_win_loss_regime
+      - average_gap_reliability_score
+      - average_liquidity_reliability_score
+      - average_session_reliability_score
     """
     if not cycles:
         return {
@@ -318,6 +545,12 @@ def compute_metrics(cycles: List[Dict[str, Any]]) -> Dict[str, Any]:
             "reliability_by_volatility_class": {},
             "reliability_by_liquidity_class": {},
             "reliability_by_session_type": {},
+            "reliability_by_gap_type": {},
+            "reliability_by_cycle_cluster": {},
+            "reliability_by_win_loss_regime": {},
+            "average_gap_reliability_score": _DEFAULT_RELIABILITY_SCORE,
+            "average_liquidity_reliability_score": _DEFAULT_RELIABILITY_SCORE,
+            "average_session_reliability_score": _DEFAULT_RELIABILITY_SCORE,
         }
 
     returns = [c["return_percent"] for c in cycles]
@@ -329,6 +562,10 @@ def compute_metrics(cycles: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     best = max(cycles, key=lambda c: c["return_percent"])
     worst = min(cycles, key=lambda c: c["return_percent"])
+
+    avg_gap_score = sum(c.get("gap_reliability_score", _DEFAULT_RELIABILITY_SCORE) for c in cycles) / n
+    avg_liq_score = sum(c.get("liquidity_reliability_score", _DEFAULT_RELIABILITY_SCORE) for c in cycles) / n
+    avg_ses_score = sum(c.get("session_reliability_score", _DEFAULT_RELIABILITY_SCORE) for c in cycles) / n
 
     metrics = {
         "win_rate": wins / n if n else 0.0,
@@ -349,6 +586,18 @@ def compute_metrics(cycles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "reliability_by_session_type": _segment_by(
             cycles, "session_type_at_buy"
         ),
+        "reliability_by_gap_type": _segment_by(
+            cycles, "gap_type_at_buy"
+        ),
+        "reliability_by_cycle_cluster": _segment_by(
+            cycles, "cycle_cluster_id"
+        ),
+        "reliability_by_win_loss_regime": _segment_by(
+            cycles, "win_loss_regime"
+        ),
+        "average_gap_reliability_score": avg_gap_score,
+        "average_liquidity_reliability_score": avg_liq_score,
+        "average_session_reliability_score": avg_ses_score,
     }
     return metrics
 
@@ -419,8 +668,18 @@ async def get_trade_history_with_metrics(
 
     This is the single helper the /trade_history endpoint uses. It keeps the
     reliability logic isolated from the rest of the signal pipeline.
+
+    In-memory VOO-only segmentation fields (cycle_cluster_id, win_loss_regime,
+    gap/liquidity/session reliability scores) are added after persistence so
+    the underlying TradeCycles table schema is unchanged.
     """
     cycles = await generate_trade_cycles(session, ticker=ticker, window=window)
+
+    # Load VIX once for the window and enrich cycles in memory only.
+    since = datetime.utcnow() - _parse_window(window)
+    vix_series = await _load_vix_close_series(session, since=since)
+    cycles = _enrich_cycles_with_segmentation(cycles, vix_series)
+
     metrics = compute_metrics(cycles)
 
     # Convert datetime objects to ISO strings for JSON serialization
