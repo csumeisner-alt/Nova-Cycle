@@ -184,6 +184,123 @@ class TestTrainerRollsBackOnFlaggedRetrain:
         assert "Degenerate" in (status["error"] or "")
 
 
+class TestFlaggedRetrainSkipsMetadata:
+    """A flagged (regressed/degenerate) retrain must NOT persist a
+    ModelMetadata row with the discarded accuracy — health endpoints read the
+    latest row and must keep showing the restored last-good model."""
+
+    def _make_trainer(self, monkeypatch, saved, daily=None, fivemin=None):
+        trainer = ModelTrainer()
+
+        async def _load_daily(db):
+            return daily if daily is not None else pd.DataFrame()
+
+        async def _load_fivemin(db):
+            return fivemin if fivemin is not None else pd.DataFrame()
+
+        async def _load_vix(db):
+            return pd.DataFrame()
+
+        async def _load_spx(db):
+            return pd.Series(dtype=float)
+
+        async def _record_save_metadata(db, model_name, ticker, accuracy, feature_importances):
+            saved.append({"model_name": model_name, "accuracy": accuracy})
+
+        monkeypatch.setattr(ModelTrainer, "_load_daily_voo", staticmethod(_load_daily))
+        monkeypatch.setattr(ModelTrainer, "_load_fivemin_voo", staticmethod(_load_fivemin))
+        monkeypatch.setattr(ModelTrainer, "_load_vix", staticmethod(_load_vix))
+        monkeypatch.setattr(ModelTrainer, "_load_spx_close", staticmethod(_load_spx))
+        monkeypatch.setattr(
+            ModelTrainer, "_save_metadata", staticmethod(_record_save_metadata)
+        )
+        return trainer
+
+    def test_regressed_long_retrain_writes_no_metadata_row(
+        self, isolated_paths, monkeypatch
+    ):
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        LongTrendModel().train(df, {})
+        ts.record_training_result("long_trend", success=True, accuracy=0.90)
+
+        saved = []
+        trainer = self._make_trainer(monkeypatch, saved, daily=df)
+
+        def _regressed_train(self, d, indicators):
+            lt.MODEL_PATH.write_bytes(b"regressed-model-bytes")
+            self.model = object()
+            return {"accuracy": 0.10, "feature_importances": {}, "degenerate": False}
+
+        monkeypatch.setattr(LongTrendModel, "train", _regressed_train)
+
+        asyncio.run(trainer.run_initial_training(object()))
+
+        # No metadata row written for the flagged long retrain.
+        assert all(rec["model_name"] != "long_trend" for rec in saved)
+
+    def test_degenerate_short_retrain_writes_no_metadata_but_good_long_does(
+        self, isolated_paths, monkeypatch
+    ):
+        _, short_path = isolated_paths
+        daily = _daily_df()
+        fivemin = _fivemin_df()
+
+        ShortTrendModel().train(fivemin, {})
+        ts.record_training_result("short_trend", success=True, accuracy=0.80)
+
+        saved = []
+        trainer = self._make_trainer(monkeypatch, saved, daily=daily, fivemin=fivemin)
+
+        def _long_ok(self, d, indicators):
+            self.model = object()
+            return {"accuracy": 0.90, "feature_importances": {}, "degenerate": False}
+
+        def _degenerate_train(self, d, indicators):
+            st.MODEL_PATH.write_bytes(b"degenerate-model-bytes")
+            self.model = object()
+            return {
+                "accuracy": 0.55,
+                "val_accuracy": 0.55,
+                "degenerate": True,
+                "degeneracy_reason": "constant predictions",
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _long_ok)
+        monkeypatch.setattr(ShortTrendModel, "train", _degenerate_train)
+
+        asyncio.run(trainer.run_initial_training(object()))
+
+        # Successful long retrain persisted its metadata with the new accuracy…
+        long_rows = [r for r in saved if r["model_name"] == "long_trend"]
+        assert len(long_rows) == 1
+        assert long_rows[0]["accuracy"] == pytest.approx(0.90)
+        # …but the flagged short retrain wrote no row at all.
+        assert all(r["model_name"] != "short_trend" for r in saved)
+
+    def test_successful_retrain_still_writes_metadata(
+        self, isolated_paths, monkeypatch
+    ):
+        df = _daily_df()
+        ts.record_training_result("long_trend", success=True, accuracy=0.50)
+
+        saved = []
+        trainer = self._make_trainer(monkeypatch, saved, daily=df)
+
+        def _good_train(self, d, indicators):
+            self.model = object()
+            return {"accuracy": 0.60, "feature_importances": {"rsi": 1.0}, "degenerate": False}
+
+        monkeypatch.setattr(LongTrendModel, "train", _good_train)
+
+        asyncio.run(trainer.run_initial_training(object()))
+
+        long_rows = [r for r in saved if r["model_name"] == "long_trend"]
+        assert len(long_rows) == 1
+        assert long_rows[0]["accuracy"] == pytest.approx(0.60)
+
+
 class TestPredictReloadsRestoredModel:
     """After a rollback, the next predict() must serve the restored on-disk
     model (via mtime-based _maybe_reload), not the regressed in-memory one."""

@@ -154,6 +154,7 @@ class ModelTrainer:
 
         long_backup = _backup_model_file(LONG_MODEL_PATH)
         try:
+            long_flagged = True
             long_result = self.long_model.train(daily_df, indicators)
             if self.long_model.model is None:
                 # train() swallows exceptions internally and returns zeros.
@@ -185,13 +186,24 @@ class ModelTrainer:
                     record_training_result(
                         "long_trend", success=True, accuracy=new_acc
                     )
-            await self._save_metadata(
-                db_session,
-                model_name="long_trend",
-                ticker=ticker,
-                accuracy=long_result.get("accuracy", 0.0),
-                feature_importances=long_result.get("feature_importances", {}),
-            )
+                    long_flagged = False
+            if long_flagged:
+                # Flagged retrain (regressed/degenerate/no model): the model
+                # file was rolled back, so do NOT persist a metadata row with
+                # the discarded accuracy — health surfaces read the latest row
+                # and must keep reflecting the restored last-good model.
+                logger.warning(
+                    "ml_metadata_skipped model=long_trend reason=flagged_retrain "
+                    "— keeping last-good metadata visible to health endpoints"
+                )
+            else:
+                await self._save_metadata(
+                    db_session,
+                    model_name="long_trend",
+                    ticker=ticker,
+                    accuracy=long_result.get("accuracy", 0.0),
+                    feature_importances=long_result.get("feature_importances", {}),
+                )
             logger.info(
                 "Long-trend training complete: accuracy=%.4f",
                 long_result.get("accuracy", 0.0),
@@ -229,6 +241,7 @@ class ModelTrainer:
 
         short_backup = _backup_model_file(SHORT_MODEL_PATH)
         try:
+            short_flagged = True
             short_result = self.short_model.train(fivemin_df, short_indicators)
             if self.short_model.model is None:
                 record_training_result(
@@ -259,13 +272,20 @@ class ModelTrainer:
                     record_training_result(
                         "short_trend", success=True, accuracy=new_acc
                     )
-            await self._save_metadata(
-                db_session,
-                model_name="short_trend",
-                ticker=ticker,
-                accuracy=short_result.get("accuracy", 0.0),
-                feature_importances={},
-            )
+                    short_flagged = False
+            if short_flagged:
+                logger.warning(
+                    "ml_metadata_skipped model=short_trend reason=flagged_retrain "
+                    "— keeping last-good metadata visible to health endpoints"
+                )
+            else:
+                await self._save_metadata(
+                    db_session,
+                    model_name="short_trend",
+                    ticker=ticker,
+                    accuracy=short_result.get("accuracy", 0.0),
+                    feature_importances={},
+                )
             logger.info(
                 "Short-trend training complete: accuracy=%.4f  val_accuracy=%.4f",
                 short_result.get("accuracy", 0.0),
