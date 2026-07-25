@@ -216,7 +216,7 @@ def macro_override_flag(
 
     Fires when either (vectorized):
       - volatility_regime == 'macro_shock', or
-      - VIX regime >= settings.MACRO_OVERRIDE_VIX_REGIME (default EXTREME)
+      - VIX regime >= settings.MACRO_OVERRIDE_VIX_REGIME (default HIGH)
         AND |overnight return| > settings.MACRO_OVERRIDE_OVERNIGHT_MOVE_PCT %
 
     In-memory only; all-0.0 when inputs are missing or on failure.

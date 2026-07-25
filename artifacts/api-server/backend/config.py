@@ -57,7 +57,10 @@ class Settings(BaseSettings):
     #   - volatility_regime == 'macro_shock', or
     #   - VIX regime >= MACRO_OVERRIDE_VIX_REGIME AND the absolute overnight
     #     move exceeds MACRO_OVERRIDE_OVERNIGHT_MOVE_PCT (%)
-    MACRO_OVERRIDE_VIX_REGIME: str = "EXTREME"
+    # Backtested against real VOO/VIX history (scripts/backtest_macro_override.py):
+    # HIGH catches CPI-surprise shock days (e.g. 2022-09-13) that EXTREME missed,
+    # with zero false fires in calm 2017 / 2023 periods.
+    MACRO_OVERRIDE_VIX_REGIME: str = "HIGH"
     MACRO_OVERRIDE_OVERNIGHT_MOVE_PCT: float = 2.0  # % overnight move
 
     # ── Firebase Cloud Messaging ───────────────────────────────────────────────
