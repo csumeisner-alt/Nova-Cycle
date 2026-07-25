@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database.models import VooCandle, VixCandle
+from ingestion import market_calendar
 from ingestion.fetcher import DataFetcher
 
 logger = logging.getLogger(__name__)
@@ -189,6 +190,47 @@ class IngestionPipeline:
         ticker = settings.TICKER
         inserted = 0
         skipped = 0
+
+        # ── In-frame duplicate detection ──────────────────────────────────────
+        # yfinance occasionally returns the same bar twice; keep the last
+        # occurrence and log the anomaly instead of inserting duplicates.
+        # Note: even if this in-frame check fails, the per-row
+        # existing_timestamps guard below still prevents duplicate inserts,
+        # because each inserted timestamp is added to the set.
+        try:
+            if not isinstance(candles.index, pd.DatetimeIndex):
+                candles = candles.copy()
+                candles.index = pd.to_datetime(candles.index)
+            dup_count = int(candles.index.duplicated(keep="last").sum())
+            if dup_count > 0:
+                candles = candles[~candles.index.duplicated(keep="last")]
+                logger.warning(
+                    "ingest_duplicate_candles timeframe=%s dropped=%d",
+                    timeframe, dup_count,
+                )
+        except Exception as exc:
+            logger.error("ingest_duplicate_check_failed error=%s", exc)
+
+        # ── Missing-candle detection (daily only) ─────────────────────────────
+        # Detect trading days with no candle in the fetched window; log only
+        # (backfill happens naturally on the next incremental fetch).
+        try:
+            if timeframe == "daily" and len(candles) > 1:
+                idx = candles.sort_index().index
+                have = {ts.date() for ts in idx}
+                missing = [
+                    d.date().isoformat()
+                    for d in pd.date_range(idx[0].date(), idx[-1].date(), freq="D")
+                    if market_calendar.is_trading_day(d.date())
+                    and d.date() not in have
+                ]
+                if missing:
+                    logger.warning(
+                        "ingest_missing_candles timeframe=daily count=%d days=%s",
+                        len(missing), ",".join(missing[:20]),
+                    )
+        except Exception as exc:
+            logger.error("ingest_missing_check_failed error=%s", exc)
 
         # Pre-load existing timestamps to avoid duplicate queries
         result = await db_session.execute(

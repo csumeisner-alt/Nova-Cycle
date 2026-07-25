@@ -30,6 +30,7 @@ import pandas as pd
 import yfinance as yf
 
 from config import settings
+from ingestion import market_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -44,29 +45,12 @@ class DataFetcher:
         """
         Return (is_extended_hours, session_type) for a given UTC timestamp.
 
-        Times are converted to approximate ET offsets:
-          UTC-5 (EST) / UTC-4 (EDT) – we use a simple hour-of-day heuristic
-          based on local time stored by yfinance.
+        Uses the DST/holiday/half-day aware calendar classifier; falls back
+        to a fixed-offset heuristic when the calendar classifier fails
+        (the fallback is logged inside market_calendar).
         """
-        # yfinance returns tz-aware timestamps; convert to ET-naive hour
-        if ts.tzinfo is not None:
-            # Convert to US/Eastern-equivalent (approximate)
-            et_offset = timedelta(hours=-4)  # EDT; close enough for classification
-            ts_local = ts + et_offset
-        else:
-            ts_local = ts
-
-        hour = ts_local.hour + ts_local.minute / 60.0
-
-        if 4.0 <= hour < 9.5:
-            return True, "pre_market"
-        elif 9.5 <= hour < 16.0:
-            return False, "regular"
-        elif 16.0 <= hour < 20.0:
-            return True, "after_hours"
-        else:
-            # Outside all sessions – treat as extended
-            return True, "after_hours"
+        is_ext, session, _method = market_calendar.classify_session(ts)
+        return is_ext, session
 
     @staticmethod
     def _run_sync(func, *args, **kwargs):
@@ -243,12 +227,27 @@ class DataFetcher:
           gap_down : GapPercent < +GAP_DOWN_THRESHOLD  (default -1.0 %)
           none     : otherwise
 
+        Additive classification (does not change gap_type semantics):
+          gap_class:
+            micro : 0 < |GapPercent| < MICRO_GAP_THRESHOLD (default 0.1 %)
+            macro : |GapPercent| > MACRO_GAP_THRESHOLD     (default 1.0 %)
+            minor : otherwise (between micro and macro)
+            none  : GapPercent == 0
+          gap_momentum: placeholder (None) — reserved for future
+            follow-through measurement; always present in the dict.
+
         Returns:
-            {"gap_percent": float, "gap_type": str}
+            {"gap_percent": float, "gap_type": str,
+             "gap_class": str, "gap_momentum": None}
         """
         try:
             if prev_close == 0:
-                return {"gap_percent": 0.0, "gap_type": "none"}
+                return {
+                    "gap_percent": 0.0,
+                    "gap_type": "none",
+                    "gap_class": "none",
+                    "gap_momentum": None,
+                }
 
             gap_pct = (premarket_open - prev_close) / prev_close * 100.0
 
@@ -259,10 +258,38 @@ class DataFetcher:
             else:
                 gap_type = "none"
 
-            return {"gap_percent": round(gap_pct, 4), "gap_type": gap_type}
+            return {
+                "gap_percent": round(gap_pct, 4),
+                "gap_type": gap_type,
+                "gap_class": self.classify_gap_magnitude(gap_pct),
+                "gap_momentum": None,
+            }
         except Exception as exc:
             logger.error("Error detecting gap: %s", exc)
-            return {"gap_percent": 0.0, "gap_type": "none"}
+            return {
+                "gap_percent": 0.0,
+                "gap_type": "none",
+                "gap_class": "none",
+                "gap_momentum": None,
+            }
+
+    @staticmethod
+    def classify_gap_magnitude(gap_pct: float) -> str:
+        """
+        Classify a gap percentage by magnitude (additive, VOO only):
+          none  : exactly 0
+          micro : |gap| < MICRO_GAP_THRESHOLD (default 0.1 %)
+          macro : |gap| > MACRO_GAP_THRESHOLD (default 1.0 %)
+          minor : in between
+        """
+        mag = abs(gap_pct)
+        if mag == 0.0:
+            return "none"
+        if mag < settings.MICRO_GAP_THRESHOLD:
+            return "micro"
+        if mag > settings.MACRO_GAP_THRESHOLD:
+            return "macro"
+        return "minor"
 
     def compute_liquidity_score(
         self, extended_volume: float, regular_volume: float
@@ -289,6 +316,54 @@ class DataFetcher:
         except Exception as exc:
             logger.error("Error computing liquidity score: %s", exc)
             return 0.0
+
+    # Cache of computed liquidity metrics keyed by rounded inputs so repeated
+    # runs with the same volumes always return identical results.
+    _liquidity_cache: dict[tuple[float, float], dict] = {}
+
+    def compute_liquidity_metrics(
+        self, extended_volume: float, regular_volume: float
+    ) -> dict:
+        """
+        Deterministic liquidity metrics (additive; LiquidityScore semantics
+        are unchanged and still come from compute_liquidity_score):
+
+          liquidity_score       : Volume_extended / Volume_regular
+          liquidity_class       : 'adequate' if score >= LIQUIDITY_SCORE_THRESHOLD
+                                  'thin'     if 0 < score < threshold
+                                  'none'     if score == 0
+          liquidity_compression : min(score / threshold, 1.0) — how compressed
+                                  extended-hours liquidity is vs the threshold
+
+        Results are cached on rounded inputs so identical inputs always
+        produce identical outputs within a process lifetime.
+        """
+        key = (round(float(extended_volume), 6), round(float(regular_volume), 6))
+        cached = self._liquidity_cache.get(key)
+        if cached is not None:
+            return dict(cached)
+
+        score = self.compute_liquidity_score(extended_volume, regular_volume)
+        threshold = settings.LIQUIDITY_SCORE_THRESHOLD
+
+        if score == 0.0:
+            liquidity_class = "none"
+        elif score < threshold:
+            liquidity_class = "thin"
+        else:
+            liquidity_class = "adequate"
+
+        compression = round(min(score / threshold, 1.0), 6) if threshold > 0 else 0.0
+
+        metrics = {
+            "liquidity_score": score,
+            "liquidity_class": liquidity_class,
+            "liquidity_compression": compression,
+        }
+        if len(self._liquidity_cache) > 4096:
+            self._liquidity_cache.clear()
+        self._liquidity_cache[key] = metrics
+        return dict(metrics)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -320,5 +395,33 @@ class DataFetcher:
 
         # Drop rows with all-NaN OHLC
         df.dropna(subset=["open", "high", "low", "close"], inplace=True)
+
+        # ── Timestamp sanity checks ────────────────────────────────────────────
+        # Flag and drop implausible timestamps (before 2000 or in the future)
+        # with structured log entries so ingestion runs are auditable.
+        if not df.empty:
+            try:
+                now_utc = datetime.utcnow()
+                bad_mask = []
+                for ts in df.index:
+                    issue = market_calendar.timestamp_sanity_issue(
+                        ts.to_pydatetime(), now_utc=now_utc
+                    )
+                    bad_mask.append(issue is not None)
+                    if issue is not None:
+                        logger.warning(
+                            "ingest_timestamp_anomaly issue=%s ts=%s",
+                            issue, ts.isoformat(),
+                        )
+                if any(bad_mask):
+                    dropped = sum(bad_mask)
+                    df = df[[not b for b in bad_mask]]
+                    logger.warning(
+                        "ingest_timestamp_anomaly_summary dropped=%d remaining=%d",
+                        dropped, len(df),
+                    )
+            except Exception as exc:
+                # Sanity checking must never abort ingestion
+                logger.error("ingest_timestamp_sanity_check_failed error=%s", exc)
 
         return df

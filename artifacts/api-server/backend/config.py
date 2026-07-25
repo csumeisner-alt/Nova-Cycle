@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # GapPercent = (PreMarketOpen - PreviousClose) / PreviousClose * 100
     GAP_UP_THRESHOLD: float = 1.0    # %
     GAP_DOWN_THRESHOLD: float = -1.0  # %
+    # Additive gap-magnitude classification (does not affect gap_type)
+    MICRO_GAP_THRESHOLD: float = 0.1  # % – |gap| below this is 'micro'
+    MACRO_GAP_THRESHOLD: float = 1.0  # % – |gap| above this is 'macro'
 
     # ── Firebase Cloud Messaging ───────────────────────────────────────────────
     FCM_SERVER_KEY: str = ""

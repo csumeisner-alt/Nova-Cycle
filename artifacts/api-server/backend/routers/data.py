@@ -22,6 +22,7 @@ from config import settings
 from database.db import get_db
 from database.models import VixCandle, VooCandle
 from indicators.technical import TechnicalIndicators
+from ingestion.fetcher import DataFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -355,14 +356,20 @@ async def get_gap_status(
                 "ticker": ticker,
                 "gap_percent": 0.0,
                 "gap_type": "none",
+                "gap_class": "none",       # additive
+                "gap_momentum": None,      # additive placeholder
                 "timestamp": None,
                 "session_type": "unknown",
             }
 
+        gap_percent = latest.gap_percent or 0.0
         return {
             "ticker": ticker,
-            "gap_percent": latest.gap_percent or 0.0,
+            "gap_percent": gap_percent,
             "gap_type": latest.gap_type or "none",
+            # Additive fields (computed at read time; existing fields unchanged)
+            "gap_class": DataFetcher.classify_gap_magnitude(gap_percent),
+            "gap_momentum": None,
             "timestamp": latest.timestamp.isoformat() if latest.timestamp else None,
             "session_type": latest.session_type,
             "close": latest.close,
