@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # Warn when the latest stored SPX futures candle lags the latest VOO
     # trading day by more than this many trading days (staleness check).
     SPX_STALENESS_MAX_LAG_DAYS: int = 3
+    # Warn when the latest stored VIX daily candle lags the latest VOO
+    # trading day by more than this many trading days (staleness check).
+    VIX_STALENESS_MAX_LAG_DAYS: int = 3
 
     # ── Time-decay lambdas ────────────────────────────────────────────────────
     # Weight(t) = exp(-lambda * age)
