@@ -42,6 +42,7 @@ from sklearn.preprocessing import StandardScaler
 
 from config import settings
 from ml import features as ml_features
+from ml.model_health import check_model_degeneracy
 
 logger = logging.getLogger(__name__)
 
@@ -336,10 +337,25 @@ class ShortTrendModel:
             self.scaler = scaler
             self._model_loaded = True
 
+            # Degeneracy health check: verify predictions actually vary across
+            # the training set (a constant predictor can still report the
+            # base-rate accuracy while being useless).
+            degenerate, degeneracy_reason = check_model_degeneracy(model, X_scaled)
+            if degenerate:
+                logger.error(
+                    "ml_model_degenerate model=short_trend reason=%s",
+                    degeneracy_reason,
+                )
+
             logger.info(
                 "Short-trend MLP trained: acc=%.4f  val_acc=%.4f", train_acc, val_acc
             )
-            return {"accuracy": train_acc, "val_accuracy": val_acc}
+            return {
+                "accuracy": train_acc,
+                "val_accuracy": val_acc,
+                "degenerate": degenerate,
+                "degeneracy_reason": degeneracy_reason,
+            }
 
         except Exception as exc:
             logger.error("Short-trend model training error: %s", exc)

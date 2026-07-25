@@ -34,6 +34,7 @@ import pandas as pd
 
 from config import settings
 from ml import features as ml_features
+from ml.model_health import check_model_degeneracy
 
 logger = logging.getLogger(__name__)
 
@@ -319,8 +320,23 @@ class LongTrendModel:
                 zip(FEATURE_NAMES, model.feature_importances_.tolist())
             )
 
+            # Degeneracy health check: a broken train (e.g. vanishing sample
+            # weights) can yield a constant predictor that still reports the
+            # base-rate accuracy. Verify predictions actually vary.
+            degenerate, degeneracy_reason = check_model_degeneracy(model, X)
+            if degenerate:
+                logger.error(
+                    "ml_model_degenerate model=long_trend reason=%s",
+                    degeneracy_reason,
+                )
+
             logger.info("Long-trend model trained: accuracy=%.4f", acc)
-            return {"accuracy": acc, "feature_importances": importances}
+            return {
+                "accuracy": acc,
+                "feature_importances": importances,
+                "degenerate": degenerate,
+                "degeneracy_reason": degeneracy_reason,
+            }
 
         except Exception as exc:
             logger.error("Long-trend model training error: %s", exc)

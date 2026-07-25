@@ -100,6 +100,13 @@ class ModelTrainer:
                     success=False,
                     error="Training produced no model (see server logs)",
                 )
+            elif long_result.get("degenerate"):
+                record_training_result(
+                    "long_trend",
+                    success=False,
+                    error="Degenerate model: "
+                    + (long_result.get("degeneracy_reason") or "predictions do not vary"),
+                )
             else:
                 record_training_result(
                     "long_trend",
@@ -152,6 +159,13 @@ class ModelTrainer:
                     "short_trend",
                     success=False,
                     error="Training produced no model (see server logs)",
+                )
+            elif short_result.get("degenerate"):
+                record_training_result(
+                    "short_trend",
+                    success=False,
+                    error="Degenerate model: "
+                    + (short_result.get("degeneracy_reason") or "predictions do not vary"),
                 )
             else:
                 record_training_result(
