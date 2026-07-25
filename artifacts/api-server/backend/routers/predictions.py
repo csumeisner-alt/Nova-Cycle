@@ -54,7 +54,12 @@ _ml_fallback_stats: dict = {
 
 
 def _record_ml_fallback(model_name: str, reason: str) -> None:
-    """Record that a prediction served the neutral fallback (never raises)."""
+    """Record that a prediction served the neutral fallback (never raises).
+
+    Increments both the in-memory since-startup counter and the persisted
+    cumulative counter (ml/models/ml_fallback_stats.json) so a restart does
+    not wipe the evidence of repeated degraded predictions.
+    """
     try:
         stats = _ml_fallback_stats[model_name]
         stats["count"] += 1
@@ -64,6 +69,11 @@ def _record_ml_fallback(model_name: str, reason: str) -> None:
                        model_name, reason, stats["count"])
     except Exception as exc:
         logger.error("_record_ml_fallback error: %s", exc)
+    try:
+        from ml.fallback_stats import record_fallback
+        record_fallback(model_name, reason)
+    except Exception as exc:
+        logger.error("_record_ml_fallback persist error: %s", exc)
 
 # Singleton instances
 _indicators_engine = TechnicalIndicators()
@@ -891,9 +901,11 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     training attempt or is running in neutral-fallback mode.
     """
     from ml.training_status import get_training_status
+    from ml.fallback_stats import get_persisted_fallback_stats
     from database.models import ModelMetadata
 
     training_status = get_training_status()
+    persisted_fallbacks = get_persisted_fallback_stats()
 
     models = {}
     degraded = False
@@ -919,6 +931,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         status = training_status.get(name, {})
         failed = status.get("success") is False
         fallback_stats = _ml_fallback_stats.get(name, {})
+        persisted = persisted_fallbacks.get(name, {})
         if failed or neutral or fallback_stats.get("count", 0) > 0:
             degraded = True
 
@@ -932,6 +945,9 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             "ml_fallback_count": fallback_stats.get("count", 0),
             "ml_fallback_last_at": fallback_stats.get("last_at"),
             "ml_fallback_last_reason": fallback_stats.get("last_reason"),
+            "ml_fallback_total_count": persisted.get("total_count", 0),
+            "ml_fallback_total_last_at": persisted.get("last_at"),
+            "ml_fallback_total_last_reason": persisted.get("last_reason"),
         }
 
     # ── SPX futures staleness ────────────────────────────────────────────
