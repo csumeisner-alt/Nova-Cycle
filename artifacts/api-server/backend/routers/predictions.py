@@ -11,7 +11,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_, func
 
@@ -901,11 +901,16 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     training attempt or is running in neutral-fallback mode.
     """
     from ml.training_status import get_training_status
-    from ml.fallback_stats import get_persisted_fallback_stats
+    from ml.fallback_stats import get_persisted_fallback_stats, get_last_reset_at
     from database.models import ModelMetadata
 
     training_status = get_training_status()
     persisted_fallbacks = get_persisted_fallback_stats()
+    try:
+        fallback_last_reset_at = get_last_reset_at()
+    except Exception as exc:
+        logger.error("healthz: fallback last-reset lookup failed: %s", exc)
+        fallback_last_reset_at = None
 
     models = {}
     degraded = False
@@ -1012,5 +1017,64 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "vix": vix_data,
         "voo_5min": fivemin_data,
         "alerts": alerts,
+        "fallback_stats_last_reset_at": fallback_last_reset_at,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/reset_fallback_stats  (operator-only)
+# ---------------------------------------------------------------------------
+def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) -> None:
+    """Guard for operator-only endpoints.
+
+    Compares the X-Admin-Token header against ADMIN_TOKEN (falling back to
+    SESSION_SECRET). If neither is configured the endpoint is disabled (503)
+    instead of being left open.
+    """
+    import secrets as _secrets
+    expected = settings.ADMIN_TOKEN or settings.SESSION_SECRET
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin endpoints disabled: set ADMIN_TOKEN (or SESSION_SECRET)",
+        )
+    if not x_admin_token or not _secrets.compare_digest(x_admin_token, expected):
+        raise HTTPException(status_code=403, detail="Invalid or missing X-Admin-Token")
+
+
+@router.post("/admin/reset_fallback_stats", dependencies=[Depends(_require_admin_token)])
+async def reset_fallback_stats_endpoint():
+    """
+    Operator action: clear the persisted cumulative ML-fallback history
+    (ml/models/ml_fallback_stats.json) *and* the in-memory since-startup
+    counters, after the root cause of the fallbacks has been fixed.
+
+    /api/healthz reflects the reset immediately: ml_fallback_count and
+    ml_fallback_total_count drop to 0 and their alerts disappear (unless a
+    model is still actively degraded, which will re-increment the counters).
+    """
+    from ml.fallback_stats import reset_fallback_stats
+
+    try:
+        previous = reset_fallback_stats()
+    except Exception as exc:
+        logger.error("reset_fallback_stats failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to reset fallback stats: {exc}")
+
+    # Also clear in-memory since-startup counters so healthz is clean now,
+    # not after the next restart.
+    previous_in_memory = {}
+    for name, stats in _ml_fallback_stats.items():
+        previous_in_memory[name] = dict(stats)
+        stats["count"] = 0
+        stats["last_at"] = None
+        stats["last_reason"] = None
+
+    logger.info("ML fallback history reset by operator")
+    return {
+        "status": "ok",
+        "reset_at": datetime.now(timezone.utc).isoformat(),
+        "previous_persisted": previous,
+        "previous_in_memory": previous_in_memory,
     }

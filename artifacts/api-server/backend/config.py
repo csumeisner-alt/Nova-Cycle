@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./novacycle.db"
 
+    # ── Ops / admin ───────────────────────────────────────────────────────────
+    # Token required (X-Admin-Token header) for operator-only endpoints such
+    # as resetting the persisted ML-fallback history. Falls back to
+    # SESSION_SECRET when unset; if neither is set, admin endpoints are
+    # disabled (503) rather than left open.
+    ADMIN_TOKEN: str = ""
+    SESSION_SECRET: str = ""
+
     # ── Ticker ────────────────────────────────────────────────────────────────
     TICKER: str = "VOO"
     VIX_TICKER: str = "^VIX"

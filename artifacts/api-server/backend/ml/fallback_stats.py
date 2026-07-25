@@ -56,6 +56,38 @@ def record_fallback(model_name: str, reason: str) -> None:
         logger.error("fallback_stats write error: %s", exc)
 
 
+def reset_fallback_stats() -> dict:
+    """Clear the persisted cumulative fallback counters (operator action).
+
+    Intended for use after the root cause of repeated fallbacks has been
+    fixed. Records who/when metadata under "_last_reset" (ignored by
+    get_persisted_fallback_stats, which only reads model entries) so the
+    reset itself leaves an audit trail. Returns the stats as they were
+    just before the reset. Raises on I/O failure so the caller can report
+    the error instead of silently pretending the history was cleared.
+    """
+    previous = get_persisted_fallback_stats()
+    data = {
+        "_last_reset": {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "previous": previous,
+        }
+    }
+    STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+    logger.info("fallback_stats reset by operator; previous=%s", previous)
+    return previous
+
+
+def get_last_reset_at() -> str | None:
+    """Return the ISO timestamp of the last operator reset, or None."""
+    entry = _load_raw().get("_last_reset")
+    if isinstance(entry, dict):
+        return entry.get("at")
+    return None
+
+
 def get_persisted_fallback_stats() -> dict:
     """Return cumulative fallback stats per model (all restarts included).
 
