@@ -24,6 +24,31 @@ fun rememberTickingNow(intervalMillis: Long = 30_000L): Long {
     return now
 }
 
+/** How stale a piece of data is, relative to configurable thresholds. */
+enum class StalenessLevel { FRESH, WARNING, CRITICAL }
+
+/** Default thresholds: amber past 5 min, red past 15 min. */
+const val DEFAULT_WARNING_THRESHOLD_MILLIS: Long = 5 * 60_000L
+const val DEFAULT_CRITICAL_THRESHOLD_MILLIS: Long = 15 * 60_000L
+
+/**
+ * Classifies the age of [thenMillis] relative to [nowMillis] against
+ * warning/critical thresholds. Ages at or past a threshold trigger it.
+ */
+fun stalenessLevel(
+    nowMillis: Long,
+    thenMillis: Long,
+    warningThresholdMillis: Long = DEFAULT_WARNING_THRESHOLD_MILLIS,
+    criticalThresholdMillis: Long = DEFAULT_CRITICAL_THRESHOLD_MILLIS
+): StalenessLevel {
+    val age = (nowMillis - thenMillis).coerceAtLeast(0L)
+    return when {
+        age >= criticalThresholdMillis -> StalenessLevel.CRITICAL
+        age >= warningThresholdMillis -> StalenessLevel.WARNING
+        else -> StalenessLevel.FRESH
+    }
+}
+
 /**
  * Human-readable age of [thenMillis] relative to [nowMillis],
  * e.g. "just now", "12 min ago", "3 h 5 min ago", "2 days ago".
