@@ -187,6 +187,67 @@ class FCMNotifier:
 
         return await self._post(payload, access_token, project_id)
 
+    async def send_training_stuck_alert(
+        self,
+        device_token: str,
+        model_name: str,
+        consecutive_failures: int,
+        last_error: Optional[str] = None,
+    ) -> bool:
+        """
+        Send an operator alert when a model's retraining is stuck (repeated
+        consecutive failures crossed the alert threshold).
+
+        Returns:
+            True on success.
+        """
+        if not settings.FCM_SERVER_KEY:
+            logger.info(
+                "FCM_SERVER_KEY not configured — skipping training-stuck alert (%s)",
+                model_name,
+            )
+            return False
+
+        if not device_token:
+            logger.warning("No device token provided — skipping training-stuck alert")
+            return False
+
+        auth = await self._get_auth()
+        if not auth:
+            return False
+        access_token, project_id = auth
+
+        pretty_name = model_name.replace("_", " ").title()
+        title = f"⚠️ NovaCycle – {pretty_name} Retraining Stuck"
+        body = (
+            f"{pretty_name} model failed {consecutive_failures} consecutive "
+            f"retrain attempts. Predictions may be degraded."
+        )
+        if last_error:
+            body += f" Last error: {str(last_error)[:120]}"
+
+        payload = {
+            "message": {
+                "token": device_token,
+                "notification": {"title": title, "body": body},
+                "data": {
+                    "alert_type": "training_stuck",
+                    "model_name": model_name,
+                    "consecutive_failures": str(int(consecutive_failures)),
+                    "ticker": settings.TICKER,
+                },
+                "android": {
+                    "priority": "HIGH",
+                    "notification": {"sound": "default"},
+                },
+                "apns": {
+                    "payload": {"aps": {"sound": "default"}},
+                },
+            }
+        }
+
+        return await self._post(payload, access_token, project_id)
+
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────

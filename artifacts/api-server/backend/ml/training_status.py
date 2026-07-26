@@ -61,17 +61,23 @@ def record_training_result(
                 last_success_accuracy = prev.get("accuracy")
         if success:
             consecutive_failures = 0
+            # A successful retrain ends the stuck episode and re-arms the alert.
+            stuck_alert_sent = False
         else:
             try:
                 consecutive_failures = int(prev.get("consecutive_failures") or 0) + 1
             except (TypeError, ValueError):
                 consecutive_failures = 1
+            # Carry the flag forward through the episode so the alert fires
+            # only once per stuck episode.
+            stuck_alert_sent = bool(prev.get("stuck_alert_sent"))
         data[model_name] = {
             "success": bool(success),
             "error": (str(error)[:500] if error else None),
             "accuracy": (float(accuracy) if accuracy is not None else None),
             "last_success_accuracy": last_success_accuracy,
             "consecutive_failures": consecutive_failures,
+            "stuck_alert_sent": stuck_alert_sent,
             "attempted_at": datetime.now(timezone.utc).isoformat(),
         }
         STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +106,43 @@ def get_consecutive_failures(model_name: str) -> int:
     except Exception as exc:
         logger.error("training_status get_consecutive_failures error: %s", exc)
     return 0
+
+
+def should_send_stuck_alert(model_name: str) -> bool:
+    """Return True when a "training stuck" push notification should be sent.
+
+    True only when the model's consecutive-failure count has reached
+    CONSECUTIVE_FAILURE_ALERT_THRESHOLD and no alert has been sent for the
+    current stuck episode yet. Never raises.
+    """
+    try:
+        entry = _load_raw().get(model_name)
+        if not isinstance(entry, dict):
+            return False
+        if _safe_int(entry.get("consecutive_failures")) < CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
+            return False
+        return not bool(entry.get("stuck_alert_sent"))
+    except Exception as exc:
+        logger.error("training_status should_send_stuck_alert error: %s", exc)
+    return False
+
+
+def mark_stuck_alert_sent(model_name: str) -> None:
+    """Record that the stuck-training alert was sent for the current episode.
+
+    Never raises.
+    """
+    try:
+        data = _load_raw()
+        entry = data.get(model_name)
+        if not isinstance(entry, dict):
+            return
+        entry["stuck_alert_sent"] = True
+        STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(STATUS_PATH, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as exc:
+        logger.error("training_status mark_stuck_alert_sent error: %s", exc)
 
 
 def get_training_status() -> dict:

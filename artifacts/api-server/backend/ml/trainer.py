@@ -26,8 +26,12 @@ from ml.short_trend import ShortTrendModel
 from ml.model_health import check_accuracy_regression
 from ml.training_status import (
     any_model_failed_last_attempt,
+    get_consecutive_failures,
     get_last_successful_accuracy,
+    get_training_status,
+    mark_stuck_alert_sent,
     record_training_result,
+    should_send_stuck_alert,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,6 +129,8 @@ class ModelTrainer:
             record_training_result(
                 "short_trend", success=False, error="No daily VOO data available"
             )
+            await self._maybe_send_stuck_alert(db_session, "long_trend")
+            await self._maybe_send_stuck_alert(db_session, "short_trend")
             return
 
         # ── Load VIX candles ───────────────────────────────────────────────────
@@ -212,6 +218,7 @@ class ModelTrainer:
             logger.error("Long-trend training failed: %s", exc)
             record_training_result("long_trend", success=False, error=str(exc))
             _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
+        await self._maybe_send_stuck_alert(db_session, "long_trend")
 
         # ── Load 5-min VOO candles ─────────────────────────────────────────────
         fivemin_df = await self._load_fivemin_voo(db_session)
@@ -221,6 +228,7 @@ class ModelTrainer:
             record_training_result(
                 "short_trend", success=False, error="No 5-min VOO data available"
             )
+            await self._maybe_send_stuck_alert(db_session, "short_trend")
             return
 
         # ── Compute short indicators ───────────────────────────────────────────
@@ -295,6 +303,7 @@ class ModelTrainer:
             logger.error("Short-trend training failed: %s", exc)
             record_training_result("short_trend", success=False, error=str(exc))
             _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
+        await self._maybe_send_stuck_alert(db_session, "short_trend")
 
         logger.info("Initial model training complete.")
 
@@ -354,6 +363,63 @@ class ModelTrainer:
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    async def _maybe_send_stuck_alert(
+        self, db_session: AsyncSession, model_name: str
+    ) -> None:
+        """Push a one-time "training stuck" alert to registered devices when a
+        model first crosses CONSECUTIVE_FAILURE_ALERT_THRESHOLD consecutive
+        failed retrains. A successful retrain re-arms the alert.
+
+        Never raises — a notification failure must not break training.
+        """
+        try:
+            if not should_send_stuck_alert(model_name):
+                return
+
+            from sqlalchemy import select as _select
+            from database.models import DeviceToken
+            from notifications.fcm import FCMNotifier
+
+            result = await db_session.execute(_select(DeviceToken))
+            tokens = result.scalars().all()
+            if not tokens:
+                logger.warning(
+                    "training_stuck_alert model=%s — no device tokens registered; "
+                    "alert stays armed until a device is available",
+                    model_name,
+                )
+                return
+
+            failures = get_consecutive_failures(model_name)
+            last_error = get_training_status().get(model_name, {}).get("error")
+
+            notifier = FCMNotifier()
+            any_sent = False
+            for device in tokens:
+                ok = await notifier.send_training_stuck_alert(
+                    device_token=device.token,
+                    model_name=model_name,
+                    consecutive_failures=failures,
+                    last_error=last_error,
+                )
+                any_sent = any_sent or ok
+
+            if any_sent:
+                mark_stuck_alert_sent(model_name)
+                logger.warning(
+                    "training_stuck_alert_sent model=%s consecutive_failures=%d",
+                    model_name,
+                    failures,
+                )
+            else:
+                logger.error(
+                    "training_stuck_alert_failed model=%s — will retry on next "
+                    "failed retrain attempt",
+                    model_name,
+                )
+        except Exception as exc:
+            logger.error("_maybe_send_stuck_alert error for %s: %s", model_name, exc)
 
     @staticmethod
     def _missing_model_files() -> list:
