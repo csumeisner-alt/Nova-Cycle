@@ -50,6 +50,28 @@ fun stalenessLevel(
 }
 
 /**
+ * Market-aware staleness: identical to [stalenessLevel] while the US equity
+ * market is open, but outside market hours (nights, weekends, holidays) data
+ * legitimately stops updating, so staleness is instead measured against the
+ * most recent session close. Data refreshed at (or after) the close stays
+ * FRESH all night/weekend; data that was already stale when the market closed
+ * still warns.
+ */
+fun marketAwareStalenessLevel(
+    nowMillis: Long,
+    thenMillis: Long,
+    warningThresholdMillis: Long = DEFAULT_WARNING_THRESHOLD_MILLIS,
+    criticalThresholdMillis: Long = DEFAULT_CRITICAL_THRESHOLD_MILLIS,
+    zone: java.time.ZoneId = MarketHours.MARKET_ZONE
+): StalenessLevel {
+    if (MarketHours.isMarketOpen(nowMillis, zone)) {
+        return stalenessLevel(nowMillis, thenMillis, warningThresholdMillis, criticalThresholdMillis)
+    }
+    val lastClose = MarketHours.previousSessionCloseMillis(nowMillis, zone)
+    return stalenessLevel(lastClose, thenMillis, warningThresholdMillis, criticalThresholdMillis)
+}
+
+/**
  * Human-readable age of [thenMillis] relative to [nowMillis],
  * e.g. "just now", "12 min ago", "3 h 5 min ago", "2 days ago".
  */

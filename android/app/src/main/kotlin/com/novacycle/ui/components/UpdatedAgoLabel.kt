@@ -18,6 +18,10 @@ private val WarningColor = Color(0xFFB26A00)
  * The label turns amber once the age crosses [warningThresholdMillis] and red
  * (theme error color) once it crosses [criticalThresholdMillis], so dangerously
  * stale data is impossible to miss.
+ *
+ * Outside US market hours (nights, weekends, holidays) data legitimately stops
+ * updating, so staleness is measured against the last market close instead of
+ * the wall clock — see [marketAwareStalenessLevel].
  */
 @Composable
 fun UpdatedAgoLabel(
@@ -28,7 +32,7 @@ fun UpdatedAgoLabel(
 ) {
     if (lastUpdatedAtMillis == null) return
     val now = rememberTickingNow()
-    val level = stalenessLevel(now, lastUpdatedAtMillis, warningThresholdMillis, criticalThresholdMillis)
+    val level = marketAwareStalenessLevel(now, lastUpdatedAtMillis, warningThresholdMillis, criticalThresholdMillis)
     val color = when (level) {
         StalenessLevel.FRESH -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         StalenessLevel.WARNING -> WarningColor
