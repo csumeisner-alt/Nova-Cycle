@@ -5,20 +5,20 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Gold brand circle, centered and filling the adaptive-icon safe zone (66dp diameter) -->
+    <!-- Bronze-gold brand circle, centered and filling the adaptive-icon safe zone (66dp diameter) -->
     <path
-        android:strokeColor="#FFFFD700"
+        android:strokeColor="#FFE0B040"
         android:strokeWidth="3"
         android:fillColor="#00000000"
         android:pathData="M54,21 A33,33 0 1,0 54,87 A33,33 0 1,0 54,21" />
 
     <!-- Centered NovaCycle "N" monogram, larger and filling the circle -->
     <path
-        android:fillColor="#FFFFD700"
+        android:fillColor="#FFE0B040"
         android:pathData="M41,38 L41,70 L47,70 L47,53 L59,70 L66,70 L66,38 L60,38 L60,55 L48,38 Z" />
 
-    <!-- Gold sparkle in the upper-right quadrant -->
+    <!-- Bronze-gold sparkle in the upper-right quadrant -->
     <path
-        android:fillColor="#FFFFD700"
+        android:fillColor="#FFE0B040"
         android:pathData="M68,30 L70,36 L76,38 L70,40 L68,46 L66,40 L60,38 L66,36 Z" />
 </vector>

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Gold "Dark Luxe" brand accent -->
-    <color name="nc_gold">#FFFFD700</color>
+    <color name="nc_gold">#FFE0B040</color>
 
     <!-- Primary brand colors -->
     <color name="nc_green">#FF00C853</color>

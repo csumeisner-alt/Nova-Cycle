@@ -29,9 +29,9 @@ val NovaOnSurface     = Color(0xFFCCCCCC)
 val NovaOnPrimary     = Color(0xFFFFFFFF)
 
 // ── Theme accent palettes ─────────────────────────────────────────────
-// Dark Luxe (default) — gold on near-black
-val LuxeGold          = Color(0xFFFFD700)
-val LuxeGoldDeep      = Color(0xFFC9A227)
+// Dark Luxe (default) — bronze-gold on near-black, matching the uploaded logo
+val LuxeGold          = Color(0xFFE0B040)
+val LuxeGoldDeep      = Color(0xFFC89030)
 val LuxeGoldSoft      = Color(0xFFF5E6A8)
 
 // Aurora Flux — teal / violet

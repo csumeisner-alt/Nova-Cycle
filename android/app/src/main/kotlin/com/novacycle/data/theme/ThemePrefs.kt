@@ -2,6 +2,7 @@ package com.novacycle.data.theme
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import com.novacycle.domain.theme.ThemeUnlockLogic
 import com.novacycle.ui.theme.AppTheme
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -35,6 +36,7 @@ data class ThemeState(
 class ThemePrefs @Inject constructor(@ApplicationContext context: Context) {
 
     companion object {
+        private const val TAG = "ThemePrefs"
         const val PREFS_NAME = "nova_prefs"
         const val KEY_TAP_COUNT = "tapCount"
         const val KEY_AURORA_UNLOCKED = "auroraUnlocked"
@@ -44,12 +46,22 @@ class ThemePrefs @Inject constructor(@ApplicationContext context: Context) {
     }
 
     private val prefs: SharedPreferences =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        } catch (e: Exception) {
+            // Corrupted SharedPreferences file can throw on open; wipe the file and
+            // recreate so the app can launch instead of crashing at startup.
+            Log.w(TAG, "nova_prefs corrupt or unreadable, wiping: ${e.message}")
+            try {
+                context.deleteSharedPreferences(PREFS_NAME)
+            } catch (ignored: Exception) { /* ignore cleanup failures */ }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }
 
-    private val _state = MutableStateFlow(load())
+    private val _state = MutableStateFlow(loadSafely())
     val state: StateFlow<ThemeState> = _state.asStateFlow()
 
-    private fun load(): ThemeState {
+    private fun loadSafely(): ThemeState = try {
         val aurora = prefs.getBoolean(KEY_AURORA_UNLOCKED, false)
         val crimson = prefs.getBoolean(KEY_CRIMSON_UNLOCKED, false)
         val mint = prefs.getBoolean(KEY_MINT_UNLOCKED, false)
@@ -57,13 +69,16 @@ class ThemePrefs @Inject constructor(@ApplicationContext context: Context) {
             AppTheme.fromStorageKey(prefs.getString(KEY_SELECTED_THEME, null)),
             aurora, crimson, mint
         )
-        return ThemeState(
+        ThemeState(
             tapCount = prefs.getInt(KEY_TAP_COUNT, 0),
             auroraUnlocked = aurora,
             crimsonUnlocked = crimson,
             mintUnlocked = mint,
             selectedTheme = selected
         )
+    } catch (e: Exception) {
+        Log.w(TAG, "Failed to read theme prefs, using defaults: ${e.message}")
+        ThemeState()
     }
 
     /**
