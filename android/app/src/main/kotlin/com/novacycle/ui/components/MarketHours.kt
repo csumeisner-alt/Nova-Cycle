@@ -6,6 +6,8 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.format.TextStyle
+import java.util.Locale
 
 /**
  * US equity market (NYSE/Nasdaq) regular-session calendar used to decide
@@ -44,6 +46,16 @@ object MarketHours {
             while (!isTradingDay(date)) date = date.minusDays(1)
         }
         return ZonedDateTime.of(date, SESSION_CLOSE, zone).toInstant().toEpochMilli()
+    }
+
+    /**
+     * Abbreviated day-of-week name (e.g. "Fri") for the most recent session
+     * close at or before [epochMillis]. Used to build labels like "at Fri close".
+     */
+    fun lastSessionCloseDayLabel(epochMillis: Long, zone: ZoneId = MARKET_ZONE): String {
+        val closeMillis = previousSessionCloseMillis(epochMillis, zone)
+        val dow = Instant.ofEpochMilli(closeMillis).atZone(zone).dayOfWeek
+        return dow.getDisplayName(TextStyle.SHORT, Locale.US) // "Mon", "Fri", …
     }
 
     /** Weekday and not a full-day market holiday. */
