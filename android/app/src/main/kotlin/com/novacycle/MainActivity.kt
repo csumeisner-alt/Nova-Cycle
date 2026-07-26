@@ -6,8 +6,13 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.novacycle.billing.BillingManager
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.WeightingMode
@@ -18,6 +23,7 @@ import com.novacycle.notifications.NovaCycleFirebaseService
 import com.novacycle.ui.navigation.NovaCycleNavHost
 import com.novacycle.ui.theme.NovaCycleTheme
 import com.novacycle.viewmodel.SettingsViewModel
+import com.novacycle.viewmodel.ThemeViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +55,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var dataStore: DataStore<Preferences>
 
+    @Inject
+    lateinit var billingManager: BillingManager
+
     /**
      * Guards against two concurrent registration coroutines running simultaneously.
      * Set to true when a registration coroutine is launched; reset to false in the
@@ -69,6 +78,8 @@ class MainActivity : ComponentActivity() {
     private val registrationInFlight = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Branded gold splash (AndroidX SplashScreen API) — must precede super.onCreate()
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -76,10 +87,19 @@ class MainActivity : ComponentActivity() {
         registerFcmTokenIfNeeded()
 
         setContent {
-            NovaCycleTheme {
+            val themeViewModel: ThemeViewModel = hiltViewModel()
+            val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
+            NovaCycleTheme(appTheme = themeState.selectedTheme) {
                 NovaCycleNavHost()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Re-check owned purchases whenever the app returns to the foreground
+        // (e.g. after completing a purchase in the Play sheet or a refund).
+        billingManager.restorePurchases()
     }
 
     /**

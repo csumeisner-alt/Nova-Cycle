@@ -155,6 +155,12 @@ dependencies {
     // implementation(platform(libs.firebase.bom))
     // implementation(libs.firebase.messaging)
 
+    // SplashScreen API — branded gold splash on launch
+    implementation(libs.core.splashscreen)
+
+    // Google Play Billing — Mint Luxe premium theme ($1.49 managed product)
+    implementation(libs.billing.ktx)
+
     // DataStore for settings persistence
     implementation(libs.datastore.preferences)
 

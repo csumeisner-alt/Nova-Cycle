@@ -1,15 +1,12 @@
 package com.novacycle.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -66,20 +63,22 @@ fun NovaBottomNav(
                 },
                 icon = {
                     Box(contentAlignment = Alignment.Center) {
-                        AnimatedVisibility(
-                            visible = selected,
-                            enter = scaleIn(animationSpec = tween(200)),
-                            exit = scaleOut(animationSpec = tween(200))
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(
-                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                        shape = CircleShape
-                                    )
-                            )
-                        }
+                        // Selected pill scales in/out (AnimatedVisibility can't be
+                        // called here — NavigationBar's RowScope shadows it).
+                        val pillScale by animateFloatAsState(
+                            targetValue = if (selected) 1f else 0f,
+                            animationSpec = tween(durationMillis = 200),
+                            label = "navPillScale"
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .scale(pillScale)
+                                .background(
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                    shape = CircleShape
+                                )
+                        )
                         Icon(
                             imageVector = destination.icon ?: Icons.Default.ExpandMore,
                             contentDescription = destination.label,
