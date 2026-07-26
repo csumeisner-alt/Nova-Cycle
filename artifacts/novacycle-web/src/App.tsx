@@ -24,7 +24,18 @@ type ModelHealth = {
   ml_fallback_count?: number;
   ml_fallback_total_count?: number;
   ml_fallback_total_last_at?: string | null;
+  ml_fallback_total_last_reason?: string | null;
+  ml_fallback_last_at?: string | null;
+  ml_fallback_last_reason?: string | null;
 };
+
+const RECENT_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function isRecentFallback(lastAt: string | null | undefined): boolean {
+  if (!lastAt) return false;
+  const t = new Date(lastAt).getTime();
+  return Number.isFinite(t) && Date.now() - t < RECENT_FALLBACK_WINDOW_MS;
+}
 
 function fmtAcc(v: number | null | undefined): string {
   return typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : '—';
@@ -197,6 +208,55 @@ function FallbackHistoryPanel({ health }: { health: any }) {
             {lastResetAt ? new Date(lastResetAt).toLocaleString('en-US', { hour12: false }) : 'Never'}
           </div>
         </div>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {Object.entries(models).map(([name, m]) => {
+          const count = m.ml_fallback_total_count ?? 0;
+          const lastAt = m.ml_fallback_total_last_at ?? null;
+          const lastReason = m.ml_fallback_total_last_reason ?? null;
+          const recent = isRecentFallback(lastAt);
+          return (
+            <div
+              key={name}
+              data-testid={`row-fallback-model-${name}`}
+              className={`p-3 rounded-lg border font-mono text-sm ${
+                recent
+                  ? 'border-destructive/40 bg-destructive/10'
+                  : 'border-white/5 bg-white/[0.02]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs tracking-wide uppercase">{name.replace('_', ' ')}</span>
+                  {recent && (
+                    <span
+                      data-testid={`badge-fallback-recent-${name}`}
+                      className="inline-flex items-center space-x-1 text-[10px] px-1.5 py-0.5 rounded bg-destructive/20 text-destructive"
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      <span>RECENT FALLBACK</span>
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  <span data-testid={`text-fallback-count-${name}`} className={count > 0 ? 'text-foreground' : ''}>
+                    {count}
+                  </span>{' '}
+                  fallback{count === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-col sm:flex-row sm:items-center sm:space-x-4 space-y-0.5 sm:space-y-0 text-[11px] text-muted-foreground">
+                <span data-testid={`text-fallback-last-at-${name}`}>
+                  Last: {lastAt ? new Date(lastAt).toLocaleString('en-US', { hour12: false }) : '—'}
+                </span>
+                <span data-testid={`text-fallback-last-reason-${name}`} className={recent ? 'text-destructive/90' : ''}>
+                  Reason: {lastReason ?? '—'}
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {showPrompt && (
