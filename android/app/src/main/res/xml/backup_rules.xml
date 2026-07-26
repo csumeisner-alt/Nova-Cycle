@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Auto Backup rules for Android 11 and below (android:fullBackupContent).
+
+  Explicit includes: once any <include> is present, ONLY the listed files are
+  backed up. We deliberately back up:
+   - nova_prefs.xml           tap achievement count, Aurora/Crimson/Mint unlock
+                              flags and selected theme (ThemePrefs). Without
+                              this, the 20,000-tap unlock is lost on reinstall.
+   - novacycle_settings*      DataStore with the user's sensitivity settings
+                              and backend URL override.
+
+  Deliberately NOT backed up: Room cache DB (refetched from the backend) and
+  any FCM registration state (a fresh install must register a fresh token).
+-->
+<full-backup-content>
+    <include domain="sharedpref" path="nova_prefs.xml" />
+    <include domain="file" path="datastore/novacycle_settings.preferences_pb" />
+</full-backup-content>
