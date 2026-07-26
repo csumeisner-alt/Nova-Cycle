@@ -117,7 +117,14 @@ class MainActivity : ComponentActivity() {
     // ──────────────────────────────────────────────────────────────────────────
 
     private fun registerFcmTokenIfNeeded() {
-        val prefs = getSharedPreferences(NovaCycleFirebaseService.PREFS_NAME, MODE_PRIVATE)
+        val prefs = try {
+            getSharedPreferences(NovaCycleFirebaseService.PREFS_NAME, MODE_PRIVATE)
+        } catch (e: Exception) {
+            // Corrupted SharedPreferences file can throw on open; a missing FCM token
+            // simply means we skip registration (Firebase is currently disabled anyway).
+            Log.w(TAG, "FCM prefs unreadable, skipping registration: ${e.message}")
+            return
+        }
         val token = prefs.getString(NovaCycleFirebaseService.PREF_TOKEN, null)
 
         if (token == null) {

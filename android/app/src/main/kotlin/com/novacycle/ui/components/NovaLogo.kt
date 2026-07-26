@@ -74,7 +74,7 @@ fun NovaLogo(
                 .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
         )
         Image(
-            painter = painterResource(R.drawable.nova_launch),
+            painter = painterResource(R.drawable.nova_logo),
             contentDescription = "NovaCycle logo — tap for the 20,000-tap achievement",
             modifier = Modifier
                 .size(size)

@@ -83,13 +83,19 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideApiBaseUrl(dataStore: DataStore<Preferences>): String {
-        val stored = runBlocking {
-            dataStore.data
-                .catch { emit(androidx.datastore.preferences.core.emptyPreferences()) }
-                .map { prefs -> prefs[KEY_API_BASE_URL]?.takeIf { it.isNotBlank() } }
-                .firstOrNull()
+        // DataStore read is synchronous here because Hilt providers are not suspending.
+        // Any exception (including a corrupted DataStore file) falls back to the
+        // BuildConfig default so the app can still launch.
+        return try {
+            runBlocking {
+                dataStore.data
+                    .catch { emit(androidx.datastore.preferences.core.emptyPreferences()) }
+                    .map { prefs -> prefs[KEY_API_BASE_URL]?.takeIf { it.isNotBlank() } }
+                    .firstOrNull()
+            } ?: BuildConfig.API_BASE_URL
+        } catch (e: Exception) {
+            BuildConfig.API_BASE_URL
         }
-        return stored ?: BuildConfig.API_BASE_URL
     }
 
     /**
