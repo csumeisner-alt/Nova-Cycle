@@ -77,7 +77,8 @@ fun RawChartScreen(
         // "Updated X ago" freshness label, ticking as time passes
         UpdatedAgoLabel(
             lastUpdatedAtMillis = uiState.lastUpdatedAtMillis,
-            modifier = Modifier.padding(horizontal = 12.dp)
+            modifier = Modifier.padding(horizontal = 12.dp),
+            extendedHoursAware = true
         )
 
         // Window selector

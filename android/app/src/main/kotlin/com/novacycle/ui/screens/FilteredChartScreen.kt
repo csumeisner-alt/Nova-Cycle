@@ -59,7 +59,7 @@ fun FilteredChartScreen(
         }
 
         // "Updated X ago" freshness label, ticking as time passes
-        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp))
+        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp), extendedHoursAware = true)
 
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }

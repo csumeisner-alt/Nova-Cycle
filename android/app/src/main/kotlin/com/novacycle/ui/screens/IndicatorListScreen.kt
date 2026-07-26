@@ -36,7 +36,7 @@ fun IndicatorListScreen(viewModel: IndicatorViewModel = hiltViewModel()) {
         }
 
         // "Updated X ago" freshness label, ticking as time passes
-        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp))
+        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp), extendedHoursAware = true)
 
         if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (uiState.error != null) Text("⚠️ ${uiState.error}", color = NovaSellRed, modifier = Modifier.padding(12.dp))

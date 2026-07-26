@@ -26,13 +26,20 @@ private val WarningColor = Color(0xFFB26A00)
  * When the market is closed and data is up to date as of the last close, the
  * label shows e.g. "Updated at Fri close · Market closed" so users know the
  * pause is intentional and not a connection problem.
+ *
+ * @param extendedHoursAware When `true`, the "Market closed" hint is suppressed
+ * during pre-market (04:00–09:30 ET) and after-hours (16:00–20:00 ET) sessions
+ * on regular trading days. Callers that surface extended-hours data should set
+ * this to `true` so the label does not mislead users who are active before the
+ * regular open or after the regular close.
  */
 @Composable
 fun UpdatedAgoLabel(
     lastUpdatedAtMillis: Long?,
     modifier: Modifier = Modifier,
     warningThresholdMillis: Long = DEFAULT_WARNING_THRESHOLD_MILLIS,
-    criticalThresholdMillis: Long = DEFAULT_CRITICAL_THRESHOLD_MILLIS
+    criticalThresholdMillis: Long = DEFAULT_CRITICAL_THRESHOLD_MILLIS,
+    extendedHoursAware: Boolean = false
 ) {
     if (lastUpdatedAtMillis == null) return
     val now = rememberTickingNow()
@@ -44,7 +51,10 @@ fun UpdatedAgoLabel(
     }
 
     val marketOpen = MarketHours.isMarketOpen(now)
-    val text = if (!marketOpen && level == StalenessLevel.FRESH) {
+    // Suppress the "Market closed" hint during extended-hours windows when the
+    // caller has opted in, since pre-market and after-hours are active sessions.
+    val inExtendedHours = extendedHoursAware && MarketHours.isExtendedHours(now)
+    val text = if (!marketOpen && !inExtendedHours && level == StalenessLevel.FRESH) {
         // Data is current as of the last close — tell the user the market is closed
         // rather than showing a confusingly large relative age.
         val day = MarketHours.lastSessionCloseDayLabel(now)

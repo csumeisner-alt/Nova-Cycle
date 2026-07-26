@@ -93,7 +93,7 @@ fun ReliabilityScreen(
 
             item {
                 // "Updated X ago" freshness label, ticking as time passes
-                UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis)
+                UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, extendedHoursAware = true)
             }
 
             item {

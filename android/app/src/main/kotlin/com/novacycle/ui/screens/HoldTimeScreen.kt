@@ -58,7 +58,7 @@ fun HoldTimeScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         // "Updated X ago" freshness label, ticking as time passes
-                        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis)
+                        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, extendedHoursAware = true)
 
                         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                             Column(

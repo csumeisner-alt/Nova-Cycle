@@ -17,12 +17,39 @@ import java.util.Locale
  * market holidays. Early-close half days are treated as normal days (the
  * label just goes quiet a bit earlier than strictly necessary, which is the
  * safe direction).
+ *
+ * Extended hours:
+ *  - Pre-market:  04:00–09:30 ET on regular trading days
+ *  - After-hours: 16:00–20:00 ET on regular trading days
  */
 object MarketHours {
 
     val MARKET_ZONE: ZoneId = ZoneId.of("America/New_York")
     val SESSION_OPEN: LocalTime = LocalTime.of(9, 30)
     val SESSION_CLOSE: LocalTime = LocalTime.of(16, 0)
+
+    /** Start of the pre-market extended session (04:00 ET). */
+    val PRE_MARKET_OPEN: LocalTime = LocalTime.of(4, 0)
+
+    /** End of the after-hours extended session (20:00 ET). */
+    val AFTER_HOURS_CLOSE: LocalTime = LocalTime.of(20, 0)
+
+    /**
+     * True when [epochMillis] falls inside an extended-hours session on a
+     * regular trading day:
+     *  - Pre-market:  [PRE_MARKET_OPEN, SESSION_OPEN)  → 04:00–09:30 ET
+     *  - After-hours: [SESSION_CLOSE, AFTER_HOURS_CLOSE) → 16:00–20:00 ET
+     *
+     * Returns false on weekends, holidays, and outside those windows.
+     */
+    fun isExtendedHours(epochMillis: Long, zone: ZoneId = MARKET_ZONE): Boolean {
+        val zdt = Instant.ofEpochMilli(epochMillis).atZone(zone)
+        if (!isTradingDay(zdt.toLocalDate())) return false
+        val time = zdt.toLocalTime()
+        val inPreMarket = !time.isBefore(PRE_MARKET_OPEN) && time.isBefore(SESSION_OPEN)
+        val inAfterHours = !time.isBefore(SESSION_CLOSE) && time.isBefore(AFTER_HOURS_CLOSE)
+        return inPreMarket || inAfterHours
+    }
 
     /** True when the regular US equity session is open at [epochMillis]. */
     fun isMarketOpen(epochMillis: Long, zone: ZoneId = MARKET_ZONE): Boolean {
