@@ -21,6 +21,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.SignalData
+import com.novacycle.ui.components.ChartShimmerLayout
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
 import com.novacycle.ui.components.UpdatedAgoLabel
@@ -92,7 +93,6 @@ fun RawChartScreen(
             }
         }
 
-        if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (uiState.error != null) {
             Text("⚠️ ${uiState.error}", color = NovaSellRed,
                 style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp))
@@ -106,7 +106,9 @@ fun RawChartScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 onSignalTapped = { selectedSignal = it }
             )
-        } else if (!uiState.isLoading) {
+        } else if (uiState.isLoading) {
+            ChartShimmerLayout(modifier = Modifier.weight(1f))
+        } else {
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 Text("No chart data available", color = NovaNeutralGray)
             }

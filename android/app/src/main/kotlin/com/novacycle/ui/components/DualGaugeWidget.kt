@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novacycle.domain.model.GaugeState
+import com.novacycle.ui.components.animations.AnimatedInt
 import kotlin.math.*
 
 /**
@@ -114,12 +115,15 @@ fun DualGaugeWidget(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Score number
-        Text(
-            text = "${score.toInt()}",
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Bold,
+        // Score number — animates smoothly when the value changes
+        AnimatedInt(
+            target = score.toInt(),
+            style = MaterialTheme.typography.displayLarge.copy(
+                fontSize = 28.sp,
+                lineHeight = 32.sp
+            ),
             color = signalColor,
+            fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
 
