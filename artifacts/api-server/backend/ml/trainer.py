@@ -164,30 +164,36 @@ class ModelTrainer:
             long_result = self.long_model.train(daily_df, indicators)
             if self.long_model.model is None:
                 # train() swallows exceptions internally and returns zeros.
+                restored = _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
                 record_training_result(
                     "long_trend",
                     success=False,
                     error="Training produced no model (see server logs)",
+                    rolled_back=restored,
                 )
-                _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
             elif long_result.get("degenerate"):
+                restored = _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
                 record_training_result(
                     "long_trend",
                     success=False,
                     error="Degenerate model: "
                     + (long_result.get("degeneracy_reason") or "predictions do not vary"),
+                    rolled_back=restored,
                 )
-                _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
             else:
                 new_acc = long_result.get("accuracy", 0.0)
                 prev_acc = get_last_successful_accuracy("long_trend")
                 regressed, reason = check_accuracy_regression(new_acc, prev_acc)
                 if regressed:
                     logger.error("Long-trend %s", reason)
+                    restored = _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
                     record_training_result(
-                        "long_trend", success=False, error=reason, accuracy=new_acc
+                        "long_trend",
+                        success=False,
+                        error=reason,
+                        accuracy=new_acc,
+                        rolled_back=restored,
                     )
-                    _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
                 else:
                     record_training_result(
                         "long_trend", success=True, accuracy=new_acc
@@ -216,8 +222,10 @@ class ModelTrainer:
             )
         except Exception as exc:
             logger.error("Long-trend training failed: %s", exc)
-            record_training_result("long_trend", success=False, error=str(exc))
-            _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
+            restored = _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
+            record_training_result(
+                "long_trend", success=False, error=str(exc), rolled_back=restored
+            )
         await self._maybe_send_stuck_alert(db_session, "long_trend")
 
         # ── Load 5-min VOO candles ─────────────────────────────────────────────
@@ -252,30 +260,36 @@ class ModelTrainer:
             short_flagged = True
             short_result = self.short_model.train(fivemin_df, short_indicators)
             if self.short_model.model is None:
+                restored = _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
                 record_training_result(
                     "short_trend",
                     success=False,
                     error="Training produced no model (see server logs)",
+                    rolled_back=restored,
                 )
-                _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
             elif short_result.get("degenerate"):
+                restored = _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
                 record_training_result(
                     "short_trend",
                     success=False,
                     error="Degenerate model: "
                     + (short_result.get("degeneracy_reason") or "predictions do not vary"),
+                    rolled_back=restored,
                 )
-                _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
             else:
                 new_acc = short_result.get("accuracy", 0.0)
                 prev_acc = get_last_successful_accuracy("short_trend")
                 regressed, reason = check_accuracy_regression(new_acc, prev_acc)
                 if regressed:
                     logger.error("Short-trend %s", reason)
+                    restored = _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
                     record_training_result(
-                        "short_trend", success=False, error=reason, accuracy=new_acc
+                        "short_trend",
+                        success=False,
+                        error=reason,
+                        accuracy=new_acc,
+                        rolled_back=restored,
                     )
-                    _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
                 else:
                     record_training_result(
                         "short_trend", success=True, accuracy=new_acc
@@ -301,8 +315,10 @@ class ModelTrainer:
             )
         except Exception as exc:
             logger.error("Short-trend training failed: %s", exc)
-            record_training_result("short_trend", success=False, error=str(exc))
-            _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
+            restored = _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
+            record_training_result(
+                "short_trend", success=False, error=str(exc), rolled_back=restored
+            )
         await self._maybe_send_stuck_alert(db_session, "short_trend")
 
         logger.info("Initial model training complete.")

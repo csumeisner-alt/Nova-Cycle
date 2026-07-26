@@ -43,6 +43,7 @@ def record_training_result(
     success: bool,
     error: Optional[str] = None,
     accuracy: Optional[float] = None,
+    rolled_back: bool = False,
 ) -> None:
     """Persist the outcome of a training attempt for one model.
 
@@ -73,6 +74,7 @@ def record_training_result(
             stuck_alert_sent = bool(prev.get("stuck_alert_sent"))
         data[model_name] = {
             "success": bool(success),
+            "rolled_back": bool(rolled_back) and not success,
             "error": (str(error)[:500] if error else None),
             "accuracy": (float(accuracy) if accuracy is not None else None),
             "last_success_accuracy": last_success_accuracy,
@@ -158,16 +160,20 @@ def get_training_status() -> dict:
         if isinstance(entry, dict):
             out[name] = {
                 "success": entry.get("success"),
+                "rolled_back": bool(entry.get("rolled_back")),
                 "error": entry.get("error"),
                 "accuracy": entry.get("accuracy"),
+                "last_success_accuracy": entry.get("last_success_accuracy"),
                 "attempted_at": entry.get("attempted_at"),
                 "consecutive_failures": _safe_int(entry.get("consecutive_failures")),
             }
         else:
             out[name] = {
                 "success": None,
+                "rolled_back": False,
                 "error": None,
                 "accuracy": None,
+                "last_success_accuracy": None,
                 "attempted_at": None,
                 "consecutive_failures": 0,
             }

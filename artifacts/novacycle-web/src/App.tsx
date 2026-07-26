@@ -15,10 +15,104 @@ function Scanlines() {
 type ModelHealth = {
   neutral_fallback?: boolean;
   last_training_success?: boolean | null;
+  last_retrain_outcome?: 'success' | 'rolled_back' | 'failed' | null;
+  last_retrain_rolled_back?: boolean;
+  last_retrain_attempted_accuracy?: number | null;
+  last_training_error?: string | null;
+  last_training_attempted_at?: string | null;
+  active_model_accuracy?: number | null;
   ml_fallback_count?: number;
   ml_fallback_total_count?: number;
   ml_fallback_total_last_at?: string | null;
 };
+
+function fmtAcc(v: number | null | undefined): string {
+  return typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : '—';
+}
+
+function RetrainOutcomeBadge({ outcome }: { outcome: ModelHealth['last_retrain_outcome'] }) {
+  if (outcome === 'success') {
+    return (
+      <span className="inline-flex items-center space-x-1 text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-full text-xs font-mono">
+        <CheckCircle2 className="w-3 h-3" />
+        <span>SUCCESS</span>
+      </span>
+    );
+  }
+  if (outcome === 'rolled_back') {
+    return (
+      <span className="inline-flex items-center space-x-1 text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2 py-0.5 rounded-full text-xs font-mono">
+        <RotateCcw className="w-3 h-3" />
+        <span>ROLLED BACK</span>
+      </span>
+    );
+  }
+  if (outcome === 'failed') {
+    return (
+      <span className="inline-flex items-center space-x-1 text-destructive bg-destructive/10 border border-destructive/20 px-2 py-0.5 rounded-full text-xs font-mono">
+        <AlertTriangle className="w-3 h-3" />
+        <span>FAILED</span>
+      </span>
+    );
+  }
+  return <span className="text-xs font-mono text-muted-foreground">NO ATTEMPT YET</span>;
+}
+
+function RetrainStatusPanel({ health }: { health: any }) {
+  const models: Record<string, ModelHealth> = health?.models ?? {};
+  const entries = Object.entries(models);
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5" data-testid="panel-retrain-status">
+      <div className="flex items-center space-x-2 text-muted-foreground mb-4">
+        <Activity className="w-4 h-4" />
+        <span className="text-sm font-medium tracking-wide">MODEL RETRAIN STATUS</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {entries.map(([name, m]) => (
+          <div
+            key={name}
+            className="p-3 bg-black/30 rounded-lg border border-white/5 space-y-2 font-mono text-sm"
+            data-testid={`retrain-card-${name}`}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs tracking-wide uppercase">{name.replace('_', ' ')}</span>
+              <RetrainOutcomeBadge outcome={m.last_retrain_outcome ?? null} />
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs text-muted-foreground">Active model accuracy</span>
+              <span data-testid={`text-active-accuracy-${name}`}>{fmtAcc(m.active_model_accuracy)}</span>
+            </div>
+            {m.last_retrain_outcome === 'rolled_back' && (
+              <>
+                <div className="flex items-baseline justify-between">
+                  <span className="text-xs text-muted-foreground">Attempted accuracy (discarded)</span>
+                  <span className="text-amber-400" data-testid={`text-attempted-accuracy-${name}`}>
+                    {fmtAcc(m.last_retrain_attempted_accuracy)}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-200/70 leading-snug" data-testid={`text-rollback-reason-${name}`}>
+                  {m.last_training_error || 'Retrain flagged; model restored to last known-good version.'}
+                </p>
+              </>
+            )}
+            {m.last_retrain_outcome === 'failed' && m.last_training_error && (
+              <p className="text-xs text-destructive/80 leading-snug" data-testid={`text-fail-reason-${name}`}>
+                {m.last_training_error}
+              </p>
+            )}
+            {m.last_training_attempted_at && (
+              <div className="text-[11px] text-muted-foreground">
+                Last attempt: {new Date(m.last_training_attempted_at).toLocaleString('en-US', { hour12: false })}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function FallbackHistoryPanel({ health }: { health: any }) {
   const qc = useQueryClient();
@@ -308,6 +402,8 @@ function StatusDashboard() {
               </div>
             </div>
             
+            {!isLoading && !isError && health && <RetrainStatusPanel health={health} />}
+
             {!isLoading && !isError && health && <FallbackHistoryPanel health={health} />}
 
             {/* Raw JSON View */}

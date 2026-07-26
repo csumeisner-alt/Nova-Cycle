@@ -925,19 +925,30 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             logger.error("healthz: %s fallback check failed: %s", name, exc)
 
         last_trained_at = None
+        active_accuracy = None
         try:
             result = await session.execute(
-                select(func.max(ModelMetadata.trained_at)).where(
-                    ModelMetadata.model_name == name
-                )
+                select(ModelMetadata)
+                .where(ModelMetadata.model_name == name)
+                .order_by(ModelMetadata.trained_at.desc())
+                .limit(1)
             )
-            ts = result.scalar()
-            last_trained_at = ts.isoformat() if ts else None
+            row = result.scalar_one_or_none()
+            if row is not None:
+                last_trained_at = row.trained_at.isoformat() if row.trained_at else None
+                active_accuracy = row.accuracy
         except Exception as exc:
             logger.error("healthz: %s metadata lookup failed: %s", name, exc)
 
         status = training_status.get(name, {})
         failed = status.get("success") is False
+        rolled_back = bool(status.get("rolled_back"))
+        if status.get("success") is True:
+            last_retrain_outcome = "success"
+        elif failed:
+            last_retrain_outcome = "rolled_back" if rolled_back else "failed"
+        else:
+            last_retrain_outcome = None
         consecutive_failures = status.get("consecutive_failures") or 0
         training_stuck = consecutive_failures >= CONSECUTIVE_FAILURE_ALERT_THRESHOLD
         fallback_stats = _ml_fallback_stats.get(name, {})
@@ -947,6 +958,14 @@ async def healthz(session: AsyncSession = Depends(get_session)):
 
         models[name] = {
             "last_training_success": status.get("success"),
+            "last_retrain_outcome": last_retrain_outcome,
+            "last_retrain_rolled_back": rolled_back,
+            "last_retrain_attempted_accuracy": status.get("accuracy"),
+            "active_model_accuracy": (
+                active_accuracy
+                if active_accuracy is not None
+                else status.get("last_success_accuracy")
+            ),
             "consecutive_training_failures": consecutive_failures,
             "training_stuck": training_stuck,
             "last_training_error": status.get("error"),
@@ -1016,10 +1035,23 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         )
     for name, info in models.items():
         if info["last_training_success"] is False:
-            alerts.append(
-                f"{name}: last training attempt failed"
-                + (f" ({info['last_training_error']})" if info["last_training_error"] else "")
-            )
+            if info.get("last_retrain_rolled_back"):
+                attempted = info.get("last_retrain_attempted_accuracy")
+                details = []
+                if info["last_training_error"]:
+                    details.append(str(info["last_training_error"]))
+                if attempted is not None:
+                    details.append(f"attempted accuracy {attempted:.4f}")
+                alerts.append(
+                    f"{name}: last retrain was rolled back — model restored to "
+                    "last known-good version"
+                    + (f" ({'; '.join(details)})" if details else "")
+                )
+            else:
+                alerts.append(
+                    f"{name}: last training attempt failed"
+                    + (f" ({info['last_training_error']})" if info["last_training_error"] else "")
+                )
         if info["training_stuck"]:
             alerts.append(
                 f"{name}: training stuck — {info['consecutive_training_failures']} "
