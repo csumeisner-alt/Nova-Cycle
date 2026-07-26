@@ -9,7 +9,7 @@ import logging
 import uuid
 import math
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,7 @@ from ml.hold_time import HoldTimePredictionEngine
 from signal_engine.long_gauge import LongTrendGauge
 from signal_engine.short_gauge import ShortTrendGauge
 from signal_engine.macro_override import MacroOverrideSafety
+from signal_engine.decision_filter import DecisionFilter
 from config import settings
 
 import pandas as pd
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 _last_long_score: float = 0.0
 _last_short_score: float = 0.0
 _last_indicators: dict = {}
+
+# In-memory cache for last computed buy confidences (used by decision-filter
+# divergence checks). These are updated by predict_long / predict_short and
+# are safe because the backend runs as a single-process Reserved VM.
+_last_long_buy_conf: float = 0.5
+_last_short_buy_conf: float = 0.5
 
 # ---------------------------------------------------------------------------
 # ML fallback tracking: counts how often each endpoint served the neutral 0.5
@@ -80,6 +87,7 @@ _indicators_engine = TechnicalIndicators()
 _long_gauge = LongTrendGauge()
 _short_gauge = ShortTrendGauge()
 _macro_override = MacroOverrideSafety()
+_decision_filter = DecisionFilter()
 _long_model = LongTrendModel()
 _short_model = ShortTrendModel()
 _hold_engine = HoldTimePredictionEngine()
@@ -218,6 +226,32 @@ def _align_spx_to_df(spx_close: pd.Series, df: pd.DataFrame) -> pd.Series:
     except Exception as exc:
         logger.error("_align_spx_to_df error: %s", exc)
         return pd.Series(dtype=float)
+
+
+async def _load_recent_confidence(
+    session: AsyncSession, ticker: str, limit: int = 5
+) -> List[dict]:
+    """Load the most recent confidence snapshots for decision-filter checks."""
+    try:
+        result = await session.execute(
+            select(ConfidenceHistory)
+            .where(ConfidenceHistory.ticker == ticker)
+            .order_by(desc(ConfidenceHistory.timestamp))
+            .limit(limit)
+        )
+        rows = list(reversed(result.scalars().all()))
+        return [
+            {
+                "long_buy_confidence": r.long_buy_confidence,
+                "long_sell_confidence": r.long_sell_confidence,
+                "short_buy_confidence": r.short_buy_confidence,
+                "short_sell_confidence": r.short_sell_confidence,
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.error("_load_recent_confidence error: %s", exc)
+        return []
 
 
 def _compute_gap_momentum_from_df(df_5min: pd.DataFrame) -> Optional[float]:
@@ -463,6 +497,32 @@ async def predict_long(
         long_buy_conf = ml_confidence if result["signal"] == "buy" else (1 - ml_confidence)
         long_sell_conf = ml_confidence if result["signal"] == "sell" else (1 - ml_confidence)
 
+        # Update in-memory confidence cache so the divergence check has the
+        # latest long-trend buy confidence available.
+        global _last_long_buy_conf
+        _last_long_buy_conf = float(long_buy_conf)
+
+        # Apply VOO-only decision-layer filters after the gauge.
+        confidence_history = await _load_recent_confidence(session, ticker, limit=5)
+        confidence_history.append({
+            "long_buy_confidence": _last_long_buy_conf,
+            "short_buy_confidence": _last_short_buy_conf,
+        })
+        decision = _decision_filter.evaluate(
+            signal_type=result["signal"],
+            score=result["score"],
+            ml_confidence=ml_confidence,
+            indicators=indicators,
+            latest_candle=latest.to_dict(),
+            liquidity_score=1.0,
+            gap_momentum=None,
+            confidence_history=confidence_history,
+        )
+        final_signal = decision["final_signal"]
+        notify_confidence = min(
+            1.0, abs(result["score"]) / 100.0 + decision.get("priority_boost", 0.0)
+        )
+
         # Persist confidence history
         await _store_confidence(session, ticker,
                                 long_buy=long_buy_conf, long_sell=long_sell_conf,
@@ -470,19 +530,19 @@ async def predict_long(
                                 session_type=session_type, is_extended=is_extended)
 
         # Persist signal if actionable, then push notification in background
-        if result["signal"] in ("buy", "sell"):
+        if final_signal in ("buy", "sell"):
             await _store_signal(
                 session, ticker,
-                signal_type=result["signal"], gauge_type="long",
+                signal_type=final_signal, gauge_type="long",
                 confidence=abs(result["score"]) / 100.0,
                 session_type=session_type, is_extended=is_extended,
                 gap_type=str(latest.get("gap_type", "none")),
                 liquidity_score=1.0, macro_override=False
             )
             asyncio.create_task(_notify_all_devices_bg(
-                signal_type=result["signal"],
+                signal_type=final_signal,
                 gauge_type="long",
-                confidence=abs(result["score"]) / 100.0,
+                confidence=notify_confidence,
                 is_extended=is_extended,
                 gap_type=str(latest.get("gap_type", "none")),
                 liquidity_score=1.0,
@@ -491,7 +551,7 @@ async def predict_long(
 
         return {
             "score": result["score"],
-            "signal": result["signal"],
+            "signal": final_signal,
             "confidence": result["confidence"],
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
@@ -499,6 +559,12 @@ async def predict_long(
             "liquidity_score": 1.0,
             "gap_type": str(latest.get("gap_type", "none")),
             "macro_override_applied": False,
+            "decision_filter_applied": True,
+            "decision_filter_reason": decision.get("reason", ""),
+            "cycle_quality_score": decision.get("cycle_quality_score", 0.5),
+            "volatility_regime": decision.get("volatility_regime", "calm"),
+            "liquidity_class": decision.get("liquidity_class", "normal"),
+            "confidence_momentum": decision.get("confidence_momentum", 0.0),
             "timestamp": datetime.utcnow().isoformat(),
             "ticker": ticker
         }
@@ -613,6 +679,32 @@ async def predict_short(
         short_buy_conf = ml_confidence if final_signal == "buy" else max(0.0, ml_confidence - 0.3)
         short_sell_conf = ml_confidence if final_signal == "sell" else max(0.0, ml_confidence - 0.3)
 
+        # Update in-memory confidence cache so the divergence check has the
+        # latest short-trend buy confidence available.
+        global _last_short_buy_conf
+        _last_short_buy_conf = float(short_buy_conf)
+
+        # Apply VOO-only decision-layer filters after the macro override.
+        confidence_history = await _load_recent_confidence(session, ticker, limit=5)
+        confidence_history.append({
+            "long_buy_confidence": _last_long_buy_conf,
+            "short_buy_confidence": _last_short_buy_conf,
+        })
+        decision = _decision_filter.evaluate(
+            signal_type=final_signal,
+            score=result["score"],
+            ml_confidence=ml_confidence,
+            indicators=indicators,
+            latest_candle=latest.to_dict(),
+            liquidity_score=liquidity_score,
+            gap_momentum=gap_momentum,
+            confidence_history=confidence_history,
+        )
+        final_signal = decision["final_signal"]
+        notify_confidence = min(
+            1.0, abs(result["score"]) / 100.0 + decision.get("priority_boost", 0.0)
+        )
+
         # Persist confidence history
         await _store_confidence(session, ticker,
                                 long_buy=0.0, long_sell=0.0,
@@ -632,7 +724,7 @@ async def predict_short(
             asyncio.create_task(_notify_all_devices_bg(
                 signal_type=final_signal,
                 gauge_type="short",
-                confidence=abs(result["score"]) / 100.0,
+                confidence=notify_confidence,
                 is_extended=is_extended,
                 gap_type=gap_type,
                 liquidity_score=liquidity_score,
@@ -651,6 +743,12 @@ async def predict_short(
             "gap_momentum": gap_momentum,
             "macro_override_applied": macro_override_applied,
             "macro_override_reason": override_result.get("reason", ""),
+            "decision_filter_applied": True,
+            "decision_filter_reason": decision.get("reason", ""),
+            "cycle_quality_score": decision.get("cycle_quality_score", 0.5),
+            "volatility_regime": decision.get("volatility_regime", "calm"),
+            "liquidity_class": decision.get("liquidity_class", "normal"),
+            "confidence_momentum": decision.get("confidence_momentum", 0.0),
             "session_type": session_type,
             "is_extended_hours": is_extended,
             "timestamp": datetime.utcnow().isoformat(),

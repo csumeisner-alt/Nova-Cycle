@@ -25,6 +25,7 @@ from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import SignalHistory, TradeCycles, VixCandle, VooCandle
+from signal_engine.decision_filter import DecisionFilter
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +125,13 @@ async def generate_trade_cycles(
             current_group = [row]
     groups.append(current_group)
 
-    # Step 2: strongest-confidence signal per group
-    best_signals = [max(group, key=lambda r: r.confidence) for group in groups]
+    # Step 2: strongest combined signal per group (confidence weighted by
+    # decision-layer quality). This improves cycle pairing by preferring
+    # signals that survived gap/liquidity/volatility filtering.
+    best_signals = [
+        max(group, key=lambda r: r.confidence * _signal_quality_score(r))
+        for group in groups
+    ]
 
     # Step 3: enforce strict alternation BUY→SELL→BUY
     filtered: List[SignalHistory] = []
@@ -151,6 +157,30 @@ async def generate_trade_cycles(
         await _persist_cycles(session, cycles, ticker)
 
     return cycles
+
+
+def _signal_quality_score(signal: SignalHistory) -> float:
+    """
+    In-memory quality multiplier used when selecting the best signal per group.
+
+    Mirrors the decision-filter logic so cycle pairing favors the same kinds
+    of signals that the notification layer favors: avoid gap-down and thin
+    liquidity; keep other signals unchanged.
+    """
+    try:
+        gap_type = (signal.gap_type or "none").lower()
+        liquidity_score = signal.liquidity_score if signal.liquidity_score is not None else 1.0
+        liquidity_class = DecisionFilter.classify_liquidity(liquidity_score)
+
+        quality = 1.0
+        if gap_type == "gap_down":
+            quality -= 0.15
+        if liquidity_class == "low":
+            quality -= 0.25
+        return max(0.1, quality)
+    except Exception as exc:
+        logger.error("_signal_quality_score error: %s", exc)
+        return 1.0
 
 
 async def _build_cycle(

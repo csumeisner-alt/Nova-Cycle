@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # If < threshold: weights * 0.5, thresholds * 1.25, suppress weak signals
     LIQUIDITY_SCORE_THRESHOLD: float = 0.15
 
+    # ── Decision-layer filter thresholds ──────────────────────────────────────
+    # Minimum cycle_quality_score required for a BUY signal to be emitted.
+    # Cycle quality combines volatility_regime, gap_type, liquidity_class, and
+    # confidence_momentum. SELL signals are allowed regardless of this score.
+    DECISION_BUY_MIN_CYCLE_QUALITY: float = 0.6
+
     # ── Gap detection ─────────────────────────────────────────────────────────
     # GapPercent = (PreMarketOpen - PreviousClose) / PreviousClose * 100
     GAP_UP_THRESHOLD: float = 1.0    # %
