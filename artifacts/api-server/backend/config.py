@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     # ── Firebase Cloud Messaging ───────────────────────────────────────────────
     FCM_SERVER_KEY: str = ""
 
+    # ── Google Play purchase verification ────────────────────────────────────
+    # Service account JSON with Play Console access (androidpublisher scope).
+    # Falls back to FCM_SERVER_KEY if the same service account serves both.
+    PLAY_SERVICE_ACCOUNT_JSON: str = ""
+    PLAY_PACKAGE_NAME: str = "com.novacycle"
+
     # ── Data history ──────────────────────────────────────────────────────────
     HISTORY_YEARS: int = 10
 

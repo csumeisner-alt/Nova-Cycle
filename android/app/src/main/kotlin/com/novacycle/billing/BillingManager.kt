@@ -14,10 +14,16 @@ import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
 import com.novacycle.data.theme.ThemePrefs
+import com.novacycle.domain.billing.PurchaseVerificationLogic
+import com.novacycle.domain.billing.PurchaseVerificationLogic.Decision
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -52,8 +58,11 @@ sealed interface MintBillingState {
 @Singleton
 class BillingManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val themePrefs: ThemePrefs
+    private val themePrefs: ThemePrefs,
+    private val entitlementVerifier: MintEntitlementVerifier
 ) : PurchasesUpdatedListener {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
         const val PRODUCT_ID = "mint_luxe_theme"
@@ -137,7 +146,9 @@ class BillingManager @Inject constructor(
             if (result.responseCode != BillingClient.BillingResponseCode.OK) return@queryPurchasesAsync
             val mint = purchases.firstOrNull { PRODUCT_ID in it.products }
             if (mint != null && mint.purchaseState == Purchase.PurchaseState.PURCHASED) {
-                handleVerifiedPurchase(mint)
+                // Re-verify the owned token with the backend — this is where a
+                // refund issued since purchase is detected and Mint is relocked.
+                handlePlayPurchase(mint, isRestore = true)
             } else if (mint == null) {
                 // Product no longer owned (refund / revocation) — relock Mint Luxe.
                 // Only act on an authoritative OK response with no owned purchase.
@@ -184,7 +195,7 @@ class BillingManager @Inject constructor(
             BillingClient.BillingResponseCode.OK -> {
                 purchases?.filter { PRODUCT_ID in it.products }?.forEach { purchase ->
                     when (purchase.purchaseState) {
-                        Purchase.PurchaseState.PURCHASED -> handleVerifiedPurchase(purchase)
+                        Purchase.PurchaseState.PURCHASED -> handlePlayPurchase(purchase, isRestore = false)
                         Purchase.PurchaseState.PENDING ->
                             _state.value = MintBillingState.Pending
                         else -> Unit
@@ -208,10 +219,49 @@ class BillingManager @Inject constructor(
         }
     }
 
-    private fun handleVerifiedPurchase(purchase: Purchase) {
-        // Unlock immediately; acknowledge if not yet acknowledged.
-        themePrefs.setMintUnlocked(true)
-        _state.value = MintBillingState.Purchased
+    /**
+     * A purchase Google Play reports as PURCHASED on this device.
+     *
+     * The local Play result alone no longer unlocks Mint Luxe — the purchase
+     * token is first verified server-side against the Play Developer API
+     * (a rooted device can spoof local state, but not a valid token):
+     *  - server says entitled       → unlock
+     *  - server says fake/refunded  → lock (authoritative)
+     *  - server unreachable         → unlock provisionally so a real buyer
+     *    never loses the purchase offline; re-verified on next app start.
+     */
+    private fun handlePlayPurchase(purchase: Purchase, isRestore: Boolean) {
+        acknowledgeIfNeeded(purchase)
+        scope.launch {
+            val verdict = if (isRestore) {
+                entitlementVerifier.checkEntitlement(PRODUCT_ID, purchase.purchaseToken)
+            } else {
+                entitlementVerifier.verifyPurchase(PRODUCT_ID, purchase.purchaseToken)
+            }
+            when (PurchaseVerificationLogic.decide(verdict)) {
+                Decision.UNLOCK -> {
+                    themePrefs.setMintUnlocked(true)
+                    _state.value = MintBillingState.Purchased
+                }
+                Decision.UNLOCK_PROVISIONALLY -> {
+                    Log.w(TAG, "Server verification unavailable — honouring Play purchase provisionally")
+                    themePrefs.setMintUnlocked(true)
+                    _state.value = MintBillingState.Purchased
+                }
+                Decision.LOCK -> {
+                    Log.w(TAG, "Server rejected purchase token — locking Mint Luxe")
+                    if (themePrefs.state.value.mintUnlocked) themePrefs.setMintUnlocked(false)
+                    revertToAvailable()
+                    val price = productDetails?.oneTimePurchaseOfferDetails?.formattedPrice
+                    if (price != null && _state.value is MintBillingState.Purchased) {
+                        _state.value = MintBillingState.Available(price)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun acknowledgeIfNeeded(purchase: Purchase) {
         if (!purchase.isAcknowledged) {
             val ackParams = AcknowledgePurchaseParams.newBuilder()
                 .setPurchaseToken(purchase.purchaseToken)
