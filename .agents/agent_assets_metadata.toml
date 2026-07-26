@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "ZDtnh1q2UJrRHuCUZZJz3"
+uri = "file://android/app/build/outputs/apk/debug/app-debug.apk"
+type = "unspecified"
+title = "NovaCycle debug APK (locally rebuilt)"
