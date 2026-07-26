@@ -7,7 +7,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -78,8 +77,6 @@ class MainActivity : ComponentActivity() {
     private val registrationInFlight = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Branded gold splash (AndroidX SplashScreen API) — must precede super.onCreate()
-        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
