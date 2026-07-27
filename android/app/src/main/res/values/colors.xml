@@ -32,6 +32,16 @@
     <color name="signal_low_liquidity">#FF9E9E9E</color>
     <color name="signal_override">#FFFFC107</color>
 
+    <!-- NovaCycle gold brand / luxe themes -->
+    <color name="nova_gold">#FFCBA135</color>
+    <color name="nova_gold_bright">#FFFFD700</color>
+    <color name="nova_black">#FF0D0D0D</color>
+    <color name="nova_mint">#FFA8F5D1</color>
+    <color name="nova_aurora">#FF00D4FF</color>
+    <color name="nova_aurora_bg">#FF020B24</color>
+    <color name="nova_crimson">#FFFF0033</color>
+    <color name="nova_crimson_bg">#FF000000</color>
+
     <!-- VIX regime colors -->
     <color name="vix_low">#FF00C853</color>
     <color name="vix_normal">#FF9E9E9E</color>

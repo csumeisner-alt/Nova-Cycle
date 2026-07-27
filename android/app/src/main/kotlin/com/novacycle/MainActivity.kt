@@ -6,8 +6,21 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.novacycle.ui.components.BrandIntroOverlay
+import com.novacycle.ui.components.ThemeUnlockEffectHost
+import com.novacycle.viewmodel.ThemeViewModel
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.WeightingMode
@@ -68,7 +81,11 @@ class MainActivity : ComponentActivity() {
      */
     private val registrationInFlight = AtomicBoolean(false)
 
+    private val themeViewModel: ThemeViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Android 12+ system splash (gold ring on #0D0D0D); compat-rendered below 12.
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -76,8 +93,33 @@ class MainActivity : ComponentActivity() {
         registerFcmTokenIfNeeded()
 
         setContent {
-            NovaCycleTheme {
-                NovaCycleNavHost()
+            val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
+            NovaCycleTheme(theme = themeState.selectedTheme) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        // Global tap counter: observes every pointer-down on the
+                        // Initial pass without consuming it, so normal interaction
+                        // is unaffected.
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    if (!com.novacycle.ui.components.BrandIntro.isVisible &&
+                                        event.changes.any { it.changedToDown() }
+                                    ) {
+                                        themeViewModel.registerTap()
+                                    }
+                                }
+                            }
+                        }
+                ) {
+                    NovaCycleNavHost()
+                    // Branded intro (star → ring → wordmark), once per process launch
+                    BrandIntroOverlay()
+                }
+                // Plays ping + haptic when a theme unlocks, wherever the user is
+                ThemeUnlockEffectHost(themeViewModel)
             }
         }
     }

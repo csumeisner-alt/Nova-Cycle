@@ -18,8 +18,12 @@
         <item name="android:navigationBarColor">@color/nc_bg_surface</item>
     </style>
 
-    <!-- Splash screen theme (matches main theme) -->
-    <style name="Theme.NovaCycle.Splash" parent="Theme.NovaCycle">
-        <item name="android:windowSplashScreenBackground">@color/nc_bg_primary</item>
+    <!-- Splash screen theme — AndroidX SplashScreen compat (Android 12+ native, emulated below).
+         Shows the gold Nova ring on #0D0D0D, then hands off to Theme.NovaCycle. -->
+    <style name="Theme.NovaCycle.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/nova_black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/nova_logo</item>
+        <item name="windowSplashScreenAnimationDuration">800</item>
+        <item name="postSplashScreenTheme">@style/Theme.NovaCycle</item>
     </style>
 </resources>

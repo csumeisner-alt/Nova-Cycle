@@ -1,26 +1,53 @@
 package com.novacycle.ui.screens
 
+import android.content.ContextWrapper
+import androidx.activity.ComponentActivity
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.*
+import com.novacycle.ui.theme.NovaTheme
 import com.novacycle.viewmodel.ConnectionTestState
 import com.novacycle.viewmodel.SettingsViewModel
+import com.novacycle.viewmodel.ThemeViewModel
+import kotlinx.coroutines.delay
 
 /**
  * Settings screen — configures signal sensitivity, UI preferences, and backend URL.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(
+    viewModel: SettingsViewModel = hiltViewModel(),
+    // The theme VM MUST be the activity-scoped instance: MainActivity registers
+    // global taps (and emits unlock events) on that instance, so scoping this to
+    // the nav destination would silently split the event stream in two.
+    themeViewModel: ThemeViewModel = activityScopedThemeViewModel()
+) {
     val settings         by viewModel.settings.collectAsStateWithLifecycle()
     val connTestState    by viewModel.connectionTestState.collectAsStateWithLifecycle()
     var apiUrlDraft      by remember(settings.apiBaseUrl) { mutableStateOf(settings.apiBaseUrl) }
@@ -32,6 +59,10 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
     ) {
         Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))
+
+        SettingsSection("Appearance") {
+            ThemePicker(themeViewModel)
+        }
 
         SettingsSection("Signal Sensitivity") {
             Text("BUY Threshold: ${settings.buyThreshold}%", style = MaterialTheme.typography.bodyMedium)
@@ -163,6 +194,130 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
         }
         Spacer(Modifier.height(24.dp))
     }
+}
+
+/**
+ * Resolves the activity-scoped [ThemeViewModel] — the same instance MainActivity
+ * uses for tap counting — regardless of the nav destination we are composed in.
+ */
+@Composable
+private fun activityScopedThemeViewModel(): ThemeViewModel {
+    val context = LocalContext.current
+    val activity = remember(context) {
+        generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+            .filterIsInstance<ComponentActivity>()
+            .first()
+    }
+    return hiltViewModel(activity)
+}
+
+/**
+ * Theme picker: one swatch per luxe theme. Locked themes are greyed out and
+ * non-selectable (deliberately without a lock icon). Newly unlocked themes get
+ * a brief gold shimmer sweep — the sound + haptic play globally.
+ */
+@Composable
+private fun ThemePicker(themeViewModel: ThemeViewModel) {
+    val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
+
+    // Themes unlocked within the last few seconds → shimmer
+    var shimmering by remember { mutableStateOf(setOf<NovaTheme>()) }
+    LaunchedEffect(themeViewModel) {
+        themeViewModel.unlockEvents.collect { theme ->
+            shimmering = shimmering + theme
+            delay(4000)
+            shimmering = shimmering - theme
+        }
+    }
+
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        NovaTheme.entries.forEach { theme ->
+            val unlocked = themeState.isUnlocked(theme)
+            val selected = themeState.selectedTheme == theme
+            ThemeSwatch(
+                theme = theme,
+                unlocked = unlocked,
+                selected = selected,
+                shimmer = theme in shimmering,
+                modifier = Modifier.weight(1f),
+                onClick = { if (unlocked) themeViewModel.selectTheme(theme) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ThemeSwatch(
+    theme: NovaTheme,
+    unlocked: Boolean,
+    selected: Boolean,
+    shimmer: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(12.dp)
+    val accent = if (unlocked) theme.accent else Color(0xFF3A3A3A)
+    val bg = if (unlocked) theme.backgroundPreview else Color(0xFF1C1C1C)
+
+    Column(
+        modifier = modifier
+            .clip(shape)
+            .background(bg)
+            .border(
+                width = if (selected) 2.dp else 1.dp,
+                color = when {
+                    selected -> theme.accent
+                    unlocked -> Color(0xFF2E2E2E)
+                    else     -> Color(0xFF232323)
+                },
+                shape = shape
+            )
+            .then(if (unlocked) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (shimmer) Modifier.shimmerOverlay() else Modifier)
+            .padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            Modifier
+                .size(26.dp)
+                .clip(CircleShape)
+                .background(accent)
+        )
+        Text(
+            theme.displayName,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (unlocked) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+            maxLines = 1
+        )
+    }
+}
+
+/** Repeating diagonal gold shimmer sweep drawn over the swatch content. */
+@Composable
+private fun Modifier.shimmerOverlay(): Modifier {
+    val transition = rememberInfiniteTransition(label = "shimmer")
+    val x by transition.animateFloat(
+        initialValue = -1f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
+        label = "shimmerX"
+    )
+    return this.background(
+        Brush.linearGradient(
+            colors = listOf(
+                Color.Transparent,
+                Color(0xFFFFD700).copy(alpha = 0.45f),
+                Color.Transparent
+            ),
+            start = Offset(x * 300f, x * 120f),
+            end = Offset(x * 300f + 160f, x * 120f + 80f)
+        )
+    )
 }
 
 @Composable
