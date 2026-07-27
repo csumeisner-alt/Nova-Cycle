@@ -8,9 +8,12 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -23,6 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -242,6 +247,7 @@ private fun ThemePicker(themeViewModel: ThemeViewModel) {
                 unlocked = unlocked,
                 selected = selected,
                 shimmer = theme in shimmering,
+                tapCount = themeState.tapCount,
                 modifier = Modifier.weight(1f),
                 onClick = { if (unlocked) themeViewModel.selectTheme(theme) }
             )
@@ -249,18 +255,32 @@ private fun ThemePicker(themeViewModel: ThemeViewModel) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ThemeSwatch(
     theme: NovaTheme,
     unlocked: Boolean,
     selected: Boolean,
     shimmer: Boolean,
+    tapCount: Long,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val shape = RoundedCornerShape(12.dp)
     val accent = if (unlocked) theme.accent else Color(0xFF3A3A3A)
     val bg = if (unlocked) theme.backgroundPreview else Color(0xFF1C1C1C)
+
+    // Long-pressing a locked swatch briefly reveals the exact tap progress.
+    var showProgressText by remember { mutableStateOf(false) }
+    LaunchedEffect(showProgressText) {
+        if (showProgressText) {
+            delay(3000)
+            showProgressText = false
+        }
+    }
+
+    val progress = if (unlocked || theme.unlockTaps <= 0L) 1f
+                   else (tapCount.toFloat() / theme.unlockTaps).coerceIn(0f, 1f)
 
     Column(
         modifier = modifier
@@ -275,20 +295,49 @@ private fun ThemeSwatch(
                 },
                 shape = shape
             )
-            .then(if (unlocked) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(
+                if (unlocked) Modifier.clickable(onClick = onClick)
+                else Modifier.combinedClickable(
+                    onClick = { /* locked — non-selectable */ },
+                    onLongClick = { showProgressText = true }
+                )
+            )
             .then(if (shimmer) Modifier.shimmerOverlay() else Modifier)
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Box(
-            Modifier
-                .size(26.dp)
-                .clip(CircleShape)
-                .background(accent)
-        )
+        Box(contentAlignment = Alignment.Center) {
+            // Thin progress ring around the accent dot for locked themes —
+            // a subtle hint of how close the unlock milestone is (no lock icon).
+            if (!unlocked) {
+                Canvas(Modifier.size(34.dp)) {
+                    val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                    drawArc(
+                        color = Color(0xFF2E2E2E),
+                        startAngle = -90f, sweepAngle = 360f,
+                        useCenter = false, style = stroke
+                    )
+                    if (progress > 0f) {
+                        drawArc(
+                            color = theme.accent.copy(alpha = 0.85f),
+                            startAngle = -90f, sweepAngle = 360f * progress,
+                            useCenter = false, style = stroke
+                        )
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(accent)
+            )
+        }
         Text(
-            theme.displayName,
+            text = if (!unlocked && showProgressText)
+                       "%,d / %,d".format(tapCount, theme.unlockTaps)
+                   else theme.displayName,
             style = MaterialTheme.typography.labelSmall,
             color = if (unlocked) MaterialTheme.colorScheme.onSurface
                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
