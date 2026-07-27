@@ -104,25 +104,6 @@ interface NovaCycleApiService {
         @Query("token") token: String
     ): Map<String, Any>
 
-    /**
-     * Server-side verification of a Google Play purchase token.
-     * The backend calls the Play Developer API and records the entitlement.
-     */
-    @POST("billing/verify_purchase")
-    suspend fun verifyPurchase(
-        @Body request: VerifyPurchaseRequest
-    ): EntitlementResponse
-
-    /**
-     * Re-check a previously verified purchase token.
-     * Refunds issued since purchase are detected here (entitled=false, state=revoked).
-     */
-    @GET("billing/entitlement")
-    suspend fun checkEntitlement(
-        @Query("product_id") productId: String,
-        @Query("purchase_token") purchaseToken: String
-    ): EntitlementResponse
-
     /** Health check endpoint — reports "ok" or "degraded" plus per-model health */
     @GET("healthz")
     suspend fun healthz(): HealthzResponse

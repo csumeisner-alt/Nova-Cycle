@@ -2,8 +2,8 @@
 <resources>
     <!-- NovaCycle dark theme — base for the app -->
     <style name="Theme.NovaCycle" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/nc_gold</item>
-        <item name="colorOnPrimary">@color/nc_bg_primary</item>
+        <item name="colorPrimary">@color/nc_green</item>
+        <item name="colorOnPrimary">@color/nc_text_primary</item>
         <item name="colorPrimaryContainer">@color/nc_bg_elevated</item>
         <item name="colorOnPrimaryContainer">@color/nc_text_primary</item>
         <item name="colorSecondary">@color/nc_red</item>
@@ -18,7 +18,8 @@
         <item name="android:navigationBarColor">@color/nc_bg_surface</item>
     </style>
 
-    <!-- Activity entry theme — kept as an alias of the main app theme so the
-         manifest reference remains valid while launching directly into Compose. -->
-    <style name="Theme.NovaCycle.Splash" parent="Theme.NovaCycle" />
+    <!-- Splash screen theme (matches main theme) -->
+    <style name="Theme.NovaCycle.Splash" parent="Theme.NovaCycle">
+        <item name="android:windowSplashScreenBackground">@color/nc_bg_primary</item>
+    </style>
 </resources>

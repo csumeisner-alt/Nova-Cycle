@@ -15,7 +15,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.ConfidencePoint
 import com.novacycle.domain.model.SmoothingMode
-import com.novacycle.ui.components.ChartShimmerLayout
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
@@ -64,13 +63,12 @@ fun ConfidenceHistoryScreen(
             windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }
         }
 
+        if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (uiState.error != null) Text("⚠️ ${uiState.error}", color = NovaSellRed, modifier = Modifier.padding(12.dp))
 
         if (uiState.confidencePoints.isNotEmpty()) {
             ConfidenceLineChart(uiState.confidencePoints, Modifier.fillMaxWidth().weight(1f).padding(12.dp))
-        } else if (uiState.isLoading) {
-            ChartShimmerLayout(modifier = Modifier.weight(1f))
-        } else {
+        } else if (!uiState.isLoading) {
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 Text("No confidence data available", color = NovaNeutralGray)
             }

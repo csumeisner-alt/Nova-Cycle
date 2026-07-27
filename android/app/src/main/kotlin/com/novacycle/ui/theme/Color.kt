@@ -28,27 +28,6 @@ val NovaOnBackground  = Color(0xFFEEEEEE)
 val NovaOnSurface     = Color(0xFFCCCCCC)
 val NovaOnPrimary     = Color(0xFFFFFFFF)
 
-// ── Theme accent palettes ─────────────────────────────────────────────
-// Dark Luxe (default) — bronze-gold on near-black, matching the uploaded logo
-val LuxeGold          = Color(0xFFE0B040)
-val LuxeGoldDeep      = Color(0xFFC89030)
-val LuxeGoldSoft      = Color(0xFFF5E6A8)
-
-// Aurora Flux — teal / violet
-val AuroraTeal        = Color(0xFF00E5CF)
-val AuroraViolet      = Color(0xFF9C6BFF)
-val AuroraSoft        = Color(0xFFB9FFF4)
-
-// Crimson Pulse — red / ember
-val CrimsonAccent     = Color(0xFFFF4655)
-val CrimsonEmber      = Color(0xFFFF8A50)
-val CrimsonSoft       = Color(0xFFFFC9CE)
-
-// Mint Luxe — mint / emerald (premium)
-val MintAccent        = Color(0xFF69F0AE)
-val MintEmerald       = Color(0xFF00BFA5)
-val MintSoft          = Color(0xFFD8FFEF)
-
 // VIX regime badge colors
 val VixLow      = Color(0xFF00C853)
 val VixNormal   = Color(0xFF2196F3)
