@@ -20,7 +20,7 @@ from database.maintenance import reclassify_session_labels
 from ingestion.pipeline import IngestionPipeline
 from ml.trainer import ModelTrainer
 from ml.training_status import record_training_result
-from routers import predictions, data, history, notifications, billing
+from routers import predictions, data, history, notifications
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("novacycle")
@@ -204,7 +204,6 @@ app.include_router(predictions.router, prefix="/api", tags=["Predictions"])
 app.include_router(data.router, prefix="/api", tags=["Data"])
 app.include_router(history.router, prefix="/api", tags=["History"])
 app.include_router(notifications.router, prefix="/api", tags=["Notifications"])
-app.include_router(billing.router, prefix="/api", tags=["Billing"])
 
 
 # ---------------------------------------------------------------------------

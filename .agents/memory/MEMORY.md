@@ -4,6 +4,4 @@
 - [Macro override threshold backtest](macro-override-threshold-backtest.md) — VIX threshold HIGH (not EXTREME) validated on real COVID/CPI shock days; rerun backtest script before changing
 - [XGBoost time-decay weights](xgboost-time-decay-weights.md) — normalize exp-decay sample weights to mean 1 or XGBoost degenerates to a constant predictor with zero importances
 - [Prediction router neutral fallbacks](prediction-router-neutral-fallbacks.md) — silent 0.5 causes: tuple passed to predict(), missing .pkl despite fresh metadata, Series vs scalar vix_regime
-- [Play purchase verification](play-purchase-verification.md) — server verdict authoritative, fail-open only when verification infra is unreachable
-- [Android Auto Backup rules](android-auto-backup-rules.md) — backup rule files use explicit includes; new durable stores must be added to both xml files or they're lost on reinstall
 - [Android local unit tests](android-local-unit-tests.md) — nix temurin-17 + sdkmanager bootstrap runs gradle unit tests locally; runTest hangs on infinite poll loops unless viewModelScope is cancelled

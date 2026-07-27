@@ -6,12 +6,8 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.runtime.getValue
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.novacycle.billing.BillingManager
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.WeightingMode
@@ -22,7 +18,6 @@ import com.novacycle.notifications.NovaCycleFirebaseService
 import com.novacycle.ui.navigation.NovaCycleNavHost
 import com.novacycle.ui.theme.NovaCycleTheme
 import com.novacycle.viewmodel.SettingsViewModel
-import com.novacycle.viewmodel.ThemeViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -54,9 +49,6 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var dataStore: DataStore<Preferences>
 
-    @Inject
-    lateinit var billingManager: BillingManager
-
     /**
      * Guards against two concurrent registration coroutines running simultaneously.
      * Set to true when a registration coroutine is launched; reset to false in the
@@ -84,19 +76,10 @@ class MainActivity : ComponentActivity() {
         registerFcmTokenIfNeeded()
 
         setContent {
-            val themeViewModel: ThemeViewModel = hiltViewModel()
-            val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
-            NovaCycleTheme(appTheme = themeState.selectedTheme) {
+            NovaCycleTheme {
                 NovaCycleNavHost()
             }
         }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // Re-check owned purchases whenever the app returns to the foreground
-        // (e.g. after completing a purchase in the Play sheet or a refund).
-        billingManager.restorePurchases()
     }
 
     /**
@@ -114,14 +97,7 @@ class MainActivity : ComponentActivity() {
     // ──────────────────────────────────────────────────────────────────────────
 
     private fun registerFcmTokenIfNeeded() {
-        val prefs = try {
-            getSharedPreferences(NovaCycleFirebaseService.PREFS_NAME, MODE_PRIVATE)
-        } catch (e: Exception) {
-            // Corrupted SharedPreferences file can throw on open; a missing FCM token
-            // simply means we skip registration (Firebase is currently disabled anyway).
-            Log.w(TAG, "FCM prefs unreadable, skipping registration: ${e.message}")
-            return
-        }
+        val prefs = getSharedPreferences(NovaCycleFirebaseService.PREFS_NAME, MODE_PRIVATE)
         val token = prefs.getString(NovaCycleFirebaseService.PREF_TOKEN, null)
 
         if (token == null) {

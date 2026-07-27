@@ -19,7 +19,6 @@ One-time SDK bootstrap (fast, ~1 min): download commandlinetools zip from dl.goo
 **Why:** builds otherwise only run in GitHub Actions CI; local runs catch test bugs immediately.
 
 **Gotchas learned the hard way:**
-- Composables inside `NavigationBar`/`NavigationBarItem` slots run in RowScope, which shadows top-level `AnimatedVisibility` — use `animateFloatAsState` + scale/alpha instead, or the build fails with "cannot be called with an implicit receiver".
 - Kotlin prohibits `vararg` params of type `kotlin.Result<T>` — use `List<Result<T>>`.
 - mockk-mocking the final `NovaCycleRepository` whose suspend fun returns `kotlin.Result` misbehaved (wrong answers + OOM). Repository is now `open` with `open suspend fun getHealth()` so tests use a real fake subclass.
 - Testing a ViewModel with an infinite `while(isActive) { poll; delay(60s) }` loop under `runTest`: the loop never idles, so runTest cleanup advances virtual time forever (hang). Always cancel `viewModel.viewModelScope` in a `finally` block inside the test.

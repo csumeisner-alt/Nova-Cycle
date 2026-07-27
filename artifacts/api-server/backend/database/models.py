@@ -206,36 +206,6 @@ class ModelMetadata(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# In-app purchase entitlements (Google Play)
-# One row per Play purchase token. Server-verified against the Play Developer
-# API before the Android client is allowed to unlock the Mint Luxe theme.
-# ─────────────────────────────────────────────────────────────────────────────
-class PurchaseEntitlement(Base):
-    __tablename__ = "purchase_entitlements"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Play product id, e.g. 'mint_luxe_theme'
-    product_id = Column(String(128), nullable=False, index=True)
-
-    # Opaque Play purchase token (unique per purchase)
-    purchase_token = Column(String(1024), nullable=False, unique=True, index=True)
-
-    # Play order id (GPA.xxxx-....) when available
-    order_id = Column(String(128), nullable=True)
-
-    # 'active' | 'revoked'  (revoked = refunded/cancelled on Play's side)
-    state = Column(String(16), nullable=False, default="active")
-
-    # Raw purchaseState from the Play Developer API (0 purchased, 1 cancelled, 2 pending)
-    play_purchase_state = Column(Integer, nullable=True)
-
-    verified_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    last_checked_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    revoked_at = Column(DateTime, nullable=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # FCM Device Tokens
 # Stores FCM registration tokens for push notification delivery.
 # One row per physical device. Token is refreshed automatically by Firebase SDK.

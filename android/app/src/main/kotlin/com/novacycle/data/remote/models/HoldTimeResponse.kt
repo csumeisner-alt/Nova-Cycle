@@ -11,6 +11,7 @@ data class HoldTimeResponse(
     @Json(name = "minutes") val minutes: Int,
     @Json(name = "human_readable") val humanReadable: String,
     @Json(name = "confidence") val confidence: Float,
-    @Json(name = "reasoning") val reasoning: String,
+    @Json(name = "reasoning") val reasoning: List<String> = emptyList(),
+    @Json(name = "timestamp") val timestamp: String? = null,
     @Json(name = "ticker") val ticker: String = "VOO"
 )

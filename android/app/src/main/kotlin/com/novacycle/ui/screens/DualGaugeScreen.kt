@@ -16,13 +16,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.GaugeState
 import com.novacycle.ui.components.DualGaugeWidget
-import com.novacycle.ui.components.NovaLogo
 import com.novacycle.ui.components.TickerSelector
 import com.novacycle.ui.components.formatRelativeAge
 import com.novacycle.ui.components.rememberTickingNow
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.DualGaugeViewModel
-import com.novacycle.viewmodel.ThemeViewModel
 
 /**
  * Main dashboard screen.
@@ -34,31 +32,11 @@ import com.novacycle.viewmodel.ThemeViewModel
 @Composable
 fun DualGaugeScreen(
     viewModel: DualGaugeViewModel = hiltViewModel(),
-    themeViewModel: ThemeViewModel = hiltViewModel(),
     onNavigateToRawChart: () -> Unit = {},
     onNavigateToHoldTime: () -> Unit = {},
     onNavigateToReliability: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val showCelebration by themeViewModel.showUnlockCelebration.collectAsStateWithLifecycle()
-
-    if (showCelebration) {
-        AlertDialog(
-            onDismissRequest = { themeViewModel.dismissUnlockCelebration() },
-            title = { Text("🌟 Achievement Unlocked!") },
-            text = {
-                Text(
-                    "20,000 taps! You've unlocked the Aurora Flux and Crimson Pulse themes. " +
-                        "Pick your new look in Settings → Appearance."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { themeViewModel.dismissUnlockCelebration() }) {
-                    Text("Amazing")
-                }
-            }
-        )
-    }
 
     val longGaugeState = GaugeState(
         score      = uiState.longPrediction?.score ?: 0f,
@@ -93,16 +71,12 @@ fun DualGaugeScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    NovaLogo(onTap = { themeViewModel.onLogoTap() })
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "NovaCycle",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
+                Text(
+                    text = "NovaCycle",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TickerSelector(
                         selectedTicker   = uiState.selectedTicker,

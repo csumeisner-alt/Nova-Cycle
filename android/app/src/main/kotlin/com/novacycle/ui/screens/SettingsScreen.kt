@@ -1,41 +1,26 @@
 package com.novacycle.ui.screens
 
-import android.app.Activity
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.novacycle.billing.MintBillingState
 import com.novacycle.domain.model.*
-import com.novacycle.domain.theme.ThemeUnlockLogic
-import com.novacycle.ui.theme.AppTheme
-import com.novacycle.ui.theme.colorSchemeFor
 import com.novacycle.viewmodel.ConnectionTestState
 import com.novacycle.viewmodel.SettingsViewModel
-import com.novacycle.viewmodel.ThemeViewModel
 
 /**
  * Settings screen — configures signal sensitivity, UI preferences, and backend URL.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
-    viewModel: SettingsViewModel = hiltViewModel(),
-    themeViewModel: ThemeViewModel = hiltViewModel()
-) {
+fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
     val settings         by viewModel.settings.collectAsStateWithLifecycle()
     val connTestState    by viewModel.connectionTestState.collectAsStateWithLifecycle()
     var apiUrlDraft      by remember(settings.apiBaseUrl) { mutableStateOf(settings.apiBaseUrl) }
@@ -47,8 +32,6 @@ fun SettingsScreen(
     ) {
         Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))
-
-        AppearanceSection(themeViewModel)
 
         SettingsSection("Signal Sensitivity") {
             Text("BUY Threshold: ${settings.buyThreshold}%", style = MaterialTheme.typography.bodyMedium)
@@ -179,128 +162,6 @@ fun SettingsScreen(
             Text("Reset to Defaults")
         }
         Spacer(Modifier.height(24.dp))
-    }
-}
-
-/**
- * Theme picker: Dark Luxe (always available), Aurora Flux & Crimson Pulse
- * (20,000-tap achievement), and Mint Luxe (Play Billing purchase).
- */
-@Composable
-private fun AppearanceSection(themeViewModel: ThemeViewModel) {
-    val themeState   by themeViewModel.themeState.collectAsStateWithLifecycle()
-    val billingState by themeViewModel.billingState.collectAsStateWithLifecycle()
-    val activity = LocalContext.current as? Activity
-    var billingMessage by remember { mutableStateOf<String?>(null) }
-
-    SettingsSection("Appearance") {
-        AppTheme.entries.forEach { theme ->
-            val available = ThemeUnlockLogic.isThemeAvailable(
-                theme, themeState.auroraUnlocked, themeState.crimsonUnlocked, themeState.mintUnlocked
-            )
-            val selected = themeState.selectedTheme == theme
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                RadioButton(
-                    selected = selected,
-                    onClick = { themeViewModel.selectTheme(theme) },
-                    enabled = available
-                )
-                // Accent swatch preview
-                Box(
-                    Modifier
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(colorSchemeFor(theme).primary)
-                )
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        theme.displayName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (available) MaterialTheme.colorScheme.onSurface
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    )
-                    Text(
-                        theme.tagline,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                }
-                if (!available) {
-                    when (theme) {
-                        AppTheme.MINT_LUXE -> MintBuyButton(
-                            billingState = billingState,
-                            onBuy = {
-                                val act = activity
-                                billingMessage = when {
-                                    act == null -> "Can't start purchase outside an activity"
-                                    themeViewModel.purchaseMintLuxe(act) -> null
-                                    else -> "Google Play Billing isn't available right now"
-                                }
-                            }
-                        )
-                        else -> Icon(
-                            Icons.Filled.Lock,
-                            contentDescription = "Locked",
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        )
-                    }
-                }
-            }
-        }
-
-        // Tap-achievement progress toward Aurora Flux + Crimson Pulse
-        if (!themeState.auroraUnlocked || !themeState.crimsonUnlocked) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Logo tap achievement: ${ThemeUnlockLogic.progressLabel(themeState.tapCount)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
-            Spacer(Modifier.height(4.dp))
-            LinearProgressIndicator(
-                progress = { ThemeUnlockLogic.progressFraction(themeState.tapCount) },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                "Tap the gold logo on the dashboard 20,000 times to unlock Aurora Flux and Crimson Pulse.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
-
-        // Billing status / error feedback
-        val statusText = billingMessage ?: when (val s = billingState) {
-            is MintBillingState.Unavailable ->
-                if (!themeState.mintUnlocked) s.reason else null
-            MintBillingState.Pending -> "Purchase in progress…"
-            else -> null
-        }
-        if (statusText != null) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                statusText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun MintBuyButton(billingState: MintBillingState, onBuy: () -> Unit) {
-    val (label, enabled) = when (billingState) {
-        is MintBillingState.Available -> "Buy ${billingState.formattedPrice}" to true
-        MintBillingState.Pending      -> "Pending…" to false
-        else                          -> "Buy $1.49" to false
-    }
-    Button(onClick = onBuy, enabled = enabled, contentPadding = PaddingValues(horizontal = 12.dp)) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 

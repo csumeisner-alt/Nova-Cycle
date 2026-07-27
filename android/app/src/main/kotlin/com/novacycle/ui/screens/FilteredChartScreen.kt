@@ -20,7 +20,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.domain.model.SignalData
 import com.novacycle.domain.usecase.ApplyFilteredSignalsUseCase
-import com.novacycle.ui.components.ChartShimmerLayout
 import com.novacycle.ui.components.ConfidenceRibbon
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
@@ -66,6 +65,7 @@ fun FilteredChartScreen(
             windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }
         }
 
+        if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (uiState.error != null) Text("⚠️ ${uiState.error}", color = NovaSellRed, modifier = Modifier.padding(12.dp))
 
         if (uiState.filteredSignals.isNotEmpty()) {
@@ -82,9 +82,7 @@ fun FilteredChartScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 onSignalTapped = { selectedSignal = it }
             )
-        } else if (uiState.isLoading) {
-            ChartShimmerLayout(modifier = Modifier.weight(1f))
-        } else {
+        } else if (!uiState.isLoading) {
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) { Text("No chart data", color = NovaNeutralGray) }
         }
 

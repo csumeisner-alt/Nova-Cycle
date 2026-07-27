@@ -9,6 +9,9 @@ import com.squareup.moshi.JsonClass
  */
 @JsonClass(generateAdapter = true)
 data class IndicatorResponse(
+    @Json(name = "ticker") val ticker: String = "VOO",
+    @Json(name = "status") val status: String = "ok",
+    @Json(name = "computed_at") val computedAt: String? = null,
     @Json(name = "rsi") val rsi: Float,
     @Json(name = "stoch_k") val stochK: Float,
     @Json(name = "stoch_d") val stochD: Float,

@@ -30,7 +30,7 @@ fun SignalStoryCard(
     signal: SignalData,
     storyLevel: StoryLevel,
     holdTimeText: String = "",
-    indicatorBreakdown: Map<String, Float> = emptyMap(),
+    indicatorBreakdown: Map<String, Any> = emptyMap(),
     mlConfidence: Float = 0f,
     onDismiss: () -> Unit
 ) {
@@ -110,13 +110,20 @@ private fun SimpleSummary(signal: SignalData, holdTimeText: String) {
 }
 
 @Composable
-private fun AdvancedBreakdown(signal: SignalData, indicatorBreakdown: Map<String, Float>, mlConfidence: Float) {
+private fun AdvancedBreakdown(signal: SignalData, indicatorBreakdown: Map<String, Any>, mlConfidence: Float) {
     SectionTitle("Indicator Breakdown")
-    if (indicatorBreakdown.isEmpty()) {
+    // The backend may include textual annotations (e.g. "liquidity_adjustment") alongside
+    // numeric scores. Only numeric entries are displayed in the sorted bar list.
+    val numericBreakdown = indicatorBreakdown.mapNotNull { (name, value) ->
+        val score = (value as? Number)?.toFloat() ?: return@mapNotNull null
+        name to score
+    }.sortedByDescending { it.second }
+
+    if (numericBreakdown.isEmpty()) {
         Text("No indicator breakdown available", style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
     } else {
-        indicatorBreakdown.entries.sortedByDescending { it.value }.forEach { (name, score) ->
+        numericBreakdown.forEach { (name, score) ->
             val scoreColor = if (score > 0) NovaBuyGreen else NovaSellRed
             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), Arrangement.SpaceBetween) {
                 Text(name, style = MaterialTheme.typography.bodyMedium)
