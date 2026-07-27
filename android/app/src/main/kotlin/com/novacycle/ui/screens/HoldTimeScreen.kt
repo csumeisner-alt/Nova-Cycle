@@ -84,7 +84,15 @@ fun HoldTimeScreen(
                             Column(Modifier.padding(16.dp)) {
                                 Text("Reasoning", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                                 Spacer(Modifier.height(8.dp))
-                                Text(ht.reasoning, style = MaterialTheme.typography.bodyMedium)
+                                if (ht.reasoning.isEmpty()) {
+                                    Text("No reasoning available", style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                                } else {
+                                    ht.reasoning.forEach { line ->
+                                        Text("• $line", style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.padding(vertical = 2.dp))
+                                    }
+                                }
                             }
                         }
 
