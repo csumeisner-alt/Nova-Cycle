@@ -24,3 +24,4 @@ One-time SDK bootstrap (fast, ~1 min): download commandlinetools zip from dl.goo
 - Testing a ViewModel with an infinite `while(isActive) { poll; delay(60s) }` loop under `runTest`: the loop never idles, so runTest cleanup advances virtual time forever (hang). Always cancel `viewModel.viewModelScope` in a `finally` block inside the test.
 - Poll-loop timing under virtual time: the first poll fires at t=0 (`runCurrent()`), each `advanceTimeBy(60_001)` afterwards runs exactly one more poll; a naive first `advanceTimeBy` runs TWO polls.
 - ShellExec kills background processes when the command exits — long gradle runs must stay in the foreground with `timeout N`.
+- Preferences DataStore in JVM tests: to "reopen" a store on the same file you must `job.cancelAndJoin()` the old store's scope first — plain `cancel()` is async, the single-instance file guard stays held, and the new store's reads fail (swallowed by `catch { emptyPreferences() }`, yielding defaults).
