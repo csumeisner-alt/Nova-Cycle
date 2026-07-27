@@ -55,6 +55,23 @@ class ConfidenceZoneTest {
         assertEquals(ConfidenceZone.UNCERTAIN, GaugeState(confidencePercent = 50).confidenceZone)
     }
 
+    @Test
+    fun `directional gauge maps raw score to left to right percentage`() {
+        assertEquals(0, GaugeState(score = -100f).gaugePercent)
+        assertEquals(38, GaugeState(score = -24f).gaugePercent)
+        assertEquals(50, GaugeState(score = 0f).gaugePercent)
+        assertEquals(60, GaugeState(score = 20f).gaugePercent)
+        assertEquals(100, GaugeState(score = 100f).gaugePercent)
+    }
+
+    @Test
+    fun `directional action uses the same gauge percentage`() {
+        assertEquals("SELL", GaugeState(score = -100f).gaugeAction)
+        assertEquals("HOLD", GaugeState(score = -24f).gaugeAction)
+        assertEquals("HOLD", GaugeState(score = 0f).gaugeAction)
+        assertEquals("BUY", GaugeState(score = 100f).gaugeAction)
+    }
+
     // ── PredictionResponse: missing fields default to neutral (old backend) ──
 
     @Test

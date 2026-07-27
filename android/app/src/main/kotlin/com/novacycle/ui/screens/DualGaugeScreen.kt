@@ -49,6 +49,8 @@ fun DualGaugeScreen(
         trend             = longPred?.trend ?: "NEUTRAL",
         displaySignal     = longPred?.displaySignal ?: "NEUTRAL / HOLD",
         isFallback        = longPred == null || longPred.note != null,
+        gaugePercent      = if (longPred == null || longPred.note != null) 0
+                            else (((longPred.score + 100f) / 2f).toInt().coerceIn(0, 100)),
         gaugeType         = "long",
         ticker            = uiState.selectedTicker,
         isLoading         = uiState.isLoading && uiState.longPrediction == null
@@ -62,6 +64,8 @@ fun DualGaugeScreen(
         trend             = shortPred?.trend ?: "NEUTRAL",
         displaySignal     = shortPred?.displaySignal ?: "NEUTRAL / HOLD",
         isFallback        = shortPred == null || shortPred.note != null,
+        gaugePercent      = if (shortPred == null || shortPred.note != null) 0
+                            else (((shortPred.score + 100f) / 2f).toInt().coerceIn(0, 100)),
         gaugeType         = "short",
         ticker            = uiState.selectedTicker,
         isLoading         = uiState.isLoading && uiState.shortPrediction == null

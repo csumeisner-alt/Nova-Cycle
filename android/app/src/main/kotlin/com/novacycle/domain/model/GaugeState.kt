@@ -22,7 +22,9 @@ data class GaugeState(
     /** "BUY BIAS", "SELL BIAS", or "NEUTRAL / HOLD" */
     val displaySignal: String = "NEUTRAL / HOLD",
     /** True when showing the no-data fallback — gauge renders gray */
-    val isFallback: Boolean = false
+    val isFallback: Boolean = false,
+    /** Directional gauge position: raw score -100..100 mapped to 0..100. */
+    val gaugePercent: Int = ((score + 100f) / 2f).toInt().coerceIn(0, 100)
 ) {
     val isBuy: Boolean get() = signal.lowercase() == "buy"
     val isSell: Boolean get() = signal.lowercase() == "sell"
@@ -32,6 +34,15 @@ data class GaugeState(
 
     /** Confidence zone for the normalized 0–100% confidence display */
     val confidenceZone: ConfidenceZone get() = ConfidenceZone.fromPercent(confidencePercent)
+
+    val gaugeZone: ConfidenceZone get() = ConfidenceZone.fromPercent(gaugePercent)
+
+    val gaugeAction: String
+        get() = when {
+            gaugePercent >= 65 -> "BUY"
+            gaugePercent <= 35 -> "SELL"
+            else -> "HOLD"
+        }
 }
 
 /**

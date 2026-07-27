@@ -1,8 +1,5 @@
 package com.novacycle.ui.components
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
@@ -15,7 +12,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -40,11 +36,10 @@ internal fun trendGlyph(trend: String): String = when (trend.uppercase()) {
 }
 
 /**
- * DualGaugeWidget — semicircular arc gauge with animated needle.
+ * DualGaugeWidget — simple directional 0–100% gauge.
  *
  * The gauge spans 180° (from left = -100 to right = +100).
- * Color gradient: Red (SELL) → Yellow (neutral) → Green (BUY).
- * Needle animates smoothly using spring physics.
+ * Color gradient: Red (SELL) → Yellow (HOLD) → Green (BUY).
  *
  * @param gaugeState  Signal state containing score, signal, and confidence
  * @param label       Gauge title, e.g. "Long-Trend" or "Short-Trend"
@@ -59,34 +54,14 @@ fun DualGaugeWidget(
     // logo is tapped, so gauges pulse with the rest of the page.
     val spec = com.novacycle.ui.theme.LocalNovaTheme.current.spec()
     val breath = LocalBreathState.current
-    val score = gaugeState.score
-    val signal = gaugeState.signal
-    val confidence = gaugeState.confidence
-    // Animate needle position: score [-100, +100] maps to angle [180°, 0°]
-    // (left side = -100 = SELL = red, right side = +100 = BUY = green)
-    val targetAngle = remember(score) {
-        // Map [-100, +100] → [180°, 0°]  (needle sweeps left→right)
-        180f - ((score + 100f) / 200f) * 180f
-    }
-    val animatedAngle by animateFloatAsState(
-        targetValue = targetAngle,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "gaugeNeedle"
-    )
+    val gaugePercent = gaugeState.gaugePercent.coerceIn(0, 100)
+    // 0% is the far-left red end, 100% is the far-right green end.
+    val needleAngle = 180f + gaugePercent * 1.8f
 
     // Gray "no data" state: fallback gauges render fully muted.
     val isFallback = gaugeState.isFallback
-    val signalColor = when {
-        isFallback -> Color(0xFF9E9E9E)
-        signal.lowercase() == "buy"  -> Color(0xFF00C853)
-        signal.lowercase() == "sell" -> Color(0xFFD50000)
-        else -> Color(0xFF9E9E9E)
-    }
     val zoneColor = if (isFallback) Color(0xFF9E9E9E)
-                    else confidenceZoneColor(gaugeState.confidenceZone)
+                    else confidenceZoneColor(gaugeState.gaugeZone)
 
     Column(
         modifier = modifier.padding(8.dp),
@@ -140,8 +115,8 @@ fun DualGaugeWidget(
             // Draw tick marks at -100, -50, 0, +50, +100
             drawTicks(cx, cy, radius, strokeWidth)
 
-            // Draw animated needle
-            drawNeedle(cx, cy, radius, animatedAngle, signalColor)
+            // Draw needle: left/red = 0%, right/green = 100%.
+            drawNeedle(cx, cy, radius, needleAngle, zoneColor)
 
             // Draw center hub
             drawCircle(
@@ -150,7 +125,7 @@ fun DualGaugeWidget(
                 center = Offset(cx, cy)
             )
             drawCircle(
-                color = signalColor,
+                color = zoneColor,
                 radius = 6.dp.toPx(),
                 center = Offset(cx, cy)
             )
@@ -158,52 +133,23 @@ fun DualGaugeWidget(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Score number
+        // One clear number: the directional position of the gauge.
         Text(
-            text = "${score.toInt()}",
-            fontSize = 28.sp,
+            text = "$gaugePercent%",
+            fontSize = 32.sp,
             fontWeight = FontWeight.Bold,
-            color = signalColor,
-            textAlign = TextAlign.Center
-        )
-
-        // Signal label
-        Text(
-            text = signal.uppercase(),
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            color = signalColor,
-            textAlign = TextAlign.Center
-        )
-
-        // Normalized confidence percentage (0–100%) in its zone color
-        Text(
-            text = "${gaugeState.confidencePercent.coerceIn(0, 100)}% confidence",
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.SemiBold,
             color = zoneColor,
             textAlign = TextAlign.Center
         )
 
-        // Trend + display signal label (e.g. "▲ UP · BUY BIAS")
-        val trendText = if (isFallback) "NEUTRAL" else gaugeState.trend.uppercase()
-        val signalText = if (isFallback) "NEUTRAL / HOLD" else gaugeState.displaySignal
+        // The action is derived from the same 0–100 value.
         Text(
-            text = "${trendGlyph(trendText)} $trendText · $signalText",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = if (isFallback) Color(0xFF9E9E9E) else zoneColor,
+            text = if (isFallback) "NO DATA" else gaugeState.gaugeAction,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = zoneColor,
             textAlign = TextAlign.Center
         )
-
-        if (isFallback) {
-            Text(
-                text = "No data",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                textAlign = TextAlign.Center
-            )
-        }
     }
 }
 
