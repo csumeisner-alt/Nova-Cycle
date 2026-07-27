@@ -56,6 +56,15 @@ class ThemeViewModel @Inject constructor(
         pendingTaps.incrementAndGet()
     }
 
+    /**
+     * Flush any pending taps immediately, without waiting for the next 250ms
+     * tick. Called from the activity's onStop so taps registered in the final
+     * batch window are persisted before the process becomes killable.
+     */
+    fun flushNow() {
+        viewModelScope.launch { flushPendingTaps() }
+    }
+
     fun selectTheme(theme: NovaTheme) {
         viewModelScope.launch { themeRepository.selectTheme(theme) }
     }

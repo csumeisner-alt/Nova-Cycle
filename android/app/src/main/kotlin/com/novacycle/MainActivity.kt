@@ -125,6 +125,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Flush pending tap-counter batches as soon as the app leaves the foreground.
+     * The ViewModel flushes every 250ms while running; without this, taps in the
+     * final <250ms window would be lost if the process is killed while backgrounded.
+     */
+    override fun onStop() {
+        themeViewModel.flushNow()
+        super.onStop()
+    }
+
+    /**
      * Called when the activity is already running and a notification tap brings it to the
      * foreground. Re-registers the token in case it was refreshed while backgrounded.
      */

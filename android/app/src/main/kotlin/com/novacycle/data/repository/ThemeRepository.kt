@@ -35,7 +35,7 @@ data class ThemeState(
  * false → true in that transaction — the exactly-once unlock celebration signal.
  */
 @Singleton
-class ThemeRepository @Inject constructor(
+open class ThemeRepository @Inject constructor(
     private val dataStore: DataStore<Preferences>
 ) {
     companion object {
@@ -46,7 +46,7 @@ class ThemeRepository @Inject constructor(
         val KEY_SELECTED_THEME   = stringPreferencesKey("selectedTheme")
     }
 
-    val themeState: Flow<ThemeState> = dataStore.data
+    open val themeState: Flow<ThemeState> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { prefs -> prefs.toThemeState() }
 
@@ -54,7 +54,7 @@ class ThemeRepository @Inject constructor(
      * Add [count] taps to the cumulative total. Returns the list of themes that
      * became newly unlocked by this batch (usually empty).
      */
-    suspend fun addTaps(count: Int): List<NovaTheme> {
+    open suspend fun addTaps(count: Int): List<NovaTheme> {
         if (count <= 0) return emptyList()
         val newlyUnlocked = mutableListOf<NovaTheme>()
         dataStore.edit { prefs ->
@@ -77,7 +77,7 @@ class ThemeRepository @Inject constructor(
      * Persist the selected theme. Locked themes are rejected (returns false) —
      * the UI greys them out, but this is the authoritative guard.
      */
-    suspend fun selectTheme(theme: NovaTheme): Boolean {
+    open suspend fun selectTheme(theme: NovaTheme): Boolean {
         var accepted = false
         dataStore.edit { prefs ->
             if (prefs.toThemeState().isUnlocked(theme)) {
