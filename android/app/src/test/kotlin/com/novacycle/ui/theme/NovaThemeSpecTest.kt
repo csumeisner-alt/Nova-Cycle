@@ -1,5 +1,6 @@
 package com.novacycle.ui.theme
 
+import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -56,5 +57,19 @@ class NovaThemeSpecTest {
         assertEquals("Rose Luxe", NovaTheme.AURORA_FLUX.displayName)
         assertEquals("Heritage", NovaTheme.CRIMSON_PULSE.displayName)
         assertNotEquals(NovaTheme.DARK_LUXE.spec().glow, NovaTheme.AURORA_FLUX.spec().glow)
+    }
+
+    @Test
+    fun `each theme has a distinct gauge palette and motion style`() {
+        val palettes = NovaTheme.entries.map { it.gaugePalette() }
+        assertEquals(palettes.size, palettes.map { it.motion }.toSet().size)
+        assertEquals(Color(0xFFD4AF37), NovaTheme.DARK_LUXE.gaugePalette().arcStart)
+        assertEquals(Color(0xFF8B7500), NovaTheme.DARK_LUXE.gaugePalette().arcEnd)
+        assertEquals(Color(0xFF00FFC6), NovaTheme.MINT_LUXE.gaugePalette().arcStart)
+        assertEquals(Color(0xFF007F6E), NovaTheme.MINT_LUXE.gaugePalette().arcEnd)
+        assertEquals(Color(0xFFE6A8A8), NovaTheme.AURORA_FLUX.gaugePalette().arcStart)
+        assertEquals(Color(0xFFB76E79), NovaTheme.AURORA_FLUX.gaugePalette().arcEnd)
+        assertEquals(Color(0xFFC5B358), NovaTheme.CRIMSON_PULSE.gaugePalette().arcStart)
+        assertEquals(Color(0xFFA67C52), NovaTheme.CRIMSON_PULSE.gaugePalette().arcEnd)
     }
 }

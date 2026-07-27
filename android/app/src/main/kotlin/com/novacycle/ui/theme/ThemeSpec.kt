@@ -17,6 +17,26 @@ enum class AmbientStyle {
     HERITAGE_PATTERN
 }
 
+enum class GaugeMotionStyle {
+    CONFIDENT_SWEEP,
+    FLUID_WAVE,
+    ELEGANT_SWIRL,
+    REFINED_GLIDE
+}
+
+data class GaugePalette(
+    val arcStart: Color,
+    val arcEnd: Color,
+    val buy: Color,
+    val sell: Color,
+    val hold: Color,
+    val needle: Color,
+    val label: Color,
+    val glow: Color,
+    val background: Color,
+    val motion: GaugeMotionStyle
+)
+
 /**
  * Per-theme visual parameters beyond the Material color scheme: the neon/metal
  * glow color, card rim lighting, and the ambient background style. Keeping
@@ -35,6 +55,37 @@ data class NovaThemeSpec(
     /** True when the background is light (Heritage) — flips scrim directions. */
     val lightBackground: Boolean = false
 )
+
+fun NovaTheme.gaugePalette(): GaugePalette = when (this) {
+    NovaTheme.DARK_LUXE -> GaugePalette(
+        arcStart = Color(0xFFD4AF37), arcEnd = Color(0xFF8B7500),
+        buy = Color(0xFFE7C65C), sell = Color(0xFFB65D4A),
+        hold = Color(0xFFAAA07A), needle = Color(0xFFF4D878),
+        label = Color(0xFFE7C65C), glow = Color(0xFFD4AF37),
+        background = Color(0xFF050505), motion = GaugeMotionStyle.CONFIDENT_SWEEP
+    )
+    NovaTheme.MINT_LUXE -> GaugePalette(
+        arcStart = Color(0xFF00FFC6), arcEnd = Color(0xFF007F6E),
+        buy = Color(0xFF5DFFE0), sell = Color(0xFFE27B83),
+        hold = Color(0xFF9ABDB5), needle = Color(0xFFBFFFF1),
+        label = Color(0xFFBFFFF1), glow = Color(0xFF00FFC6),
+        background = Color(0xFF020A09), motion = GaugeMotionStyle.FLUID_WAVE
+    )
+    NovaTheme.AURORA_FLUX -> GaugePalette(
+        arcStart = Color(0xFFE6A8A8), arcEnd = Color(0xFFB76E79),
+        buy = Color(0xFFFFC0C8), sell = Color(0xFFD66E7B),
+        hold = Color(0xFFC8A8AC), needle = Color(0xFFFFD8D8),
+        label = Color(0xFFFFE4E0), glow = Color(0xFFE6A8A8),
+        background = Color(0xFF0D0709), motion = GaugeMotionStyle.ELEGANT_SWIRL
+    )
+    NovaTheme.CRIMSON_PULSE -> GaugePalette(
+        arcStart = Color(0xFFC5B358), arcEnd = Color(0xFFA67C52),
+        buy = Color(0xFF769D70), sell = Color(0xFFC25C5C),
+        hold = Color(0xFF9D9278), needle = Color(0xFFE2C879),
+        label = Color(0xFFFFF1D2), glow = Color(0xFFC5B358),
+        background = Color(0xFF8F8068), motion = GaugeMotionStyle.REFINED_GLIDE
+    )
+}
 
 fun NovaTheme.spec(): NovaThemeSpec = when (this) {
     NovaTheme.DARK_LUXE -> NovaThemeSpec(

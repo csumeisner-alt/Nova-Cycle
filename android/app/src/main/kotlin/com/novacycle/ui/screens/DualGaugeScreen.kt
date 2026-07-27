@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.GaugeState
-import com.novacycle.ui.components.DualGaugeWidget
+import com.novacycle.ui.components.ThemeAwareGauge
 import com.novacycle.ui.components.NovaLogoHeader
 import com.novacycle.ui.components.TickerSelector
 import com.novacycle.ui.components.luxeRim
@@ -159,12 +159,12 @@ fun DualGaugeScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                DualGaugeWidget(
+                ThemeAwareGauge(
                     gaugeState = longGaugeState,
                     label      = "Long-Trend",
                     modifier   = Modifier.weight(1f)
                 )
-                DualGaugeWidget(
+                ThemeAwareGauge(
                     gaugeState = shortGaugeState,
                     label      = "Short-Trend",
                     modifier   = Modifier.weight(1f)
