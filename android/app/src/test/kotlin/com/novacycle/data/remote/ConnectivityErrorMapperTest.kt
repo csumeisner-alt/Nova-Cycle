@@ -4,6 +4,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import com.squareup.moshi.JsonDataException
+import com.squareup.moshi.JsonEncodingException
 import org.junit.Test
 import retrofit2.HttpException
 import retrofit2.Response
