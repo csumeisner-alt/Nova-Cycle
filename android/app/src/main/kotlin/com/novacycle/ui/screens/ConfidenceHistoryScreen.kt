@@ -94,6 +94,27 @@ private fun ConfidenceLineChart(points: List<ConfidencePoint>, modifier: Modifie
             drawLine(Color.Gray.copy(alpha = 0.2f), Offset(0f, confToY(level)), Offset(size.width, confToY(level)), 1f)
         }
 
+        // Gradient fill under each confidence line (line color fading to
+        // transparent toward the chart floor) for a premium filled-area look.
+        fun fillUnder(values: List<Float>, color: Color, topAlpha: Float) {
+            val path = Path().apply {
+                moveTo(0f, size.height - padding)
+                values.forEachIndexed { i, v -> lineTo(i * stepX, confToY(v)) }
+                lineTo((count - 1) * stepX, size.height - padding)
+                close()
+            }
+            drawPath(
+                path,
+                brush = Brush.verticalGradient(
+                    colors = listOf(color.copy(alpha = topAlpha), color.copy(alpha = 0f)),
+                    startY = padding,
+                    endY   = size.height - padding
+                )
+            )
+        }
+        fillUnder(points.map { it.shortBuyConfidence }, NovaExtendedBlue, 0.12f)
+        fillUnder(points.map { it.longBuyConfidence }, NovaBuyGreen, 0.18f)
+
         for (i in 1 until count) {
             val prev  = points[i - 1]
             val curr  = points[i]

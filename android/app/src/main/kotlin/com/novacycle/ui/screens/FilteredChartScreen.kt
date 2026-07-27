@@ -125,6 +125,17 @@ private fun FilteredCandlestickChart(
             val barWidth = ((size.width / candles.size) * scale).coerceAtLeast(4f)
             val wickW    = (barWidth * 0.15f).coerceAtLeast(1f)
 
+            // Vertical session separators (shared with RawChartScreen)
+            drawSessionSeparators(candles, barWidth, offsetX, padding)
+
+            // Index ranges covered by completed BUY→SELL cycles, so candles
+            // inside a cycle can carry a subtle trend tint.
+            val cycleRanges = cycles.mapNotNull { cycle ->
+                val bi = tsToIdx[cycle.buySignal.timestamp] ?: return@mapNotNull null
+                val si = cycle.sellSignal?.let { tsToIdx[it.timestamp] } ?: return@mapNotNull null
+                bi..si
+            }
+
             // Trade-cycle shading
             cycles.forEach { cycle ->
                 val bi = tsToIdx[cycle.buySignal.timestamp] ?: return@forEach
@@ -146,7 +157,13 @@ private fun FilteredCandlestickChart(
                 val closeY = priceToY(candle.close, priceMin, priceRange, size.height, padding)
                 val highY  = priceToY(candle.high,  priceMin, priceRange, size.height, padding)
                 val lowY   = priceToY(candle.low,   priceMin, priceRange, size.height, padding)
-                val color  = if (candle.close >= candle.open) NovaBuyGreen.copy(alpha = 0.8f) else NovaSellRed.copy(alpha = 0.8f)
+                // Subtle trend tint: candles inside a BUY cycle lean slightly
+                // toward green — bullish/bearish base semantics stay intact.
+                val inBuyCycle = cycleRanges.any { idx in it }
+                val baseColor  = if (candle.close >= candle.open) NovaBuyGreen else NovaSellRed
+                val color = if (inBuyCycle) {
+                    lerp(baseColor, NovaBuyGreen, 0.18f).copy(alpha = 0.85f)
+                } else baseColor.copy(alpha = 0.8f)
 
                 drawLine(color, Offset(x + barWidth/2, highY), Offset(x + barWidth/2, lowY), wickW)
                 drawRect(color, Offset(x + wickW, minOf(openY, closeY)),

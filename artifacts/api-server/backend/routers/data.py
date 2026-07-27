@@ -14,9 +14,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import asyncio
+
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -30,6 +32,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["data"])
 
 _INDICATORS = TechnicalIndicators()
+
+# Guards the manual POST /ingest trigger against concurrent runs.
+_INGEST_LOCK = asyncio.Lock()
 
 _MARKET_TZ = ZoneInfo("America/New_York")
 
@@ -405,6 +410,206 @@ async def get_indicators(
         raise
     except Exception as exc:
         logger.error("get_indicators error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/ingest")
+async def trigger_ingest(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually trigger an incremental data ingestion run (normally scheduled).
+
+    Returns a summary of new candles stored per timeframe. Concurrent calls
+    are rejected with 409 so overlapping manual triggers can't hammer the
+    upstream data provider.
+    """
+    if not _INGEST_LOCK.locked():
+        async with _INGEST_LOCK:
+            from main import pipeline  # lazy: avoid circular import at module load
+
+            async def _count(timeframe: str) -> int:
+                res = await db.execute(
+                    select(func.count(VooCandle.id)).where(
+                        VooCandle.ticker == settings.TICKER,
+                        VooCandle.timeframe == timeframe,
+                    )
+                )
+                return int(res.scalar() or 0)
+
+            before = {"daily": await _count("daily"), "5min": await _count("5min")}
+            started_at = datetime.utcnow()
+            try:
+                await pipeline.run_incremental_update(db)
+                await db.commit()
+            except Exception as exc:
+                logger.error("manual_ingest_failed error=%s", exc)
+                raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}")
+
+            after = {"daily": await _count("daily"), "5min": await _count("5min")}
+            return {
+                "status": "ok",
+                "triggered": "manual",
+                "started_at": started_at.isoformat(),
+                "finished_at": datetime.utcnow().isoformat(),
+                "new_candles": {
+                    "daily": after["daily"] - before["daily"],
+                    "5min": after["5min"] - before["5min"],
+                },
+                "total_candles": after,
+            }
+    raise HTTPException(
+        status_code=409, detail="An ingestion run is already in progress."
+    )
+
+
+@router.get("/macro_safety")
+async def get_macro_safety(
+    ticker: str = Query(default="VOO"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Report the current macro safety state in one dedicated endpoint:
+      - latest VIX close and its regime (LOW / NORMAL / HIGH / EXTREME)
+      - the cached long-trend score and the override thresholds
+      - whether the macro override could currently suppress a short signal
+      - the most recent signal that actually had the override applied
+    """
+    _validate_ticker(ticker)
+
+    try:
+        from routers import predictions as pred
+        from signal_engine.macro_override import (
+            LONG_STRONG_BEAR, LONG_STRONG_BULL, ML_OVERRIDE_THRESHOLD,
+        )
+        from reliability_engine import _classify_vix_regime
+        from database.models import SignalHistory
+
+        # Latest VIX close → regime
+        res = await db.execute(
+            select(VixCandle)
+            .where(VixCandle.ticker == settings.VIX_TICKER)
+            .order_by(VixCandle.timestamp.desc())
+            .limit(1)
+        )
+        vix = res.scalars().first()
+        vix_close = float(vix.close) if vix and vix.close is not None else None
+        vix_regime = _classify_vix_regime(vix_close) if vix_close is not None else None
+
+        long_score = float(pred._last_long_score)
+        suppresses_buy = long_score < LONG_STRONG_BEAR
+        suppresses_sell = long_score > LONG_STRONG_BULL
+
+        # Most recent signal where the override actually fired
+        res = await db.execute(
+            select(SignalHistory)
+            .where(
+                SignalHistory.ticker == settings.TICKER,
+                SignalHistory.macro_override_applied == True,  # noqa: E712
+            )
+            .order_by(SignalHistory.timestamp.desc())
+            .limit(1)
+        )
+        last_override = res.scalars().first()
+
+        if suppresses_buy:
+            reason = (
+                f"Long trend strongly bearish (score={long_score:.1f} < "
+                f"{LONG_STRONG_BEAR}): short BUY signals are suppressed unless "
+                f"ML confidence exceeds {ML_OVERRIDE_THRESHOLD:.0%}."
+            )
+        elif suppresses_sell:
+            reason = (
+                f"Long trend strongly bullish (score={long_score:.1f} > "
+                f"{LONG_STRONG_BULL}): short SELL signals are suppressed unless "
+                f"ML confidence exceeds {ML_OVERRIDE_THRESHOLD:.0%}."
+            )
+        else:
+            reason = "No macro override condition is currently active."
+
+        return {
+            "ticker": ticker,
+            "status": "ok",
+            "computed_at": datetime.utcnow().isoformat(),
+            "vix_close": vix_close,
+            "vix_regime": vix_regime,
+            "vix_timestamp": vix.timestamp.isoformat() if vix and vix.timestamp else None,
+            "long_score": long_score,
+            "override_active": suppresses_buy or suppresses_sell,
+            "suppresses_short_buy": suppresses_buy,
+            "suppresses_short_sell": suppresses_sell,
+            "reason": reason,
+            "thresholds": {
+                "long_strong_bear": LONG_STRONG_BEAR,
+                "long_strong_bull": LONG_STRONG_BULL,
+                "ml_override_threshold": ML_OVERRIDE_THRESHOLD,
+            },
+            "last_override_applied_at": (
+                last_override.timestamp.isoformat()
+                if last_override and last_override.timestamp else None
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("get_macro_safety error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/extended_hours")
+async def get_extended_hours(
+    ticker: str = Query(default="VOO"),
+    window: str = Query(default="7d"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return recent extended-hours session data plus render-ready session
+    boundary markers (timestamps where the session type changes), so charts
+    can draw pre-market / regular / after-hours separators directly.
+    """
+    _validate_ticker(ticker)
+
+    delta = _parse_window(window)
+    since = datetime.utcnow() - delta
+
+    try:
+        result = await db.execute(
+            select(VooCandle)
+            .where(
+                VooCandle.ticker == settings.TICKER,
+                VooCandle.timeframe == "5min",
+                VooCandle.timestamp >= since,
+            )
+            .order_by(VooCandle.timestamp.asc())
+        )
+        rows = result.scalars().all()
+
+        extended = [_candle_to_dict(r) for r in rows if r.is_extended_hours]
+
+        # Session boundary markers: each transition between session types.
+        markers = []
+        prev_session: Optional[str] = None
+        for r in rows:
+            session_type = r.session_type or "regular"
+            if prev_session is not None and session_type != prev_session:
+                markers.append({
+                    "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                    "from_session": prev_session,
+                    "to_session": session_type,
+                })
+            prev_session = session_type
+
+        return {
+            "ticker": ticker,
+            "window": window,
+            "count": len(extended),
+            "candles": extended,
+            "session_markers": markers,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("get_extended_hours error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

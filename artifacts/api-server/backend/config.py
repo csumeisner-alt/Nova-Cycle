@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     # If < threshold: weights * 0.5, thresholds * 1.25, suppress weak signals
     LIQUIDITY_SCORE_THRESHOLD: float = 0.15
 
+    # ── Notification reliability gate ─────────────────────────────────────────
+    # Push notifications are suppressed when recent trade-cycle reliability is
+    # poor: at least NOTIFY_RELIABILITY_MIN_CYCLES completed cycles must exist
+    # in NOTIFY_RELIABILITY_WINDOW before the win-rate gate applies (so a fresh
+    # system with no history is never muted), and the win rate must be at or
+    # above NOTIFY_MIN_WIN_RATE for alerts to fire.
+    NOTIFY_MIN_WIN_RATE: float = 0.40
+    NOTIFY_RELIABILITY_MIN_CYCLES: int = 5
+    NOTIFY_RELIABILITY_WINDOW: str = "30d"
+
     # ── Decision-layer filter thresholds ──────────────────────────────────────
     # Minimum cycle_quality_score required for a BUY signal to be emitted.
     # Cycle quality combines volatility_regime, gap_type, liquidity_class, and

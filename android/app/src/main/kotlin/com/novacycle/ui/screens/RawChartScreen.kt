@@ -161,6 +161,10 @@ fun CandlestickChart(
 
             val signalByTimestamp = signals.associateBy { it.timestamp }
 
+            // Vertical session separators at every session-type transition
+            // (pre-market → regular → after-hours), drawn behind the candles.
+            drawSessionSeparators(candles, barWidth, offsetX, padding)
+
             candles.forEachIndexed { index, candle ->
                 val x = index * barWidth + offsetX + padding
                 if (x + barWidth < 0 || x > size.width) return@forEachIndexed
@@ -198,6 +202,33 @@ fun CandlestickChart(
                     drawSignalMarker(signal, x + barWidth / 2, highY, lowY, markerSize)
                 }
             }
+        }
+    }
+}
+
+/**
+ * Draws a subtle dashed vertical line wherever consecutive candles change
+ * session type (e.g. pre_market → regular), so session boundaries are visible
+ * on the chart without overpowering the candles.
+ */
+internal fun DrawScope.drawSessionSeparators(
+    candles: List<CandleResponse>,
+    barWidth: Float,
+    offsetX: Float,
+    padding: Float
+) {
+    val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
+    for (i in 1 until candles.size) {
+        if (candles[i].sessionType != candles[i - 1].sessionType) {
+            val x = i * barWidth + offsetX + padding
+            if (x < 0 || x > size.width) continue
+            drawLine(
+                color = NovaExtendedBlue.copy(alpha = 0.35f),
+                start = Offset(x, 0f),
+                end   = Offset(x, size.height),
+                strokeWidth = 1.5f,
+                pathEffect  = dash
+            )
         }
     }
 }

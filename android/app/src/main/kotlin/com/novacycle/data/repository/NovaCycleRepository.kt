@@ -188,6 +188,10 @@ open class NovaCycleRepository @Inject constructor(
     suspend fun getIndicators(ticker: String = "VOO"): Result<IndicatorResponse> =
         runCatching { apiService.getIndicators(ticker).recordDataFreshness() }
 
+    /** Current macro safety state (VIX regime + macro override status). */
+    suspend fun getMacroSafety(ticker: String = "VOO"): Result<MacroSafetyResponse> =
+        runCatching { apiService.getMacroSafety(ticker) }
+
     /** Backend health snapshot — used to surface the degraded-predictions warning. */
     open suspend fun getHealth(): Result<HealthzResponse> =
         runCatching { apiService.healthz() }

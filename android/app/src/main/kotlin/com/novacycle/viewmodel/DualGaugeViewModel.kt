@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.novacycle.data.remote.ConnectivityErrorMapper
 import com.novacycle.data.remote.models.HoldTimeResponse
 import com.novacycle.data.remote.models.IndicatorResponse
+import com.novacycle.data.remote.models.MacroSafetyResponse
 import com.novacycle.data.remote.models.PredictionResponse
 import com.novacycle.data.repository.NovaCycleRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -24,6 +25,10 @@ data class DualGaugeUiState(
     val shortPrediction: PredictionResponse? = null,
     val holdTime: HoldTimeResponse? = null,
     val indicators: IndicatorResponse? = null,
+    /** Current macro safety state; null while loading or if the fetch failed */
+    val macroSafety: MacroSafetyResponse? = null,
+    /** True when the macro-safety fetch failed (chip shows a muted fallback) */
+    val macroSafetyError: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null,
     /** Currently selected ticker — only "VOO" supported, placeholder for multi-ticker */
@@ -88,11 +93,13 @@ class DualGaugeViewModel @Inject constructor(
             val shortDeferred = async { repository.getPredictionShort(ticker) }
             val holdDeferred = async { repository.getHoldTime(ticker) }
             val indicatorsDeferred = async { repository.getIndicators(ticker) }
+            val macroSafetyDeferred = async { repository.getMacroSafety(ticker) }
 
             val longResult = longDeferred.await()
             val shortResult = shortDeferred.await()
             val holdResult = holdDeferred.await()
             val indicatorsResult = indicatorsDeferred.await()
+            val macroSafetyResult = macroSafetyDeferred.await()
 
             // Data freshness is recorded centrally by the repository on remote success;
             // here we only track this screen's own "Updated X ago" header label.
@@ -111,6 +118,8 @@ class DualGaugeViewModel @Inject constructor(
                         ?: if (bothFailed) NEUTRAL_FALLBACK else null,
                     holdTime = holdResult.getOrNull() ?: state.holdTime,
                     indicators = indicatorsResult.getOrNull() ?: state.indicators,
+                    macroSafety = macroSafetyResult.getOrNull() ?: state.macroSafety,
+                    macroSafetyError = macroSafetyResult.isFailure && state.macroSafety == null,
                     lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()
                                           else state.lastUpdatedAtMillis,
                     isLoading = false,

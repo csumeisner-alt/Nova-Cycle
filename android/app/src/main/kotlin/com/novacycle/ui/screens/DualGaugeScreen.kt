@@ -113,6 +113,15 @@ fun DualGaugeScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // ── Macro safety chip ─────────────────────────────────────────
+            MacroSafetyChip(
+                safety    = uiState.macroSafety,
+                isError   = uiState.macroSafetyError,
+                isLoading = uiState.isLoading && uiState.macroSafety == null && !uiState.macroSafetyError
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             // Error banner
             if (uiState.error != null) {
                 Card(
@@ -253,6 +262,62 @@ fun DualGaugeScreen(
                     modifier = Modifier.weight(1f)
                 ) { Text("Reliability") }
             }
+        }
+    }
+}
+
+/**
+ * Small status chip summarizing the backend's macro safety state:
+ *  - override active → warning yellow with the suppression direction
+ *  - safe → VIX-regime-colored "Macro OK · VIX <regime>"
+ *  - loading → muted "Macro …"
+ *  - error → muted "Macro unavailable" (never blocks the dashboard)
+ */
+@Composable
+private fun MacroSafetyChip(
+    safety: com.novacycle.data.remote.models.MacroSafetyResponse?,
+    isError: Boolean,
+    isLoading: Boolean
+) {
+    val (label, color) = when {
+        isLoading      -> "Macro …" to NovaNeutralGray
+        safety == null -> "Macro unavailable" to NovaNeutralGray
+        safety.overrideActive -> {
+            val dir = if (safety.suppressesShortBuy) "BUYs suppressed" else "SELLs suppressed"
+            "Macro override · $dir" to NovaWarningYellow
+        }
+        else -> {
+            val regime = safety.vixRegime?.uppercase() ?: "?"
+            val regimeColor = when (safety.vixRegime?.lowercase()) {
+                "low"     -> VixLow
+                "normal"  -> VixNormal
+                "high"    -> VixHigh
+                "extreme" -> VixExtreme
+                else      -> NovaNeutralGray
+            }
+            "Macro OK · VIX $regime" to regimeColor
+        }
+    }
+    // isError falls into the safety == null branch above; kept explicit for clarity
+    if (isError && safety == null && !isLoading) { /* muted fallback already chosen */ }
+
+    Surface(
+        color = color.copy(alpha = 0.15f),
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+        ) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.size(8.dp)) { drawCircle(color) }
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text  = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = color,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }

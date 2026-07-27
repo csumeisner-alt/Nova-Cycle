@@ -334,6 +334,44 @@ async def _store_signal(session: AsyncSession, ticker: str, signal_type: str,
     return entry
 
 
+async def _reliability_gate_allows(db: AsyncSession) -> tuple[bool, str]:
+    """
+    Reliability gate for push notifications: consult the reliability engine's
+    recent win-rate metrics and suppress alerts when the system has been
+    performing poorly.
+
+    Rules:
+      - Fewer than NOTIFY_RELIABILITY_MIN_CYCLES completed cycles in the
+        window → allowed (a fresh system is never muted by lack of history).
+      - win_rate < NOTIFY_MIN_WIN_RATE → suppressed.
+    Errors always default to allowed (the gate must never block alerts due
+    to its own failure).
+    """
+    try:
+        from reliability_engine import compute_metrics, generate_trade_cycles
+
+        min_cycles = int(getattr(settings, "NOTIFY_RELIABILITY_MIN_CYCLES", 5))
+        min_win_rate = float(getattr(settings, "NOTIFY_MIN_WIN_RATE", 0.40))
+        window = str(getattr(settings, "NOTIFY_RELIABILITY_WINDOW", "30d"))
+
+        cycles = await generate_trade_cycles(db, window=window, persist=False)
+        if len(cycles) < min_cycles:
+            return True, (
+                f"only {len(cycles)} cycle(s) in {window} "
+                f"(< {min_cycles} required for gating)"
+            )
+        win_rate = float(compute_metrics(cycles).get("win_rate", 0.0))
+        if win_rate < min_win_rate:
+            return False, (
+                f"win_rate={win_rate:.2%} over {len(cycles)} cycles in {window} "
+                f"is below the {min_win_rate:.0%} reliability threshold"
+            )
+        return True, f"win_rate={win_rate:.2%} over {len(cycles)} cycles"
+    except Exception as exc:
+        logger.error("_reliability_gate_allows error (defaulting to allowed): %s", exc)
+        return True, f"gate error (defaulting to allowed): {exc}"
+
+
 async def _notify_all_devices_bg(
     signal_type: str,
     gauge_type: str,
@@ -358,6 +396,17 @@ async def _notify_all_devices_bg(
     try:
         session_factory = get_session_factory()
         async with session_factory() as db:
+            # ── Reliability gate ────────────────────────────────────────────
+            # Suppress all alerts when recent trade-cycle win rate is poor —
+            # confidence alone is not enough when the system has been wrong.
+            allowed, gate_reason = await _reliability_gate_allows(db)
+            if not allowed:
+                logger.warning(
+                    "notification_suppressed_by_reliability_gate signal=%s "
+                    "gauge=%s reason=%s", signal_type, gauge_type, gate_reason,
+                )
+                return
+
             result = await db.execute(select(DeviceToken))
             # Load all columns eagerly before the session closes.
             tokens = [

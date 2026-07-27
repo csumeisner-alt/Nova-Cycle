@@ -63,6 +63,12 @@ interface NovaCycleApiService {
         @Query("ticker") ticker: String = "VOO"
     ): IndicatorResponse
 
+    /** Retrieve the current macro safety state (VIX regime + override status) */
+    @GET("macro_safety")
+    suspend fun getMacroSafety(
+        @Query("ticker") ticker: String = "VOO"
+    ): MacroSafetyResponse
+
     /** Retrieve gap status for today's session */
     @GET("gap_status")
     suspend fun getGapStatus(
