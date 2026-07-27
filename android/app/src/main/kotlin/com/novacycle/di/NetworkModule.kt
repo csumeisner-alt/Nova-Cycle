@@ -87,6 +87,12 @@ object NetworkModule {
      *
      * A blank string saved in DataStore is treated as "no override" so the
      * BuildConfig default is used instead.
+     *
+     * The stored value is REVALIDATED on read (ApiUrlValidator): a legacy or
+     * tampered value that fails the transport-security rule (e.g. plain http
+     * to a public host, saved before the rule existed) is discarded in favor
+     * of the BuildConfig default — the validator at save-time is not the only
+     * enforcement point.
      */
     @Provides
     @Singleton
@@ -97,7 +103,14 @@ object NetworkModule {
                 .map { prefs -> prefs[KEY_API_BASE_URL]?.takeIf { it.isNotBlank() } }
                 .firstOrNull()
         }
-        return stored ?: BuildConfig.API_BASE_URL
+        val validated = stored?.takeIf { com.novacycle.data.remote.ApiUrlValidator.validate(it) == null }
+        if (stored != null && validated == null) {
+            android.util.Log.w(
+                "NetworkModule",
+                "Stored API base URL failed validation; falling back to default"
+            )
+        }
+        return validated ?: BuildConfig.API_BASE_URL
     }
 
     /**

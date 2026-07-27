@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novacycle.data.remote.ApiUrlValidator
 import com.novacycle.data.remote.ConnectivityErrorMapper
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.*
@@ -13,7 +14,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.net.URL
 import javax.inject.Inject
 
 /** State for an in-progress or completed connection test. */
@@ -118,22 +118,13 @@ class SettingsViewModel @Inject constructor(
     val connectionTestState: StateFlow<ConnectionTestState> = _connectionTestState.asStateFlow()
 
     /**
-     * Validate an API base URL string.
+     * Validate an API base URL string, including the transport-security rule:
+     * plain http:// is accepted only for private/LAN destinations; public
+     * hosts require https:// (see [ApiUrlValidator]).
+     *
      * @return An error message string if invalid, or null if the URL is acceptable.
      */
-    fun validateApiUrl(url: String): String? {
-        val trimmed = url.trim()
-        if (trimmed.isEmpty()) return "URL must not be empty"
-        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-            return "URL must start with http:// or https://"
-        }
-        return try {
-            URL(trimmed)  // throws MalformedURLException if unparseable
-            null
-        } catch (e: java.net.MalformedURLException) {
-            "Invalid URL: ${e.message}"
-        }
-    }
+    fun validateApiUrl(url: String): String? = ApiUrlValidator.validate(url)
 
     /**
      * Save the API base URL only if it passes validation.

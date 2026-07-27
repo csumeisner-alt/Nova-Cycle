@@ -3,9 +3,15 @@
     Permit cleartext (plain HTTP) traffic so users can point the app at a
     LAN/dev backend such as http://192.168.1.25:8000 from the Settings screen.
     HTTPS remains the default (BuildConfig.API_BASE_URL is https://) and is
-    always preferred; this only stops Android from silently blocking
-    user-entered http:// URLs, which previously surfaced as
-    "Could not reach server: null".
+    always preferred.
+
+    NOTE: Android's network security config cannot express "cleartext for
+    private IP ranges only", so cleartext is technically permitted globally
+    here. The actual transport-security rule is enforced in code by
+    ApiUrlValidator (data/remote/ApiUrlValidator.kt): plain http:// URLs are
+    rejected at save/test time unless the host is a private/LAN destination
+    (localhost, 10/8, 192.168/16, 172.16/12, link-local, .local, etc.).
+    The app never issues cleartext requests to public internet hosts.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
