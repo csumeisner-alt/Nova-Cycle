@@ -102,7 +102,9 @@ fun DualGaugeScreen(
                 Text(
                     text     = "Updated ${formatRelativeAge(now, lastUpdated)}",
                     style    = MaterialTheme.typography.labelSmall,
-                    color    = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    // On the app background (not a card) — onBackground keeps it
+                    // legible on Heritage's light taupe as well as dark themes.
+                    color    = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 2.dp)

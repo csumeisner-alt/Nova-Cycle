@@ -166,11 +166,12 @@ private fun DrawScope.drawHeritagePattern(phase: Float, pulse: Float, glow: Colo
         cy += cell
         row++
     }
-    // Central vertical green/red racing stripe
+    // Central vertical green/red racing stripe — kept muted (low alpha) so
+    // text and gauges rendered over the background stay legible.
     val stripeW = size.width * 0.16f
     val left = (size.width - stripeW) / 2f
-    drawRect(NovaStripeGreen.copy(alpha = 0.85f), Offset(left, 0f), Size(stripeW, size.height))
-    drawRect(NovaStripeRed.copy(alpha = 0.9f), Offset(left + stripeW * 0.335f, 0f), Size(stripeW * 0.33f, size.height))
+    drawRect(NovaStripeGreen.copy(alpha = 0.30f), Offset(left, 0f), Size(stripeW, size.height))
+    drawRect(NovaStripeRed.copy(alpha = 0.32f), Offset(left + stripeW * 0.335f, 0f), Size(stripeW * 0.33f, size.height))
     // Slow copper light sweep down the stripe (brightens on breath)
     val sweepHalf = 160.dp.toPx() / 2f
     val sweepY = size.height * ((phase * 1.6f) % 1f)

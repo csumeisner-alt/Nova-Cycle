@@ -76,7 +76,9 @@ fun DualGaugeWidget(
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
-            color = Color(0xFFB0B0B0),
+            // Theme-driven: gauges sit on the app background, so use
+            // onBackground (dark on Heritage taupe, light on dark themes).
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f),
             textAlign = TextAlign.Center
         )
 
@@ -157,7 +159,7 @@ fun DualGaugeWidget(
         Text(
             text = "${(confidence * 100).toInt()}% confidence",
             style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF9E9E9E),
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f),
             textAlign = TextAlign.Center
         )
     }
