@@ -40,21 +40,31 @@ fun DualGaugeScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
+    val longPred = uiState.longPrediction
     val longGaugeState = GaugeState(
-        score      = uiState.longPrediction?.score ?: 0f,
-        signal     = uiState.longPrediction?.signal ?: "neutral",
-        confidence = uiState.longPrediction?.confidence ?: 0f,
-        gaugeType  = "long",
-        ticker     = uiState.selectedTicker,
-        isLoading  = uiState.isLoading && uiState.longPrediction == null
+        score             = longPred?.score ?: 0f,
+        signal            = longPred?.signal ?: "neutral",
+        confidence        = longPred?.confidence ?: 0f,
+        confidencePercent = (longPred?.confidencePercent ?: 0).coerceIn(0, 100),
+        trend             = longPred?.trend ?: "NEUTRAL",
+        displaySignal     = longPred?.displaySignal ?: "NEUTRAL / HOLD",
+        isFallback        = longPred == null || longPred.note != null,
+        gaugeType         = "long",
+        ticker            = uiState.selectedTicker,
+        isLoading         = uiState.isLoading && uiState.longPrediction == null
     )
+    val shortPred = uiState.shortPrediction
     val shortGaugeState = GaugeState(
-        score      = uiState.shortPrediction?.score ?: 0f,
-        signal     = uiState.shortPrediction?.signal ?: "neutral",
-        confidence = uiState.shortPrediction?.confidence ?: 0f,
-        gaugeType  = "short",
-        ticker     = uiState.selectedTicker,
-        isLoading  = uiState.isLoading && uiState.shortPrediction == null
+        score             = shortPred?.score ?: 0f,
+        signal            = shortPred?.signal ?: "neutral",
+        confidence        = shortPred?.confidence ?: 0f,
+        confidencePercent = (shortPred?.confidencePercent ?: 0).coerceIn(0, 100),
+        trend             = shortPred?.trend ?: "NEUTRAL",
+        displaySignal     = shortPred?.displaySignal ?: "NEUTRAL / HOLD",
+        isFallback        = shortPred == null || shortPred.note != null,
+        gaugeType         = "short",
+        ticker            = uiState.selectedTicker,
+        isLoading         = uiState.isLoading && uiState.shortPrediction == null
     )
 
     Box(

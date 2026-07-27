@@ -20,9 +20,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.novacycle.domain.model.ConfidenceZone
 import com.novacycle.domain.model.GaugeState
 import com.novacycle.ui.theme.spec
 import kotlin.math.*
+
+/** Zone colors for the normalized 0–100% confidence display. */
+internal fun confidenceZoneColor(zone: ConfidenceZone): Color = when (zone) {
+    ConfidenceZone.WEAK      -> Color(0xFFD50000)  // red   0–30%
+    ConfidenceZone.UNCERTAIN -> Color(0xFFFFC107)  // yellow 31–64%
+    ConfidenceZone.STRONG    -> Color(0xFF00C853)  // green 65–100%
+}
+
+/** Arrow glyph for the trend direction label. */
+internal fun trendGlyph(trend: String): String = when (trend.uppercase()) {
+    "UP"   -> "▲"
+    "DOWN" -> "▼"
+    else   -> "◆"
+}
 
 /**
  * DualGaugeWidget — semicircular arc gauge with animated needle.
@@ -62,11 +77,16 @@ fun DualGaugeWidget(
         label = "gaugeNeedle"
     )
 
-    val signalColor = when (signal.lowercase()) {
-        "buy"  -> Color(0xFF00C853)
-        "sell" -> Color(0xFFD50000)
-        else   -> Color(0xFF9E9E9E)
+    // Gray "no data" state: fallback gauges render fully muted.
+    val isFallback = gaugeState.isFallback
+    val signalColor = when {
+        isFallback -> Color(0xFF9E9E9E)
+        signal.lowercase() == "buy"  -> Color(0xFF00C853)
+        signal.lowercase() == "sell" -> Color(0xFFD50000)
+        else -> Color(0xFF9E9E9E)
     }
+    val zoneColor = if (isFallback) Color(0xFF9E9E9E)
+                    else confidenceZoneColor(gaugeState.confidenceZone)
 
     Column(
         modifier = modifier.padding(8.dp),
@@ -113,8 +133,9 @@ fun DualGaugeWidget(
                 center = Offset(cx, cy)
             )
 
-            // Draw gradient arc background (SELL red → neutral yellow → BUY green)
-            drawGaugeArc(cx, cy, radius, strokeWidth)
+            // Draw arc background: gradient normally, muted gray in the
+            // no-data fallback state.
+            drawGaugeArc(cx, cy, radius, strokeWidth, muted = isFallback)
 
             // Draw tick marks at -100, -50, 0, +50, +100
             drawTicks(cx, cy, radius, strokeWidth)
@@ -155,13 +176,34 @@ fun DualGaugeWidget(
             textAlign = TextAlign.Center
         )
 
-        // Confidence percentage
+        // Normalized confidence percentage (0–100%) in its zone color
         Text(
-            text = "${(confidence * 100).toInt()}% confidence",
+            text = "${gaugeState.confidencePercent.coerceIn(0, 100)}% confidence",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f),
+            fontWeight = FontWeight.SemiBold,
+            color = zoneColor,
             textAlign = TextAlign.Center
         )
+
+        // Trend + display signal label (e.g. "▲ UP · BUY BIAS")
+        val trendText = if (isFallback) "NEUTRAL" else gaugeState.trend.uppercase()
+        val signalText = if (isFallback) "NEUTRAL / HOLD" else gaugeState.displaySignal
+        Text(
+            text = "${trendGlyph(trendText)} $trendText · $signalText",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = if (isFallback) Color(0xFF9E9E9E) else zoneColor,
+            textAlign = TextAlign.Center
+        )
+
+        if (isFallback) {
+            Text(
+                text = "No data",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
@@ -169,7 +211,9 @@ fun DualGaugeWidget(
  * Draw the semicircular gradient arc background.
  * Uses a color sweep: Red (0°/left) → Yellow (90°/top) → Green (180°/right).
  */
-private fun DrawScope.drawGaugeArc(cx: Float, cy: Float, radius: Float, strokeWidth: Float) {
+private fun DrawScope.drawGaugeArc(
+    cx: Float, cy: Float, radius: Float, strokeWidth: Float, muted: Boolean = false
+) {
     val arcLeft = cx - radius
     val arcTop = cy - radius
     val arcSize = radius * 2f
@@ -190,7 +234,7 @@ private fun DrawScope.drawGaugeArc(cx: Float, cy: Float, radius: Float, strokeWi
     val sweepPerSegment = 180f / segments
     for (i in 0 until segments) {
         val t = i.toFloat() / segments.toFloat()
-        val color = gaugeColor(t)
+        val color = if (muted) Color(0xFF616161) else gaugeColor(t)
         drawArc(
             color = color,
             startAngle = 180f + i * sweepPerSegment,

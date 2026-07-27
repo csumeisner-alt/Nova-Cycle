@@ -28,6 +28,7 @@ from signal_engine.long_gauge import LongTrendGauge
 from signal_engine.short_gauge import ShortTrendGauge
 from signal_engine.macro_override import MacroOverrideSafety
 from signal_engine.decision_filter import DecisionFilter
+from signal_engine.normalization import normalize_gauge_output, NEUTRAL_DEFAULTS
 from config import settings
 
 import pandas as pd
@@ -495,6 +496,7 @@ async def predict_long(
                 "ml_fallback": True,
                 "liquidity_score": 1.0, "gap_type": "none",
                 "macro_override_applied": False,
+                **dict(NEUTRAL_DEFAULTS),
                 "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
                 "note": "No historical data yet. Run data ingestion first."
             }
@@ -602,6 +604,7 @@ async def predict_long(
             "score": result["score"],
             "signal": final_signal,
             "confidence": result["confidence"],
+            **normalize_gauge_output(result["score"]),
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
             "ml_fallback": ml_fallback,
@@ -649,6 +652,7 @@ async def predict_short(
                 "ml_fallback": True,
                 "liquidity_score": 1.0, "gap_type": "none",
                 "macro_override_applied": False,
+                **dict(NEUTRAL_DEFAULTS),
                 "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
                 "note": "No 5-min data yet. Run data ingestion first."
             }
@@ -784,6 +788,7 @@ async def predict_short(
             "score": result["score"],
             "signal": final_signal,
             "confidence": result["confidence"],
+            **normalize_gauge_output(result["score"]),
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
             "ml_fallback": ml_fallback,

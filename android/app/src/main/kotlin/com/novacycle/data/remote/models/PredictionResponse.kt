@@ -13,6 +13,12 @@ data class PredictionResponse(
     /** "buy", "sell", or "neutral" */
     @Json(name = "signal") val signal: String,
     @Json(name = "confidence") val confidence: Float,
+    /** Normalized confidence 0–100 (integer, sigmoid-clamped by the backend). */
+    @Json(name = "confidence_percent") val confidencePercent: Int = 0,
+    /** "UP", "DOWN", or "NEUTRAL" — trend direction from the raw score sign. */
+    @Json(name = "trend") val trend: String = "NEUTRAL",
+    /** "BUY BIAS", "SELL BIAS", or "NEUTRAL / HOLD" (65% confidence rule). */
+    @Json(name = "display_signal") val displaySignal: String = "NEUTRAL / HOLD",
     /** Per-indicator contribution scores (values may be numeric or textual annotations). */
     @Json(name = "indicator_breakdown") val indicatorBreakdown: Map<String, Any> = emptyMap(),
     @Json(name = "ml_confidence") val mlConfidence: Float = 0f,

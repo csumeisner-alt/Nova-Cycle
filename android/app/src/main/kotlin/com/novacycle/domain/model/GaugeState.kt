@@ -14,11 +14,43 @@ data class GaugeState(
     /** "long" or "short" */
     val gaugeType: String = "long",
     val ticker: String = "VOO",
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    /** Normalized confidence 0–100 from the backend (clamped app-side too) */
+    val confidencePercent: Int = 0,
+    /** "UP", "DOWN", or "NEUTRAL" */
+    val trend: String = "NEUTRAL",
+    /** "BUY BIAS", "SELL BIAS", or "NEUTRAL / HOLD" */
+    val displaySignal: String = "NEUTRAL / HOLD",
+    /** True when showing the no-data fallback — gauge renders gray */
+    val isFallback: Boolean = false
 ) {
     val isBuy: Boolean get() = signal.lowercase() == "buy"
     val isSell: Boolean get() = signal.lowercase() == "sell"
 
     /** Normalized 0–1 position for the gauge needle arc (0=full sell, 1=full buy) */
     val normalizedPosition: Float get() = (score + 100f) / 200f
+
+    /** Confidence zone for the normalized 0–100% confidence display */
+    val confidenceZone: ConfidenceZone get() = ConfidenceZone.fromPercent(confidencePercent)
+}
+
+/**
+ * Display zones for the normalized confidence percentage:
+ *   0–30  → WEAK (red), 31–64 → UNCERTAIN (yellow), 65–100 → STRONG (green).
+ */
+enum class ConfidenceZone(val label: String) {
+    WEAK("Weak"),
+    UNCERTAIN("Uncertain"),
+    STRONG("Strong");
+
+    companion object {
+        fun fromPercent(percent: Int): ConfidenceZone {
+            val p = percent.coerceIn(0, 100)
+            return when {
+                p <= 30 -> WEAK
+                p <= 64 -> UNCERTAIN
+                else -> STRONG
+            }
+        }
+    }
 }

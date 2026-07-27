@@ -164,6 +164,9 @@ class DualGaugeViewModel @Inject constructor(
             score = 0f,
             signal = "neutral",
             confidence = 0f,
+            confidencePercent = 0,
+            trend = "NEUTRAL",
+            displaySignal = "NEUTRAL / HOLD",
             note = "Backend unreachable — showing neutral fallback"
         )
     }
