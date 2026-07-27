@@ -424,43 +424,47 @@ async def trigger_ingest(
     are rejected with 409 so overlapping manual triggers can't hammer the
     upstream data provider.
     """
-    if not _INGEST_LOCK.locked():
-        async with _INGEST_LOCK:
-            from main import pipeline  # lazy: avoid circular import at module load
+    # Fail-fast, atomic admission: the locked() check and the acquire happen
+    # with no await in between, so on a single event loop no other request can
+    # interleave — a concurrent call is rejected with 409 immediately instead
+    # of queueing up a back-to-back ingest run.
+    if _INGEST_LOCK.locked():
+        raise HTTPException(
+            status_code=409, detail="An ingestion run is already in progress."
+        )
+    async with _INGEST_LOCK:
+        from main import pipeline  # lazy: avoid circular import at module load
 
-            async def _count(timeframe: str) -> int:
-                res = await db.execute(
-                    select(func.count(VooCandle.id)).where(
-                        VooCandle.ticker == settings.TICKER,
-                        VooCandle.timeframe == timeframe,
-                    )
+        async def _count(timeframe: str) -> int:
+            res = await db.execute(
+                select(func.count(VooCandle.id)).where(
+                    VooCandle.ticker == settings.TICKER,
+                    VooCandle.timeframe == timeframe,
                 )
-                return int(res.scalar() or 0)
+            )
+            return int(res.scalar() or 0)
 
-            before = {"daily": await _count("daily"), "5min": await _count("5min")}
-            started_at = datetime.utcnow()
-            try:
-                await pipeline.run_incremental_update(db)
-                await db.commit()
-            except Exception as exc:
-                logger.error("manual_ingest_failed error=%s", exc)
-                raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}")
+        before = {"daily": await _count("daily"), "5min": await _count("5min")}
+        started_at = datetime.utcnow()
+        try:
+            await pipeline.run_incremental_update(db)
+            await db.commit()
+        except Exception as exc:
+            logger.error("manual_ingest_failed error=%s", exc)
+            raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}")
 
-            after = {"daily": await _count("daily"), "5min": await _count("5min")}
-            return {
-                "status": "ok",
-                "triggered": "manual",
-                "started_at": started_at.isoformat(),
-                "finished_at": datetime.utcnow().isoformat(),
-                "new_candles": {
-                    "daily": after["daily"] - before["daily"],
-                    "5min": after["5min"] - before["5min"],
-                },
-                "total_candles": after,
-            }
-    raise HTTPException(
-        status_code=409, detail="An ingestion run is already in progress."
-    )
+        after = {"daily": await _count("daily"), "5min": await _count("5min")}
+        return {
+            "status": "ok",
+            "triggered": "manual",
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.utcnow().isoformat(),
+            "new_candles": {
+                "daily": after["daily"] - before["daily"],
+                "5min": after["5min"] - before["5min"],
+            },
+            "total_candles": after,
+        }
 
 
 @router.get("/macro_safety")

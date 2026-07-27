@@ -131,6 +131,29 @@ async def test_manual_ingest_failure_returns_500(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_manual_ingest_concurrent_requests_one_wins(monkeypatch):
+    """Two concurrent triggers from an unlocked state: exactly one runs (200)
+    and the other is rejected fail-fast (409) — never queued back-to-back."""
+    import asyncio
+
+    import main
+
+    runs = []
+
+    async def slow_update(db_session):
+        runs.append(1)
+        await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(main.pipeline, "run_incremental_update", slow_update)
+    async with _client() as client:
+        r1, r2 = await asyncio.gather(
+            client.post("/api/ingest"), client.post("/api/ingest")
+        )
+    assert sorted([r1.status_code, r2.status_code]) == [200, 409]
+    assert runs == [1]
+
+
+@pytest.mark.asyncio
 async def test_manual_ingest_conflict_when_locked():
     from routers import data as data_router
 
