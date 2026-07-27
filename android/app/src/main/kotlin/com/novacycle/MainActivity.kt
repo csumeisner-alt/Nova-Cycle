@@ -7,9 +7,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import com.novacycle.ui.components.AmbientBackground
+import com.novacycle.ui.components.LocalBreathState
+import com.novacycle.ui.components.rememberBreathState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDown
@@ -95,9 +101,16 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
             NovaCycleTheme(theme = themeState.selectedTheme) {
+                // One shared breath for the whole UI — the logo tap triggers it,
+                // ambient background / gauges / rims all subscribe.
+                val breathState = com.novacycle.ui.components.rememberBreathState()
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.novacycle.ui.components.LocalBreathState provides breathState
+                ) {
                 Box(
                     Modifier
                         .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
                         // Global tap counter: observes every pointer-down on the
                         // Initial pass without consuming it, so normal interaction
                         // is unaffected.
@@ -114,12 +127,16 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                 ) {
+                    // Living ambient layer (glows / ribbons / wisps / pattern)
+                    // rendered behind all screens; reacts to the shared breath.
+                    AmbientBackground()
                     NovaCycleNavHost()
                     // Branded intro (star → ring → wordmark), once per process launch
                     BrandIntroOverlay()
                 }
                 // Plays ping + haptic when a theme unlocks, wherever the user is
                 ThemeUnlockEffectHost(themeViewModel)
+                }
             }
         }
     }

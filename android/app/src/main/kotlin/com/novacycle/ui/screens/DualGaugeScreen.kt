@@ -16,7 +16,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.GaugeState
 import com.novacycle.ui.components.DualGaugeWidget
+import com.novacycle.ui.components.NovaLogoHeader
 import com.novacycle.ui.components.TickerSelector
+import com.novacycle.ui.components.luxeRim
 import com.novacycle.ui.components.formatRelativeAge
 import com.novacycle.ui.components.rememberTickingNow
 import com.novacycle.ui.theme.*
@@ -65,18 +67,18 @@ fun DualGaugeScreen(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // ── Header row ────────────────────────────────────────────────
+            // ── Brand header: tappable breathing logo, top-center ─────────
+            NovaLogoHeader()
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // ── Controls row ──────────────────────────────────────────────
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = "NovaCycle",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Spacer(modifier = Modifier.width(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TickerSelector(
                         selectedTicker   = uiState.selectedTicker,
@@ -154,7 +156,7 @@ fun DualGaugeScreen(
             val holdTime = uiState.holdTime
             Card(
                 onClick  = onNavigateToHoldTime,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().luxeRim(CardDefaults.shape),
                 colors   = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Row(
@@ -189,7 +191,7 @@ fun DualGaugeScreen(
             val indicators = uiState.indicators
             if (indicators != null) {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().luxeRim(CardDefaults.shape),
                     colors   = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {

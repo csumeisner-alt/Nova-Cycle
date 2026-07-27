@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novacycle.domain.model.GaugeState
+import com.novacycle.ui.theme.spec
 import kotlin.math.*
 
 /**
@@ -39,6 +40,10 @@ fun DualGaugeWidget(
     label: String,
     modifier: Modifier = Modifier
 ) {
+    // Theme glow + shared breath: the halo behind the arc swells when the
+    // logo is tapped, so gauges pulse with the rest of the page.
+    val spec = com.novacycle.ui.theme.LocalNovaTheme.current.spec()
+    val breath = LocalBreathState.current
     val score = gaugeState.score
     val signal = gaugeState.signal
     val confidence = gaugeState.confidence
@@ -89,6 +94,22 @@ fun DualGaugeWidget(
             val cy = canvasHeight          // Arc center at bottom of canvas
             val radius = canvasWidth / 2f - 8.dp.toPx()
             val strokeWidth = 18.dp.toPx()
+
+            // Themed glow halo behind the arc — breathes with the logo tap.
+            // Signal colors on the arc itself stay untinted (BUY green / SELL red).
+            val pulse = breath.pulse.value
+            drawCircle(
+                brush = Brush.radialGradient(
+                    listOf(
+                        spec.glow.copy(alpha = 0.10f + 0.30f * pulse),
+                        Color.Transparent
+                    ),
+                    center = Offset(cx, cy),
+                    radius = radius + strokeWidth * (1.2f + 0.8f * pulse)
+                ),
+                radius = radius + strokeWidth * (1.2f + 0.8f * pulse),
+                center = Offset(cx, cy)
+            )
 
             // Draw gradient arc background (SELL red → neutral yellow → BUY green)
             drawGaugeArc(cx, cy, radius, strokeWidth)

@@ -78,11 +78,14 @@ fun NovaCycleNavHost(
     val bottomNavRoutes = bottomNavItems.map { it.route }.toSet()
     val showBottomBar = currentDestination?.route in bottomNavRoutes
 
+    // Transparent container so the app-level AmbientBackground (living glows /
+    // ribbons / pattern) shows through behind every screen.
     Scaffold(
+        containerColor = androidx.compose.ui.graphics.Color.Transparent,
         bottomBar = {
             if (showBottomBar) {
                 NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
                 ) {
                     bottomNavItems.forEach { item ->
                         val selected = currentDestination?.hierarchy?.any { it.route == item.route } == true

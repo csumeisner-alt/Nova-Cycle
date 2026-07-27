@@ -41,6 +41,24 @@ val NovaCrimsonBackground    = Color(0xFF000000)   // CrimsonPulse pure black ba
 val NovaCrimsonSurface       = Color(0xFF160308)
 val NovaCrimsonSurfaceVariant= Color(0xFF220510)
 
+// Rose Luxe (rose-pink neon on black, flowing light ribbons)
+val NovaRose                 = Color(0xFFF48FA6)   // Rose Luxe primary
+val NovaRoseGlow             = Color(0xFFFF9FB2)   // Rose neon glow
+val NovaRoseBackground       = Color(0xFF0C0507)   // Near-black with warm cast
+val NovaRoseSurface          = Color(0xFF1A0D12)
+val NovaRoseSurfaceVariant   = Color(0xFF241318)
+
+// Heritage Motion (copper/bronze on warm patterned taupe, green/red racing stripe)
+val NovaCopper               = Color(0xFFC88A5A)   // Heritage primary (polished copper)
+val NovaCopperBright         = Color(0xFFE8B98C)   // Copper highlight
+val NovaHeritageBackground   = Color(0xFF9C8D74)   // Warm taupe canvas
+val NovaHeritageSurface      = Color(0xFF3A2E23)   // Deep espresso cards
+val NovaHeritageSurfaceVariant = Color(0xFF463829)
+val NovaHeritageOnSurface    = Color(0xFFF3E5CE)   // Cream text on espresso
+val NovaHeritageOnBackground = Color(0xFF2A2119)   // Dark brown text on taupe
+val NovaStripeGreen          = Color(0xFF14452F)   // Heritage stripe green
+val NovaStripeRed            = Color(0xFFB01E28)   // Heritage stripe red
+
 // VIX regime badge colors
 val VixLow      = Color(0xFF00C853)
 val VixNormal   = Color(0xFF2196F3)

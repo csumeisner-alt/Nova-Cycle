@@ -26,10 +26,13 @@ enum class NovaTheme(
     val accent: Color,
     val backgroundPreview: Color
 ) {
-    DARK_LUXE("dark_luxe", "DarkLuxe", 0L, NovaGold, NovaBackground),
-    MINT_LUXE("mint_luxe", "MintLuxe", 0L, NovaMint, NovaBackground),
-    AURORA_FLUX("aurora_flux", "AuroraFlux", 10_000L, NovaAurora, NovaAuroraBackground),
-    CRIMSON_PULSE("crimson_pulse", "CrimsonPulse", 20_000L, NovaCrimson, NovaCrimsonBackground);
+    // Storage keys are stable across releases — only the visual identity of the
+    // two unlockable slots was rebranded (aurora_flux → Rose Luxe,
+    // crimson_pulse → Heritage Motion).
+    DARK_LUXE("dark_luxe", "Executive Gold", 0L, NovaGold, NovaBackground),
+    MINT_LUXE("mint_luxe", "Mint Luxe", 0L, NovaMint, NovaBackground),
+    AURORA_FLUX("aurora_flux", "Rose Luxe", 10_000L, NovaRose, NovaRoseBackground),
+    CRIMSON_PULSE("crimson_pulse", "Heritage", 20_000L, NovaCopper, NovaHeritageBackground);
 
     val alwaysUnlocked: Boolean get() = unlockTaps == 0L
 
@@ -72,22 +75,34 @@ private val MintLuxeScheme = luxeScheme(
     background = NovaBackground, surface = NovaSurface, surfaceVariant = NovaSurfaceVariant
 )
 
-private val AuroraFluxScheme = luxeScheme(
-    primary = NovaAurora, tertiary = NovaGoldBright,
-    background = NovaAuroraBackground, surface = NovaAuroraSurface, surfaceVariant = NovaAuroraSurfaceVariant
+// Rose Luxe — rose-pink neon on warm near-black (occupies the aurora_flux slot)
+private val RoseLuxeScheme = luxeScheme(
+    primary = NovaRose, tertiary = NovaRoseGlow,
+    background = NovaRoseBackground, surface = NovaRoseSurface, surfaceVariant = NovaRoseSurfaceVariant
 )
 
-private val CrimsonPulseScheme = luxeScheme(
-    primary = NovaCrimson, tertiary = NovaGoldBright,
-    background = NovaCrimsonBackground, surface = NovaCrimsonSurface, surfaceVariant = NovaCrimsonSurfaceVariant,
-    onPrimary = Color.White
+// Heritage Motion — copper on warm taupe with espresso cards (crimson_pulse slot).
+// The only light-background luxe theme, so it builds its scheme explicitly.
+private val HeritageMotionScheme = darkColorScheme(
+    primary         = NovaCopper,
+    onPrimary       = Color(0xFF221709),
+    secondary       = NovaSellRed,
+    onSecondary     = NovaOnPrimary,
+    tertiary        = NovaCopperBright,
+    background      = NovaHeritageBackground,
+    onBackground    = NovaHeritageOnBackground,
+    surface         = NovaHeritageSurface,
+    onSurface       = NovaHeritageOnSurface,
+    surfaceVariant  = NovaHeritageSurfaceVariant,
+    error           = NovaSellRed,
+    onError         = NovaOnPrimary
 )
 
 fun NovaTheme.colorScheme(): ColorScheme = when (this) {
     NovaTheme.DARK_LUXE     -> DarkLuxeScheme
     NovaTheme.MINT_LUXE     -> MintLuxeScheme
-    NovaTheme.AURORA_FLUX   -> AuroraFluxScheme
-    NovaTheme.CRIMSON_PULSE -> CrimsonPulseScheme
+    NovaTheme.AURORA_FLUX   -> RoseLuxeScheme
+    NovaTheme.CRIMSON_PULSE -> HeritageMotionScheme
 }
 
 /** The currently applied NovaTheme, available anywhere in the Compose tree. */
