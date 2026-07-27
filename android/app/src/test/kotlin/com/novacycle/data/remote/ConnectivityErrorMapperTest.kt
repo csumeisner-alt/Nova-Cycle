@@ -80,6 +80,18 @@ class ConnectivityErrorMapperTest {
     }
 
     @Test
+    fun `json parsing failure maps to BACKEND_RESPONSE_INVALID`() {
+        val err = classify(JsonDataException("Expected string but was BEGIN_OBJECT"))
+        assertEquals(ConnectivityErrorCode.BACKEND_RESPONSE_INVALID, err.code)
+    }
+
+    @Test
+    fun `malformed json maps to BACKEND_RESPONSE_INVALID`() {
+        val err = classify(JsonEncodingException("Use JsonReader.setLenient(true)"))
+        assertEquals(ConnectivityErrorCode.BACKEND_RESPONSE_INVALID, err.code)
+    }
+
+    @Test
     fun `every code has a non-blank user message even with null exception message`() {
         // Regression for "Could not reach server: null"
         val err = classify(ConnectException()) // message == null

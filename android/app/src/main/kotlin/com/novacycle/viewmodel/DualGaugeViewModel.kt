@@ -1,5 +1,6 @@
 package com.novacycle.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novacycle.data.remote.ConnectivityErrorMapper
@@ -61,10 +62,15 @@ class DualGaugeViewModel @Inject constructor(
     private fun probeBackendReachability() {
         viewModelScope.launch {
             repository.getHealth().onFailure { e ->
+                val mapped = connectivityErrorMapper.map(e)
+                Log.w(
+                    "DualGaugeViewModel",
+                    "Health probe failed [${mapped.code}]: ${e.javaClass.name}: ${e.message}"
+                )
                 _uiState.update { state ->
                     // Don't overwrite a more specific error from a completed fetch
                     if (state.error == null && state.longPrediction == null) {
-                        state.copy(error = connectivityErrorMapper.map(e).userMessage)
+                        state.copy(error = mapped.userMessage)
                     } else state
                 }
             }
@@ -111,9 +117,16 @@ class DualGaugeViewModel @Inject constructor(
                     error = if (bothFailed) {
                         // Classify the failure so the banner names the real cause
                         // (offline / DNS / unreachable / timeout) instead of "null".
-                        longResult.exceptionOrNull()
-                            ?.let { connectivityErrorMapper.map(it).userMessage }
-                            ?: "Failed to load predictions"
+                        val cause = longResult.exceptionOrNull()
+                            ?: shortResult.exceptionOrNull()
+                        cause?.let { ex ->
+                            val mapped = connectivityErrorMapper.map(ex)
+                            Log.w(
+                                "DualGaugeViewModel",
+                                "Predictions failed [${mapped.code}]: ${ex.javaClass.name}: ${ex.message}"
+                            )
+                            mapped.userMessage
+                        } ?: "Failed to load predictions"
                     } else null
                 )
             }

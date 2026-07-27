@@ -8,6 +8,8 @@ import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import com.squareup.moshi.JsonDataException
+import com.squareup.moshi.JsonEncodingException
 import javax.inject.Inject
 import javax.inject.Singleton
 import javax.net.ssl.SSLException
@@ -24,6 +26,7 @@ enum class ConnectivityErrorCode(val userMessage: String) {
     TIMEOUT("Server took too long to respond — it may be starting up, try again"),
     SSL_FAILURE("Secure connection failed — check that the URL uses the right http:// or https:// scheme"),
     BACKEND_DOWN("Server responded with an error — the backend may be down or misconfigured"),
+    BACKEND_RESPONSE_INVALID("Server response didn't match the app — the backend or app may be mismatched"),
     UNKNOWN("Connection failed for an unknown reason");
 }
 
@@ -83,8 +86,14 @@ class ConnectivityErrorMapper @Inject constructor(
                 is NoRouteToHostException -> ConnectivityErrorCode.NETWORK_UNREACHABLE
                 is SSLException -> ConnectivityErrorCode.SSL_FAILURE
                 is retrofit2.HttpException ->
-                    if (throwable.code() >= 500) ConnectivityErrorCode.BACKEND_DOWN
-                    else ConnectivityErrorCode.UNKNOWN
+                    when (throwable.code()) {
+                        in 500..599 -> ConnectivityErrorCode.BACKEND_DOWN
+                        404 -> ConnectivityErrorCode.UNKNOWN // endpoint not found — usually a wrong URL
+                        in 400..499 -> ConnectivityErrorCode.UNKNOWN // client-side issue, but keep structured
+                        else -> ConnectivityErrorCode.UNKNOWN
+                    }
+                is JsonDataException,
+                is JsonEncodingException -> ConnectivityErrorCode.BACKEND_RESPONSE_INVALID
                 is java.io.IOException -> ConnectivityErrorCode.NETWORK_UNREACHABLE
                 else -> ConnectivityErrorCode.UNKNOWN
             }
