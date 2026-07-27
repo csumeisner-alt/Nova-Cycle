@@ -5,3 +5,4 @@
 - [XGBoost time-decay weights](xgboost-time-decay-weights.md) — normalize exp-decay sample weights to mean 1 or XGBoost degenerates to a constant predictor with zero importances
 - [Prediction router neutral fallbacks](prediction-router-neutral-fallbacks.md) — silent 0.5 causes: tuple passed to predict(), missing .pkl despite fresh metadata, Series vs scalar vix_regime
 - [Android local unit tests](android-local-unit-tests.md) — nix temurin-17 + sdkmanager bootstrap runs gradle unit tests locally; runTest hangs on infinite poll loops unless viewModelScope is cancelled
+- [Android API model synchronization](android-api-model-sync.md) — backend response shape changes must be mirrored in Android Moshi models or launch-time parsing crashes
