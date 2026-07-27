@@ -272,13 +272,18 @@ fun DualGaugeScreen(
  *  - safe → VIX-regime-colored "Macro OK · VIX <regime>"
  *  - loading → muted "Macro …"
  *  - error → muted "Macro unavailable" (never blocks the dashboard)
+ *
+ * Tapping the chip opens a bottom sheet with the full explanation
+ * (reason, VIX close + regime, long score vs thresholds, last override time).
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MacroSafetyChip(
     safety: com.novacycle.data.remote.models.MacroSafetyResponse?,
     isError: Boolean,
     isLoading: Boolean
 ) {
+    var showSheet by remember { mutableStateOf(false) }
     val (label, color) = when {
         isLoading      -> "Macro …" to NovaNeutralGray
         safety == null -> "Macro unavailable" to NovaNeutralGray
@@ -302,6 +307,7 @@ private fun MacroSafetyChip(
     if (isError && safety == null && !isLoading) { /* muted fallback already chosen */ }
 
     Surface(
+        onClick = { showSheet = true },
         color = color.copy(alpha = 0.15f),
         shape = MaterialTheme.shapes.small,
         modifier = Modifier.fillMaxWidth()
@@ -319,6 +325,161 @@ private fun MacroSafetyChip(
                 fontWeight = FontWeight.SemiBold
             )
         }
+    }
+
+    if (showSheet) {
+        MacroSafetyDetailSheet(
+            safety      = safety,
+            isLoading   = isLoading,
+            statusColor = color,
+            statusLabel = label,
+            onDismiss   = { showSheet = false }
+        )
+    }
+}
+
+/**
+ * Bottom sheet with the full macro safety explanation. Renders sensible
+ * placeholders when data is loading or unavailable — never crashes on nulls.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MacroSafetyDetailSheet(
+    safety: com.novacycle.data.remote.models.MacroSafetyResponse?,
+    isLoading: Boolean,
+    statusColor: Color,
+    statusLabel: String,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
+        ) {
+            Text(
+                "Macro Safety",
+                style      = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Status line — reuse the chip's color + label so both agree
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.foundation.Canvas(modifier = Modifier.size(8.dp)) { drawCircle(statusColor) }
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text       = statusLabel,
+                    style      = MaterialTheme.typography.labelLarge,
+                    color      = statusColor,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            when {
+                isLoading -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            "Loading macro safety details…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+                safety == null -> {
+                    Text(
+                        "Macro safety data is currently unavailable. " +
+                            "The dashboard keeps working — pull to refresh to retry.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+                else -> {
+                    // ── Reason ────────────────────────────────────────────
+                    if (safety.reason.isNotBlank()) {
+                        Text(
+                            text  = safety.reason,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+
+                    // ── VIX ───────────────────────────────────────────────
+                    DetailRow(
+                        label = "VIX close",
+                        value = safety.vixClose?.let { "%.2f".format(it) } ?: "—"
+                    )
+                    DetailRow(
+                        label = "VIX regime",
+                        value = safety.vixRegime?.uppercase() ?: "—"
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // ── Long score vs thresholds ──────────────────────────
+                    DetailRow(
+                        label = "Long score",
+                        value = "%.1f".format(safety.longScore)
+                    )
+                    val t = safety.thresholds
+                    if (t != null) {
+                        DetailRow(
+                            label = "Strong-bear threshold",
+                            value = "%.1f".format(t.longStrongBear)
+                        )
+                        DetailRow(
+                            label = "Strong-bull threshold",
+                            value = "%.1f".format(t.longStrongBull)
+                        )
+                        DetailRow(
+                            label = "ML override threshold",
+                            value = "%.2f".format(t.mlOverrideThreshold)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // ── Override history ──────────────────────────────────
+                    DetailRow(
+                        label = "Last override",
+                        value = safety.lastOverrideAppliedAt ?: "Never"
+                    )
+                    safety.computedAt?.let {
+                        DetailRow(label = "Computed at", value = it)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text  = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
+        )
+        Text(
+            text       = value,
+            style      = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 
