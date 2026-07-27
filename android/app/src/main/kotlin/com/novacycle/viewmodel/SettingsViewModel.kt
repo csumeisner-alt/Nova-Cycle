@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novacycle.data.remote.ConnectivityErrorMapper
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.*
 import com.novacycle.notifications.NovaCycleFirebaseService
@@ -36,6 +37,7 @@ sealed class ConnectionTestState {
 class SettingsViewModel @Inject constructor(
     private val dataStore: DataStore<Preferences>,
     private val repository: NovaCycleRepository,
+    private val connectivityErrorMapper: ConnectivityErrorMapper,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -170,11 +172,22 @@ class SettingsViewModel @Inject constructor(
                 if (response.isSuccessful) {
                     _connectionTestState.value = ConnectionTestState.Success("Connected ✓ (HTTP ${response.code})")
                 } else {
-                    _connectionTestState.value = ConnectionTestState.Failure("Server responded HTTP ${response.code}")
+                    _connectionTestState.value = ConnectionTestState.Failure(
+                        "Server responded HTTP ${response.code} — the backend may be down or misconfigured"
+                    )
                 }
                 response.close()
             } catch (e: Exception) {
-                _connectionTestState.value = ConnectionTestState.Failure("Could not reach server: ${e.message}")
+                // Classify the failure (offline / DNS / unreachable / timeout / TLS)
+                // so the user never sees a raw "Could not reach server: null".
+                val mapped = connectivityErrorMapper.map(e)
+                val detail = mapped.detail?.let { " ($it)" } ?: ""
+                _connectionTestState.value =
+                    ConnectionTestState.Failure("${mapped.userMessage}$detail")
+                android.util.Log.w(
+                    "SettingsViewModel",
+                    "Connection test failed [${mapped.code}]: ${e.javaClass.simpleName}: ${e.message}"
+                )
             }
         }
     }

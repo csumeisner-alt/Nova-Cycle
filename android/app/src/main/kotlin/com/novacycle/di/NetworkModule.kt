@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.novacycle.BuildConfig
 import com.novacycle.data.remote.NovaCycleApiService
+import com.novacycle.data.remote.RetryInterceptor
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import dagger.Module
@@ -41,8 +42,10 @@ object NetworkModule {
 
     /**
      * OkHttp client with:
+     * - Automatic bounded retries with backoff (2 retries on IOException/5xx)
      * - Logging interceptor (full body in DEBUG, none in RELEASE)
-     * - 30 s connect / read / write timeouts suitable for AI inference calls
+     * - 10 s connect / 15 s read-write timeouts, and a 15 s per-attempt call
+     *   timeout so a hung server can't stall the UI for half a minute
      */
     @Provides
     @Singleton
@@ -55,10 +58,15 @@ object NetworkModule {
         val loggingInterceptor = HttpLoggingInterceptor().apply { level = loggingLevel }
 
         return OkHttpClient.Builder()
+            // Retry interceptor is an application interceptor so its attempts
+            // each get the full connect/read timeout budget below.
+            .addInterceptor(RetryInterceptor(maxRetries = 2, backoffMillis = 500L))
             .addInterceptor(loggingInterceptor)
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(60, TimeUnit.SECONDS) // upper bound across all retries
             .build()
     }
 

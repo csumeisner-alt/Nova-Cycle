@@ -81,7 +81,15 @@ class HealthViewModel @Inject constructor(
                             _uiState.update { it.copy(backendUnreachable = true) }
                         }
                     }
-                delay(60 * 1000L) // 60 seconds
+                // Fast recovery: once flagged unreachable, re-check every 5 s so the
+                // app snaps back the moment the backend comes up. Normal cadence
+                // (60 s) otherwise to avoid needless traffic.
+                val interval = if (_uiState.value.backendUnreachable) {
+                    RECOVERY_POLL_INTERVAL_MS
+                } else {
+                    NORMAL_POLL_INTERVAL_MS
+                }
+                delay(interval)
             }
         }
     }
@@ -89,5 +97,9 @@ class HealthViewModel @Inject constructor(
     companion object {
         /** Consecutive failed health polls before showing the unreachable notice */
         private const val UNREACHABLE_THRESHOLD = 3
+        /** Poll cadence while the backend is reachable */
+        const val NORMAL_POLL_INTERVAL_MS = 60 * 1000L
+        /** Fast retry cadence while the backend is flagged unreachable */
+        const val RECOVERY_POLL_INTERVAL_MS = 5 * 1000L
     }
 }

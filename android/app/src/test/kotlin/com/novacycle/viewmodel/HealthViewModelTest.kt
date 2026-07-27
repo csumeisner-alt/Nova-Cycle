@@ -198,6 +198,45 @@ class HealthViewModelTest {
         }
 
     @Test
+    fun `unreachable backend is re-polled on the fast 5s recovery cadence`() =
+        healthTest(
+            listOf(
+                Result.failure(RuntimeException("down")),
+                Result.failure(RuntimeException("down")),
+                Result.failure(RuntimeException("down")),
+                Result.success(healthyResponse)
+            )
+        ) { viewModel ->
+            firstPoll() // failure 1
+            repeat(2) { nextPoll() } // failures 2 and 3 (60s cadence)
+            assertTrue(viewModel.uiState.value.backendUnreachable)
+
+            // Now flagged unreachable — the next poll must fire after only ~5s,
+            // not the normal 60s.
+            advanceTimeBy(HealthViewModel.RECOVERY_POLL_INTERVAL_MS + 1)
+            val state = viewModel.uiState.value
+            assertFalse(state.backendUnreachable)
+            assertNotNull(state.health)
+        }
+
+    @Test
+    fun `reachable backend is NOT polled on the fast cadence`() =
+        healthTest(
+            listOf(
+                Result.success(healthyResponse),
+                Result.success(degradedResponse)
+            )
+        ) { viewModel ->
+            firstPoll() // success #1
+            // 5s later nothing should have happened — normal cadence is 60s.
+            advanceTimeBy(HealthViewModel.RECOVERY_POLL_INTERVAL_MS + 1)
+            assertFalse(viewModel.uiState.value.health!!.isDegraded)
+
+            nextPoll() // 60s cadence — second poll lands (degraded)
+            assertTrue(viewModel.uiState.value.health!!.isDegraded)
+        }
+
+    @Test
     fun `recovery also resets the consecutive failure counter`() =
         healthTest(
             listOf(

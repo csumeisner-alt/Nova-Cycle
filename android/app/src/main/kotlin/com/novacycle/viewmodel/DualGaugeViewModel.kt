@@ -2,6 +2,7 @@ package com.novacycle.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novacycle.data.remote.ConnectivityErrorMapper
 import com.novacycle.data.remote.models.HoldTimeResponse
 import com.novacycle.data.remote.models.IndicatorResponse
 import com.novacycle.data.remote.models.PredictionResponse
@@ -37,17 +38,37 @@ data class DualGaugeUiState(
  */
 @HiltViewModel
 class DualGaugeViewModel @Inject constructor(
-    private val repository: NovaCycleRepository
+    private val repository: NovaCycleRepository,
+    private val connectivityErrorMapper: ConnectivityErrorMapper
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DualGaugeUiState())
     val uiState: StateFlow<DualGaugeUiState> = _uiState.asStateFlow()
 
     init {
+        probeBackendReachability()
         loadPredictions()
         startAutoRefresh()
         // NOTE: health polling now lives in the app-level HealthViewModel
         // (one shared /healthz poll for all screens) — do not poll here.
+    }
+
+    /**
+     * Lightweight startup reachability probe (runs concurrently with the first
+     * prediction fetch): if /healthz fails, surface a classified connectivity
+     * error immediately instead of waiting for all prediction calls to time out.
+     */
+    private fun probeBackendReachability() {
+        viewModelScope.launch {
+            repository.getHealth().onFailure { e ->
+                _uiState.update { state ->
+                    // Don't overwrite a more specific error from a completed fetch
+                    if (state.error == null && state.longPrediction == null) {
+                        state.copy(error = connectivityErrorMapper.map(e).userMessage)
+                    } else state
+                }
+            }
+        }
     }
 
     /** Parallel fetch of all dashboard data */
@@ -73,16 +94,26 @@ class DualGaugeViewModel @Inject constructor(
                 .any { it.isSuccess }
 
             _uiState.update { state ->
+                val bothFailed = longResult.isFailure && shortResult.isFailure
                 state.copy(
-                    longPrediction = longResult.getOrNull() ?: state.longPrediction,
-                    shortPrediction = shortResult.getOrNull() ?: state.shortPrediction,
+                    // Safe fallback: keep the last known prediction if this fetch
+                    // failed; when there is none at all, show a neutral HOLD gauge
+                    // (confidence 0.0) instead of an empty/crashed screen.
+                    longPrediction = longResult.getOrNull() ?: state.longPrediction
+                        ?: if (bothFailed) NEUTRAL_FALLBACK else null,
+                    shortPrediction = shortResult.getOrNull() ?: state.shortPrediction
+                        ?: if (bothFailed) NEUTRAL_FALLBACK else null,
                     holdTime = holdResult.getOrNull() ?: state.holdTime,
                     indicators = indicatorsResult.getOrNull() ?: state.indicators,
                     lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()
                                           else state.lastUpdatedAtMillis,
                     isLoading = false,
-                    error = if (longResult.isFailure && shortResult.isFailure) {
-                        longResult.exceptionOrNull()?.message ?: "Failed to load predictions"
+                    error = if (bothFailed) {
+                        // Classify the failure so the banner names the real cause
+                        // (offline / DNS / unreachable / timeout) instead of "null".
+                        longResult.exceptionOrNull()
+                            ?.let { connectivityErrorMapper.map(it).userMessage }
+                            ?: "Failed to load predictions"
                     } else null
                 )
             }
@@ -100,6 +131,19 @@ class DualGaugeViewModel @Inject constructor(
             _uiState.update { it.copy(selectedTicker = "VOO") }
         }
         // Silently ignore unsupported tickers
+    }
+
+    companion object {
+        /**
+         * Neutral gauge state shown when the backend is unreachable and no
+         * cached prediction exists — never leaves the gauges blank or crashes.
+         */
+        val NEUTRAL_FALLBACK = PredictionResponse(
+            score = 0f,
+            signal = "neutral",
+            confidence = 0f,
+            note = "Backend unreachable — showing neutral fallback"
+        )
     }
 
     /** Poll every 5 minutes using a simple delay loop in viewModelScope */

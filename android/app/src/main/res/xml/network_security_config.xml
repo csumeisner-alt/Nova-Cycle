@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Permit cleartext (plain HTTP) traffic so users can point the app at a
+    LAN/dev backend such as http://192.168.1.25:8000 from the Settings screen.
+    HTTPS remains the default (BuildConfig.API_BASE_URL is https://) and is
+    always preferred; this only stops Android from silently blocking
+    user-entered http:// URLs, which previously surfaced as
+    "Could not reach server: null".
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

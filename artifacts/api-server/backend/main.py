@@ -6,11 +6,15 @@ Serves all endpoints under the /api prefix on port 8080.
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -196,6 +200,84 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Structured error handling — the Android app never receives a bare 500/HTML
+# error page; every failure mode maps to {"ok": false, "error": <CODE>, ...}.
+# Successful responses are untouched, so existing client models keep parsing.
+# ---------------------------------------------------------------------------
+
+#: Per-request processing budget in seconds. Generous enough for cold-start
+#: model loads; override with REQUEST_TIMEOUT_SECONDS. Docs endpoints excluded.
+REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "30"))
+
+_TIMEOUT_EXEMPT_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
+@app.middleware("http")
+async def request_timeout_middleware(request: Request, call_next):
+    """Bound request processing time and return a structured TIMEOUT error."""
+    if request.url.path.startswith(_TIMEOUT_EXEMPT_PATHS):
+        return await call_next(request)
+    try:
+        return await asyncio.wait_for(
+            call_next(request), timeout=REQUEST_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            f"Request timed out after {REQUEST_TIMEOUT_SECONDS}s: "
+            f"{request.method} {request.url.path}"
+        )
+        # This middleware runs OUTSIDE CORSMiddleware (added later via decorator,
+        # so it wraps the stack), meaning the 504 would otherwise ship without
+        # CORS headers and browser clients couldn't read the structured error.
+        # Mirror the app's permissive CORS policy manually.
+        headers = {}
+        if request.headers.get("origin"):
+            headers["Access-Control-Allow-Origin"] = "*"
+        return JSONResponse(
+            status_code=504,
+            content={
+                "ok": False,
+                "error": "TIMEOUT",
+                "detail": f"Request exceeded {REQUEST_TIMEOUT_SECONDS:.0f}s processing budget",
+            },
+            headers=headers,
+        )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Malformed query params / body → 422 INVALID_REQUEST."""
+    return JSONResponse(
+        status_code=422,
+        content={"ok": False, "error": "INVALID_REQUEST", "detail": exc.errors()},
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Keep intentional HTTPException semantics, add the structured envelope."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "ok": False,
+            "error": "INVALID_REQUEST" if exc.status_code < 500 else "SERVER_FAILURE",
+            "detail": exc.detail,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Any uncaught error → 500 SERVER_FAILURE (never a bare traceback page)."""
+    logger.exception(
+        f"Unhandled error on {request.method} {request.url.path}: {exc}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"ok": False, "error": "SERVER_FAILURE", "detail": str(exc)},
+    )
 
 # ---------------------------------------------------------------------------
 # Include routers — all prefixed with /api
