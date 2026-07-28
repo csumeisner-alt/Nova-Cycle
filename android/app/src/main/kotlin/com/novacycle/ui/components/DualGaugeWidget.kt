@@ -1,6 +1,7 @@
 package com.novacycle.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -48,7 +49,8 @@ internal fun trendGlyph(trend: String): String = when (trend.uppercase()) {
 fun DualGaugeWidget(
     gaugeState: GaugeState,
     label: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
 ) {
     // Theme glow + shared breath: the halo behind the arc swells when the
     // logo is tapped, so gauges pulse with the rest of the page.
@@ -64,7 +66,16 @@ fun DualGaugeWidget(
                     else confidenceZoneColor(gaugeState.gaugeZone)
 
     Column(
-        modifier = modifier.padding(8.dp),
+        modifier = modifier
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        onClickLabel = "What does this confidence mean?",
+                        onClick = onClick
+                    )
+                } else Modifier
+            )
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // Title
@@ -150,6 +161,28 @@ fun DualGaugeWidget(
             color = zoneColor,
             textAlign = TextAlign.Center
         )
+
+        // Secondary context: model confidence with its Weak/Uncertain/Strong
+        // zone, plus the recent trend and display bias. Explained by the
+        // tappable info sheet on the dashboard.
+        if (!isFallback) {
+            val confidencePercent = gaugeState.confidencePercent.coerceIn(0, 100)
+            val confidenceColor = confidenceZoneColor(gaugeState.confidenceZone)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "$confidencePercent% confidence · ${gaugeState.confidenceZone.label}",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = confidenceColor,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = "${trendGlyph(gaugeState.trend)} ${gaugeState.trend.uppercase()} · ${gaugeState.displaySignal}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f),
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 

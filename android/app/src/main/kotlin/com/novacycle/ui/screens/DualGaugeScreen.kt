@@ -39,6 +39,7 @@ fun DualGaugeScreen(
     onNavigateToReliability: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var showConfidenceSheet by remember { mutableStateOf(false) }
 
     val longPred = uiState.longPrediction
     val longGaugeState = GaugeState(
@@ -166,12 +167,14 @@ fun DualGaugeScreen(
                 DualGaugeWidget(
                     gaugeState = longGaugeState,
                     label      = "Long-Trend",
-                    modifier   = Modifier.weight(1f)
+                    modifier   = Modifier.weight(1f),
+                    onClick    = { showConfidenceSheet = true }
                 )
                 DualGaugeWidget(
                     gaugeState = shortGaugeState,
                     label      = "Short-Trend",
-                    modifier   = Modifier.weight(1f)
+                    modifier   = Modifier.weight(1f),
+                    onClick    = { showConfidenceSheet = true }
                 )
             }
 
@@ -276,6 +279,148 @@ fun DualGaugeScreen(
                     modifier = Modifier.weight(1f)
                 ) { Text("Reliability") }
             }
+        }
+    }
+
+    if (showConfidenceSheet) {
+        ConfidenceInfoSheet(onDismiss = { showConfidenceSheet = false })
+    }
+}
+
+/**
+ * Bottom sheet explaining the gauge's confidence zones, trend arrow, and how
+ * the display signal differs from the model's raw buy/sell signal.
+ * Opened by tapping either gauge — mirrors the macro-safety chip sheet.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConfidenceInfoSheet(onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
+        ) {
+            Text(
+                "Reading the Gauges",
+                style      = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // ── The big number ───────────────────────────────────────────
+            Text(
+                "The big percentage",
+                style      = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "The large number is the gauge's directional position: 0% is the far-left (strong sell) end, 50% is neutral, and 100% is the far-right (strong buy) end. " +
+                    "The BUY / HOLD / SELL word underneath is derived from that same position (65% and above reads BUY, 35% and below reads SELL, in between reads HOLD).",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Confidence zones ─────────────────────────────────────────
+            Text(
+                "Confidence zones",
+                style      = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "The smaller \"% confidence\" line is different: it is how sure the model is about its current read — not how big a move to expect. It falls into one of three zones:",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            ZoneRow(
+                color = NovaSellRed,
+                range = "0–30%",
+                name  = "Weak",
+                text  = "The model has little conviction. Treat the reading as noise."
+            )
+            ZoneRow(
+                color = NovaWarningYellow,
+                range = "31–64%",
+                name  = "Uncertain",
+                text  = "Mixed evidence. The lean shown could easily flip."
+            )
+            ZoneRow(
+                color = NovaBuyGreen,
+                range = "65–100%",
+                name  = "Strong",
+                text  = "The model's indicators broadly agree on the current lean."
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Trend arrow ──────────────────────────────────────────────
+            Text(
+                "Trend arrow",
+                style      = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "The arrow on the bottom line shows where the model's score has been heading:\n" +
+                    "▲ UP — the score has been rising recently\n" +
+                    "▼ DOWN — the score has been falling recently\n" +
+                    "◆ NEUTRAL — no clear recent direction",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Display signal vs buy/sell signal ────────────────────────
+            Text(
+                "BUY BIAS vs a buy signal",
+                style      = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "BUY BIAS / SELL BIAS / NEUTRAL · HOLD describe which way the model is currently leaning — they are a display summary, not a trade instruction. " +
+                    "Actual buy/sell signals go through extra checks (like the macro safety override) before anything is acted on, so a \"65% BUY BIAS\" does not mean \"buy now\".",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ZoneRow(color: Color, range: String, name: String, text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier
+                .padding(top = 5.dp)
+                .size(8.dp)
+        ) { drawCircle(color) }
+        Spacer(modifier = Modifier.width(8.dp))
+        Column {
+            Text(
+                text       = "$name · $range",
+                style      = MaterialTheme.typography.bodyMedium,
+                color      = color,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text  = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+            )
         }
     }
 }

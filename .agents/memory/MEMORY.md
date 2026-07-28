@@ -7,3 +7,4 @@
 - [Android local unit tests](android-local-unit-tests.md) — nix temurin-17 + sdkmanager bootstrap runs gradle unit tests locally; runTest hangs on infinite poll loops unless viewModelScope is cancelled
 - [Android API model synchronization](android-api-model-sync.md) — backend response shape changes must be mirrored in Android Moshi models or launch-time parsing crashes
 - [FastAPI middleware ordering vs CORS](fastapi-middleware-cors-ordering.md) — decorator middleware wraps outside CORSMiddleware; short-circuited responses need manual CORS headers
+- [Dashboard gauge semantics](dashboard-gauge-semantics.md) — gauge big % is directional position, small % is model confidence; never conflate them in UI copy
