@@ -530,6 +530,7 @@ type ReleaseInfo = {
   tag_name: string;
   published_at: string | null;
   apk_url: string;
+  stale?: boolean;
 };
 
 // Fallback path: query GitHub directly from the browser (subject to
@@ -558,6 +559,7 @@ async function fetchReleaseFromGitHub(): Promise<ReleaseInfo | null> {
     tag_name: release.tag_name,
     published_at: release.published_at,
     apk_url: apk.browser_download_url,
+    stale: false,
   };
 }
 
@@ -565,13 +567,27 @@ function DownloadApkSection() {
   const { data: release, isLoading, isError } = useQuery({
     queryKey: ['latest-apk-release'],
     queryFn: async (): Promise<ReleaseInfo | null> => {
-      // Primary path: backend proxy — it caches GitHub responses server-side
-      // and keeps serving the last known release when GitHub rate-limits.
+      // Primary path: backend proxy (/releases/latest) — it caches GitHub
+      // responses server-side and serves the last known release when GitHub
+      // rate-limits (marking the response stale: true in that case).
       try {
-        const res = await fetch('/api/latest_apk_release');
+        const res = await fetch('/api/releases/latest');
         if (res.ok) {
           const data = await res.json();
-          if (data?.release?.apk_url) return data.release as ReleaseInfo;
+          if (data?.ok && data?.release) {
+            const r = data.release;
+            const apk =
+              (r.assets ?? []).find((a: { name: string; browser_download_url: string }) => a.name === 'app-release.apk') ??
+              (r.assets ?? []).find((a: { name: string; browser_download_url: string }) => a.name.toLowerCase().endsWith('.apk'));
+            if (apk) {
+              return {
+                tag_name: r.tag_name,
+                published_at: r.published_at ?? null,
+                apk_url: apk.browser_download_url,
+                stale: Boolean(data.stale),
+              };
+            }
+          }
         }
       } catch {
         // fall through to direct GitHub fetch
@@ -614,18 +630,29 @@ function DownloadApkSection() {
           </p>
         )}
         {!isLoading && release && (
-          <p className="text-sm text-muted-foreground" data-testid="text-release-version">
-            <span className="font-mono text-primary/80">{release.tag_name}</span>
-            {publishedAt && (
-              <span>
-                {' '}· built{' '}
-                {publishedAt.toLocaleString('en-US', {
-                  month: 'short', day: 'numeric', year: 'numeric',
-                  hour: 'numeric', minute: '2-digit',
-                })}
-              </span>
+          <>
+            <p className="text-sm text-muted-foreground" data-testid="text-release-version">
+              <span className="font-mono text-primary/80">{release.tag_name}</span>
+              {publishedAt && (
+                <span>
+                  {' '}· built{' '}
+                  {publishedAt.toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', year: 'numeric',
+                    hour: 'numeric', minute: '2-digit',
+                  })}
+                </span>
+              )}
+            </p>
+            {release.stale && (
+              <p
+                className="text-xs text-muted-foreground/60 flex items-center justify-center space-x-1"
+                data-testid="text-release-stale"
+              >
+                <Clock className="w-3 h-3 shrink-0" />
+                <span>Release info may be a few minutes old</span>
+              </p>
             )}
-          </p>
+          </>
         )}
         {!isLoading && (isError || !release) && (
           <p className="text-sm text-amber-400" data-testid="text-release-unavailable">
