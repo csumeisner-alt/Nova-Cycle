@@ -106,13 +106,21 @@ def _validate_ticker(ticker: str):
 
 
 def _parse_window(window: str) -> timedelta:
-    """Parse window string like '7d', '30d', '24h' into timedelta."""
-    if window.endswith("d"):
-        return timedelta(days=int(window[:-1]))
-    elif window.endswith("h"):
-        return timedelta(hours=int(window[:-1]))
-    else:
-        return timedelta(days=30)
+    """Parse window string like '3h', '24h', '7d', '30d', '3mo', '6mo' into timedelta.
+
+    Lenient by design (see test_spec_gap_endpoints): unrecognized values fall
+    back to 30 days rather than erroring, so older clients never break.
+    """
+    try:
+        if window.endswith("mo"):
+            return timedelta(days=int(window[:-2]) * 30)
+        elif window.endswith("d"):
+            return timedelta(days=int(window[:-1]))
+        elif window.endswith("h"):
+            return timedelta(hours=int(window[:-1]))
+    except ValueError:
+        pass
+    return timedelta(days=30)
 
 
 async def _load_daily_candles(session: AsyncSession, ticker: str, limit: int = 300) -> pd.DataFrame:
@@ -852,6 +860,19 @@ async def hold_time_estimate(
 
 
 # ---------------------------------------------------------------------------
+def _downsample_uniform(rows: list, max_points: int) -> list:
+    """Uniformly downsample rows to at most max_points, keeping both endpoints.
+
+    Rows are assumed ordered (newest-first here); sampling preserves order and
+    always includes the first and last row so the full window span is retained.
+    """
+    n = len(rows)
+    if n <= max_points:
+        return rows
+    step = (n - 1) / (max_points - 1)
+    return [rows[round(i * step)] for i in range(max_points)]
+
+
 # GET /confidence_history
 # ---------------------------------------------------------------------------
 @router.get("/confidence_history")
@@ -860,7 +881,13 @@ async def confidence_history(
     window: str = Query(default="7d"),
     session: AsyncSession = Depends(get_session)
 ):
-    """Return confidence history for the given ticker and time window."""
+    """Return confidence history for the given ticker and time window.
+
+    Long windows (3mo/6mo) can hold far more than the response cap of 1000
+    points. Instead of truncating to the newest 1000 rows (which would silently
+    drop the older part of the window), rows are downsampled uniformly across
+    the full window so the chart always spans the requested period.
+    """
     _validate_ticker(ticker)
     since = datetime.utcnow() - _parse_window(window)
     result = await session.execute(
@@ -870,9 +897,9 @@ async def confidence_history(
             ConfidenceHistory.timestamp >= since
         ))
         .order_by(desc(ConfidenceHistory.timestamp))
-        .limit(1000)
     )
     rows = result.scalars().all()
+    rows = _downsample_uniform(rows, max_points=1000)
     return [
         {
             "id": r.id,

@@ -1,14 +1,15 @@
 package com.novacycle.ui.screens
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -17,12 +18,17 @@ import com.novacycle.domain.model.ConfidencePoint
 import com.novacycle.domain.model.SmoothingMode
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
+import com.novacycle.ui.components.confidence.ConfidenceChart
+import com.novacycle.ui.components.confidence.ConfidenceLegend
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.ConfidenceHistoryViewModel
 import com.novacycle.viewmodel.SettingsViewModel
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
- * Confidence History screen: dual line chart (Long BUY = green, Short BUY = blue).
+ * Confidence History screen: dual line chart of buy confidence per gauge —
+ * Buy (Long-term) = green, Buy (Short-term) = blue.
  * Extended-hours segments rendered at reduced opacity.
  * EMA toggle persists via SensitivitySettings.
  */
@@ -36,7 +42,9 @@ fun ConfidenceHistoryScreen(
 
     LaunchedEffect(settings) { viewModel.applySettings(settings) }
 
-    val windows = listOf("24h", "7d", "30d")
+    val windows = listOf("3h", "6h", "12h", "24h", "7d", "30d", "3mo", "6mo")
+    var showEmaInfo by remember { mutableStateOf(false) }
+    val emaEnabled = settings.smoothingMode != SmoothingMode.RAW
 
     PullRefreshBox(
         refreshing = uiState.isLoading,
@@ -47,110 +55,116 @@ fun ConfidenceHistoryScreen(
         Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Text("Confidence History", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("EMA", style = MaterialTheme.typography.labelSmall)
-                Spacer(Modifier.width(4.dp))
+                Text(
+                    "EMA (Smooth Confidence)",
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(end = 2.dp)
+                )
+                TextButton(onClick = { showEmaInfo = true }, contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.size(24.dp)) {
+                    Text("ⓘ", style = MaterialTheme.typography.labelSmall)
+                }
+                Spacer(Modifier.width(2.dp))
                 Switch(
-                    checked = settings.smoothingMode != SmoothingMode.RAW,
+                    checked = emaEnabled,
                     onCheckedChange = { settingsViewModel.updateSmoothingMode(if (it) SmoothingMode.EMA else SmoothingMode.RAW) }
                 )
             }
         }
 
+        if (showEmaInfo) {
+            AlertDialog(
+                onDismissRequest = { showEmaInfo = false },
+                confirmButton = { TextButton(onClick = { showEmaInfo = false }) { Text("Got it") } },
+                title = { Text("EMA (Smooth Confidence)") },
+                text = {
+                    Text(
+                        "EMA (Exponential Moving Average) smooths the confidence lines by " +
+                        "giving recent readings more weight than older ones. This reduces " +
+                        "noise so trends are easier to see, at the cost of reacting slightly " +
+                        "slower to sudden changes. Turn it off to see raw values."
+                    )
+                }
+            )
+        }
+
         // "Updated X ago" freshness label, ticking as time passes
         UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp), extendedHoursAware = true)
 
-        Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            Modifier.padding(horizontal = 12.dp).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }
         }
 
         if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        if (uiState.error != null) Text("⚠️ ${uiState.error}", color = NovaSellRed, modifier = Modifier.padding(12.dp))
+        if (uiState.error != null) Text("⚠️ ${uiState.error}", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
 
-        if (uiState.confidencePoints.isNotEmpty()) {
-            ConfidenceLineChart(uiState.confidencePoints, Modifier.fillMaxWidth().weight(1f).padding(12.dp))
-        } else if (!uiState.isLoading) {
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Text("No confidence data available", color = NovaNeutralGray)
-            }
-        }
-
-        ConfidenceLegend(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-    }
-    }
-}
-
-@Composable
-private fun ConfidenceLineChart(points: List<ConfidencePoint>, modifier: Modifier = Modifier) {
-    if (points.size < 2) return
-    Canvas(modifier = modifier) {
-        val count   = points.size
-        val stepX   = size.width / (count - 1).coerceAtLeast(1)
-        val padding = 8.dp.toPx()
-        val usableH = size.height - padding * 2
-
-        fun confToY(v: Float) = size.height - padding - (v / 100f).coerceIn(0f, 1f) * usableH
-
-        listOf(25f, 50f, 75f).forEach { level ->
-            drawLine(Color.Gray.copy(alpha = 0.2f), Offset(0f, confToY(level)), Offset(size.width, confToY(level)), 1f)
-        }
-
-        // Gradient fill under each confidence line (line color fading to
-        // transparent toward the chart floor) for a premium filled-area look.
-        fun fillUnder(values: List<Float>, color: Color, topAlpha: Float) {
-            val path = Path().apply {
-                moveTo(0f, size.height - padding)
-                values.forEachIndexed { i, v -> lineTo(i * stepX, confToY(v)) }
-                lineTo((count - 1) * stepX, size.height - padding)
-                close()
-            }
-            drawPath(
-                path,
-                brush = Brush.verticalGradient(
-                    colors = listOf(color.copy(alpha = topAlpha), color.copy(alpha = 0f)),
-                    startY = padding,
-                    endY   = size.height - padding
-                )
+        // Legend above the chart + trend mini-summary
+        ConfidenceLegend(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+        if (uiState.confidencePoints.size >= 2) {
+            TrendSummary(
+                points = uiState.confidencePoints,
+                window = uiState.selectedWindow,
+                modifier = Modifier.padding(horizontal = 12.dp)
             )
         }
-        fillUnder(points.map { it.shortBuyConfidence }, NovaExtendedBlue, 0.12f)
-        fillUnder(points.map { it.longBuyConfidence }, NovaBuyGreen, 0.18f)
 
-        for (i in 1 until count) {
-            val prev  = points[i - 1]
-            val curr  = points[i]
-            val alpha = if (curr.isExtendedHours) 0.35f else 0.9f
-            drawLine(NovaBuyGreen.copy(alpha = alpha),
-                Offset((i-1)*stepX, confToY(prev.longBuyConfidence)), Offset(i*stepX, confToY(curr.longBuyConfidence)),
-                strokeWidth = 2.5f, cap = StrokeCap.Round)
-            drawLine(NovaExtendedBlue.copy(alpha = alpha),
-                Offset((i-1)*stepX, confToY(prev.shortBuyConfidence)), Offset(i*stepX, confToY(curr.shortBuyConfidence)),
-                strokeWidth = 2.5f, cap = StrokeCap.Round)
-        }
-
-        for (i in 1 until count) {
-            val prev = points[i-1].longBuyConfidence
-            val curr = points[i].longBuyConfidence
-            if ((prev < 50f && curr >= 50f) || (prev >= 50f && curr < 50f)) {
-                drawLine(NovaWarningYellow.copy(alpha = 0.5f), Offset(i*stepX, 0f), Offset(i*stepX, size.height), 1.5f)
+        // Animated transition between datasets when the range changes.
+        Crossfade(
+            targetState = uiState.confidencePoints,
+            animationSpec = tween(durationMillis = 350),
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            label = "confidence-chart"
+        ) { points ->
+            if (points.size >= 2) {
+                ConfidenceChart(
+                    points = points,
+                    windowLabel = uiState.selectedWindow,
+                    emaEnabled = emaEnabled,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+            } else if (!uiState.isLoading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No data available for selected period", color = NovaNeutralGray)
+                }
             }
         }
     }
+    }
 }
 
+/**
+ * Mini-summary above the chart: trend direction arrows and net change of each
+ * series over the loaded window, e.g. "▲ Buy (Long-term) rising +4% over last 24h".
+ */
 @Composable
-private fun ConfidenceLegend(modifier: Modifier = Modifier) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-        LegendLine(NovaBuyGreen, "Long BUY")
-        LegendLine(NovaExtendedBlue, "Short BUY")
-        LegendLine(NovaBuyGreen.copy(alpha = 0.35f), "Extended-hrs")
+private fun TrendSummary(
+    points: List<ConfidencePoint>,
+    window: String,
+    modifier: Modifier = Modifier
+) {
+    val longDelta = points.last().longBuyConfidence - points.first().longBuyConfidence
+    val shortDelta = points.last().shortBuyConfidence - points.first().shortBuyConfidence
+    Column(modifier = modifier) {
+        SummaryLine("Buy (Long-term)", longDelta, window, NovaBuyGreen)
+        SummaryLine("Buy (Short-term)", shortDelta, window, NovaExtendedBlue)
     }
 }
 
 @Composable
-private fun LegendLine(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Canvas(modifier = Modifier.size(12.dp, 3.dp)) { drawRect(color) }
-        Spacer(Modifier.width(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall)
+private fun SummaryLine(name: String, delta: Float, window: String, color: androidx.compose.ui.graphics.Color) {
+    val rounded = delta.roundToInt()
+    val (arrow, verb) = when {
+        rounded > 0 -> "▲" to "rising"
+        rounded < 0 -> "▼" to "weakening"
+        else -> "▶" to "flat"
     }
+    val change = if (rounded == 0) "" else " ${if (rounded > 0) "+" else "−"}${abs(rounded)}%"
+    Text(
+        "$arrow $name $verb$change over last $window",
+        style = MaterialTheme.typography.labelSmall,
+        color = color.copy(alpha = 0.9f)
+    )
 }

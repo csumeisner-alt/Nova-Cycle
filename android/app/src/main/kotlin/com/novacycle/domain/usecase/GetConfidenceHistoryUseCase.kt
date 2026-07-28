@@ -19,7 +19,10 @@ class GetConfidenceHistoryUseCase @Inject constructor(
         window: String = "7d",
         settings: SensitivitySettings
     ): Result<List<ConfidencePoint>> {
-        return repository.getConfidenceHistory(ticker, window).map { responses ->
+        return repository.getConfidenceHistory(ticker, window).map { rawResponses ->
+            // Backend returns rows newest-first; sort chronologically so the
+            // chart's time axis and momentum deltas read left-to-right in time.
+            val responses = rawResponses.sortedBy { it.timestamp }
             val points = responses.mapIndexed { index, r ->
                 val prev = if (index > 0) responses[index - 1] else null
                 ConfidencePoint(
