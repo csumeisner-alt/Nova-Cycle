@@ -14,6 +14,23 @@ contract for clients:
 
 Any invalid input (None, NaN, inf, non-numeric) returns the neutral defaults
 (0, "NEUTRAL", "NEUTRAL / HOLD") — clients never see garbage values.
+
+Product decision — override consistency (Task: mixed messages)
+--------------------------------------------------------------
+`display_signal` is derived from the raw gauge score, while the legacy
+`signal` field passes through the macro override and decision filter. That
+meant the app could show "BUY BIAS" while the filtered signal was "neutral"
+(e.g. a macro override suppressed the buy). The decided UX is:
+
+  * The actionable label (`display_signal`) must NEVER contradict a signal
+    that a safety layer (macro override) forced to neutral. When the macro
+    override suppresses the signal, `display_signal` is downgraded to
+    "NEUTRAL / HOLD" via `reconcile_display_signal()`.
+  * `trend` and `confidence_percent` are NOT changed — they are factual
+    readings of the raw gauge (direction and strength) and the gauge UI may
+    still show them; only the actionable bias label is neutralized.
+
+Use `reconcile_display_signal()` after computing the filtered signal.
 """
 
 import math
@@ -80,3 +97,26 @@ def normalize_gauge_output(raw_score) -> dict:
         "trend": trend,
         "display_signal": display_signal,
     }
+
+
+def reconcile_display_signal(normalized: dict, final_signal,
+                             macro_override_applied) -> dict:
+    """
+    Ensure the display contract never contradicts an override-suppressed
+    filtered signal.
+
+    When the macro override forced the filtered `signal` to neutral, an
+    actionable "BUY BIAS" / "SELL BIAS" derived from the raw score would be a
+    mixed message — downgrade `display_signal` to "NEUTRAL / HOLD".
+    `trend` and `confidence_percent` are left untouched (factual gauge
+    readings). Never raises; returns a new dict.
+    """
+    try:
+        out = dict(normalized) if isinstance(normalized, dict) else dict(NEUTRAL_DEFAULTS)
+        if (bool(macro_override_applied)
+                and str(final_signal).lower() == "neutral"
+                and out.get("display_signal") != SIGNAL_HOLD):
+            out["display_signal"] = SIGNAL_HOLD
+        return out
+    except Exception:
+        return dict(NEUTRAL_DEFAULTS)

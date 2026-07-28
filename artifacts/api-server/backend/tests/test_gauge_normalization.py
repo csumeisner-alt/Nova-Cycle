@@ -10,6 +10,7 @@ import pytest
 
 from signal_engine.normalization import (
     normalize_gauge_output,
+    reconcile_display_signal,
     NEUTRAL_DEFAULTS,
     SIGMOID_SCALE,
     NEUTRAL_BAND,
@@ -106,6 +107,52 @@ class TestNormalizeGaugeOutput:
 
 
 # ---------------------------------------------------------------------------
+# reconcile_display_signal: display bias must never contradict an
+# override-suppressed filtered signal.
+# ---------------------------------------------------------------------------
+
+class TestReconcileDisplaySignal:
+
+    def _buy_bias(self):
+        out = normalize_gauge_output(100.0)
+        assert out["display_signal"] == SIGNAL_BUY
+        return out
+
+    def test_override_neutral_downgrades_buy_bias_to_hold(self):
+        out = reconcile_display_signal(self._buy_bias(), "neutral", True)
+        assert out["display_signal"] == SIGNAL_HOLD
+
+    def test_override_neutral_downgrades_sell_bias_to_hold(self):
+        sell = normalize_gauge_output(-100.0)
+        out = reconcile_display_signal(sell, "neutral", True)
+        assert out["display_signal"] == SIGNAL_HOLD
+
+    def test_trend_and_confidence_untouched(self):
+        buy = self._buy_bias()
+        out = reconcile_display_signal(buy, "neutral", True)
+        assert out["trend"] == buy["trend"]
+        assert out["confidence_percent"] == buy["confidence_percent"]
+
+    def test_no_override_keeps_bias(self):
+        out = reconcile_display_signal(self._buy_bias(), "buy", False)
+        assert out["display_signal"] == SIGNAL_BUY
+
+    def test_override_but_signal_not_neutral_keeps_bias(self):
+        # e.g. decision filter later changed the signal — only the
+        # override-forced-neutral case downgrades.
+        out = reconcile_display_signal(self._buy_bias(), "buy", True)
+        assert out["display_signal"] == SIGNAL_BUY
+
+    def test_does_not_mutate_input(self):
+        buy = self._buy_bias()
+        reconcile_display_signal(buy, "neutral", True)
+        assert buy["display_signal"] == SIGNAL_BUY
+
+    def test_invalid_normalized_returns_neutral_defaults(self):
+        assert reconcile_display_signal(None, "neutral", True) == NEUTRAL_DEFAULTS
+
+
+# ---------------------------------------------------------------------------
 # Endpoint tests: new fields always present and in range
 # ---------------------------------------------------------------------------
 
@@ -190,6 +237,32 @@ async def test_prediction_endpoints_include_normalized_fields(seeded_client, end
     resp = await seeded_client.post(endpoint, params={"ticker": "VOO"})
     assert resp.status_code == 200
     _assert_normalized_fields(resp.json())
+
+
+async def test_predict_short_override_forces_hold_display(seeded_client, monkeypatch):
+    """When the macro override suppresses the signal, display_signal must be
+    HOLD even if the raw gauge score would produce BUY BIAS."""
+    from routers import predictions as preds
+
+    monkeypatch.setattr(
+        preds._short_gauge, "compute_score",
+        lambda *a, **k: {"score": 100.0, "signal": "buy",
+                         "confidence": 0.9, "breakdown": {}},
+    )
+    monkeypatch.setattr(
+        preds._macro_override, "apply_override",
+        lambda *a, **k: {"override_applied": True, "reason": "test override"},
+    )
+
+    resp = await seeded_client.post("/api/predict_short", params={"ticker": "VOO"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["macro_override_applied"] is True
+    assert body["signal"] == "neutral"
+    assert body["display_signal"] == SIGNAL_HOLD
+    # Factual gauge readings remain untouched.
+    assert body["trend"] == TREND_UP
+    assert body["confidence_percent"] >= SIGNAL_CONFIDENCE_THRESHOLD
 
 
 @pytest.mark.parametrize("endpoint", ["/api/predict_long", "/api/predict_short"])

@@ -28,7 +28,9 @@ from signal_engine.long_gauge import LongTrendGauge
 from signal_engine.short_gauge import ShortTrendGauge
 from signal_engine.macro_override import MacroOverrideSafety
 from signal_engine.decision_filter import DecisionFilter
-from signal_engine.normalization import normalize_gauge_output, NEUTRAL_DEFAULTS
+from signal_engine.normalization import (
+    normalize_gauge_output, reconcile_display_signal, NEUTRAL_DEFAULTS,
+)
 from config import settings
 
 import pandas as pd
@@ -788,7 +790,13 @@ async def predict_short(
             "score": result["score"],
             "signal": final_signal,
             "confidence": result["confidence"],
-            **normalize_gauge_output(result["score"]),
+            # Downgrade display_signal to HOLD when the macro override forced
+            # the filtered signal neutral — the bias label must never
+            # contradict an override-suppressed signal.
+            **reconcile_display_signal(
+                normalize_gauge_output(result["score"]),
+                final_signal, macro_override_applied,
+            ),
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
             "ml_fallback": ml_fallback,
