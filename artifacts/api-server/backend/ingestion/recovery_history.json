@@ -1,0 +1,15 @@
+{
+  "last_attempt": {
+    "last_attempt_at": "2026-07-28T17:35:00.738232",
+    "outcome": "skipped_cooldown",
+    "bars_fetched": null
+  },
+  "history": [
+    {
+      "last_attempt_at": "2026-07-28T17:35:00.738232",
+      "outcome": "skipped_cooldown",
+      "bars_fetched": null
+    }
+  ],
+  "failure_count": 0
+}
