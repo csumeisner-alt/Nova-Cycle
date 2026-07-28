@@ -37,11 +37,12 @@ export default defineConfig({
       name: 'apk-download-headers',
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
-          if (req.url?.split('?')[0] === '/novacycle-chart-upgrade-debug.apk') {
+          if (req.url?.split('?')[0].endsWith('.apk')) {
+            const filename = req.url.split('?')[0].split('/').pop() ?? 'novacycle.apk';
             res.setHeader('Content-Type', 'application/vnd.android.package-archive');
             res.setHeader(
               'Content-Disposition',
-              'attachment; filename="novacycle-chart-upgrade-debug.apk"',
+              `attachment; filename="${filename}"`,
             );
           }
           next();
