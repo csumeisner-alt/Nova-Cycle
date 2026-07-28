@@ -66,7 +66,9 @@ fun ConfidenceChart(
     var selectedPx by remember { mutableStateOf(Offset.Zero) }
 
     // Theme-aware colors (gold axis labels under DarkLuxe, adapts elsewhere).
-    val axisLabelColor = MaterialTheme.colorScheme.primary
+    // Use the theme foreground for chart labels. The accent is reserved for
+    // meaningful series/marker colors and can be too dark in some themes.
+    val axisLabelColor = MaterialTheme.colorScheme.onBackground
     val gridColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
     val onBg = MaterialTheme.colorScheme.onBackground
 

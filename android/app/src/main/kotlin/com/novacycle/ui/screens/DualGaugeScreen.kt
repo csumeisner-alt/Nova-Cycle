@@ -17,7 +17,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.domain.model.GaugeState
 import com.novacycle.ui.components.DualGaugeWidget
 import com.novacycle.ui.components.NovaLogoHeader
-import com.novacycle.ui.components.TickerSelector
 import com.novacycle.ui.components.luxeRim
 import com.novacycle.ui.components.formatRelativeAge
 import com.novacycle.ui.components.rememberTickingNow
@@ -91,22 +90,14 @@ fun DualGaugeScreen(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.End
             ) {
-                Spacer(modifier = Modifier.width(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TickerSelector(
-                        selectedTicker   = uiState.selectedTicker,
-                        onTickerSelected = { viewModel.selectTicker(it) }
+                IconButton(onClick = { viewModel.refreshAll() }) {
+                    Icon(
+                        imageVector      = Icons.Filled.Refresh,
+                        contentDescription = "Refresh",
+                        tint             = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    IconButton(onClick = { viewModel.refreshAll() }) {
-                        Icon(
-                            imageVector      = Icons.Filled.Refresh,
-                            contentDescription = "Refresh",
-                            tint             = MaterialTheme.colorScheme.primary
-                        )
-                    }
                 }
             }
 

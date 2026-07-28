@@ -34,6 +34,10 @@ private fun LegendLine(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Canvas(modifier = Modifier.size(12.dp, 3.dp)) { drawRect(color) }
         Spacer(Modifier.width(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onBackground
+        )
     }
 }

@@ -46,7 +46,7 @@ fun ConfidenceTooltip(
             Text(
                 formatTooltipTimestamp(point.timestamp),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
             )
             Spacer(Modifier.height(6.dp))
             TooltipRow(NovaBuyGreen, "Buy (Long-term)$suffix",
@@ -72,7 +72,13 @@ private fun TooltipRow(color: Color, label: String, value: String) {
         androidx.compose.foundation.Canvas(Modifier.size(8.dp)) { drawCircle(color) }
         Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f))
-        Text(value, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+        Text(
+            value,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }

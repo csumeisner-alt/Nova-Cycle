@@ -53,16 +53,22 @@ fun ConfidenceHistoryScreen(
     ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-            Text("Confidence History", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Confidence History",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "EMA (Smooth Confidence)",
                     style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.padding(end = 2.dp)
                 )
                 TextButton(onClick = { showEmaInfo = true }, contentPadding = PaddingValues(0.dp),
                     modifier = Modifier.size(24.dp)) {
-                    Text("ⓘ", style = MaterialTheme.typography.labelSmall)
+                    Text("ⓘ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
                 Spacer(Modifier.width(2.dp))
                 Switch(
@@ -95,7 +101,13 @@ fun ConfidenceHistoryScreen(
             Modifier.padding(horizontal = 12.dp).horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }
+            windows.forEach { w ->
+                FilterChip(
+                    selected = uiState.selectedWindow == w,
+                    onClick = { viewModel.setWindow(w) },
+                    label = { Text(w, color = MaterialTheme.colorScheme.onSurface) }
+                )
+            }
         }
 
         if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -127,7 +139,7 @@ fun ConfidenceHistoryScreen(
                 )
             } else if (!uiState.isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No data available for selected period", color = NovaNeutralGray)
+                    Text("No data available for selected period", color = MaterialTheme.colorScheme.onBackground)
                 }
             }
         }
@@ -165,6 +177,6 @@ private fun SummaryLine(name: String, delta: Float, window: String, color: andro
     Text(
         "$arrow $name $verb$change over last $window",
         style = MaterialTheme.typography.labelSmall,
-        color = color.copy(alpha = 0.9f)
+        color = color.copy(alpha = 1f)
     )
 }
