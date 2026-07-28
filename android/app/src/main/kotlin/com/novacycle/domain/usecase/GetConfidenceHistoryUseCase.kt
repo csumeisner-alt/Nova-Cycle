@@ -25,16 +25,25 @@ class GetConfidenceHistoryUseCase @Inject constructor(
             val responses = rawResponses.sortedBy { it.timestamp }
             val points = responses.mapIndexed { index, r ->
                 val prev = if (index > 0) responses[index - 1] else null
+                // The API stores confidence as a normalized fraction [0, 1].
+                // The chart domain uses percentage points [0, 100], matching
+                // its axis, tooltip, zones, and trend summaries.
+                val longBuy = r.longBuyConfidence * 100f
+                val longSell = r.longSellConfidence * 100f
+                val shortBuy = r.shortBuyConfidence * 100f
+                val shortSell = r.shortSellConfidence * 100f
+                val previousLongBuy = prev?.longBuyConfidence?.times(100f)
+                val previousShortBuy = prev?.shortBuyConfidence?.times(100f)
                 ConfidencePoint(
                     timestamp = r.timestamp,
                     ticker = r.ticker,
-                    longBuyConfidence = r.longBuyConfidence,
-                    longSellConfidence = r.longSellConfidence,
-                    shortBuyConfidence = r.shortBuyConfidence,
-                    shortSellConfidence = r.shortSellConfidence,
+                    longBuyConfidence = longBuy,
+                    longSellConfidence = longSell,
+                    shortBuyConfidence = shortBuy,
+                    shortSellConfidence = shortSell,
                     isExtendedHours = r.isExtendedHours,
-                    longMomentum = r.longBuyConfidence - (prev?.longBuyConfidence ?: r.longBuyConfidence),
-                    shortMomentum = r.shortBuyConfidence - (prev?.shortBuyConfidence ?: r.shortBuyConfidence)
+                    longMomentum = longBuy - (previousLongBuy ?: longBuy),
+                    shortMomentum = shortBuy - (previousShortBuy ?: shortBuy)
                 )
             }
 
