@@ -507,37 +507,147 @@ function StatusDashboard() {
         </div>
 
         {/* CTA Section */}
-        <div className="w-full flex flex-col items-center space-y-6">
-          <a
-            href="https://github.com/csumeisner-alt/Nova-Cycle/releases/download/latest/app-release.apk"
-            className="group relative inline-flex items-center justify-center w-full sm:w-auto overflow-hidden rounded-xl bg-primary px-8 py-4 font-medium text-primary-foreground transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
-          >
-            <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
-              <div className="relative h-full w-8 bg-white/20" />
-            </div>
-            <div className="flex items-center space-x-3">
-              <Download className="w-5 h-5" />
-              <span className="text-lg font-bold tracking-wide">Download Android APK</span>
-            </div>
-          </a>
-          
-          <div className="text-center space-y-1">
-            <p className="text-sm text-muted-foreground">
-              v1.0.0 (Latest Release)
-            </p>
-            <a 
-              href="https://github.com/csumeisner-alt/Nova-Cycle/releases" 
-              target="_blank" 
-              rel="noreferrer"
-              className="text-xs text-primary/60 hover:text-primary transition-colors inline-flex items-center space-x-1"
-            >
-              <span>View full release history</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
-        </div>
+        <DownloadApkSection />
 
       </main>
+    </div>
+  );
+}
+
+type GitHubRelease = {
+  tag_name: string;
+  name: string | null;
+  published_at: string | null;
+  draft: boolean;
+  prerelease: boolean;
+  assets: { name: string; browser_download_url: string; size: number }[];
+};
+
+const RELEASES_API_URL = 'https://api.github.com/repos/csumeisner-alt/Nova-Cycle/releases?per_page=15';
+const RELEASES_PAGE_URL = 'https://github.com/csumeisner-alt/Nova-Cycle/releases';
+
+type ReleaseInfo = {
+  tag_name: string;
+  published_at: string | null;
+  apk_url: string;
+};
+
+// Fallback path: query GitHub directly from the browser (subject to
+// anonymous rate limits) when the backend proxy is unavailable.
+async function fetchReleaseFromGitHub(): Promise<ReleaseInfo | null> {
+  const res = await fetch(RELEASES_API_URL, {
+    headers: { Accept: 'application/vnd.github+json' },
+  });
+  if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
+  const releases: GitHubRelease[] = await res.json();
+  // Skip the rolling "latest" alias and drafts/prereleases; pick the
+  // newest *versioned* release so the link targets an immutable asset URL
+  // that browser/CDN redirect caching can never turn stale.
+  const versioned = releases
+    .filter((r) => r.tag_name !== 'latest' && !r.draft && !r.prerelease)
+    .filter((r) => r.assets.some((a) => a.name.toLowerCase().endsWith('.apk')))
+    .sort((a, b) => (b.published_at ?? '').localeCompare(a.published_at ?? ''));
+  const release = versioned[0];
+  if (!release) return null;
+  // Prefer the canonical CI asset name; fall back to any APK in the release.
+  const apk =
+    release.assets.find((a) => a.name === 'app-release.apk') ??
+    release.assets.find((a) => a.name.toLowerCase().endsWith('.apk'));
+  if (!apk) return null;
+  return {
+    tag_name: release.tag_name,
+    published_at: release.published_at,
+    apk_url: apk.browser_download_url,
+  };
+}
+
+function DownloadApkSection() {
+  const { data: release, isLoading, isError } = useQuery({
+    queryKey: ['latest-apk-release'],
+    queryFn: async (): Promise<ReleaseInfo | null> => {
+      // Primary path: backend proxy — it caches GitHub responses server-side
+      // and keeps serving the last known release when GitHub rate-limits.
+      try {
+        const res = await fetch('/api/latest_apk_release');
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.release?.apk_url) return data.release as ReleaseInfo;
+        }
+      } catch {
+        // fall through to direct GitHub fetch
+      }
+      return fetchReleaseFromGitHub();
+    },
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    retry: 1,
+  });
+
+  const apkAsset = release ? { browser_download_url: release.apk_url } : undefined;
+  const publishedAt = release?.published_at ? new Date(release.published_at) : null;
+
+  return (
+    <div className="w-full flex flex-col items-center space-y-6" data-testid="section-download-apk">
+      <a
+        href={apkAsset?.browser_download_url ?? RELEASES_PAGE_URL}
+        target={apkAsset ? undefined : '_blank'}
+        rel={apkAsset ? undefined : 'noreferrer'}
+        aria-disabled={!apkAsset}
+        data-testid="link-download-apk"
+        className="group relative inline-flex items-center justify-center w-full sm:w-auto overflow-hidden rounded-xl bg-primary px-8 py-4 font-medium text-primary-foreground transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+      >
+        <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
+          <div className="relative h-full w-8 bg-white/20" />
+        </div>
+        <div className="flex items-center space-x-3">
+          <Download className="w-5 h-5" />
+          <span className="text-lg font-bold tracking-wide">
+            {apkAsset ? 'Download Android APK' : 'Browse APK Releases'}
+          </span>
+        </div>
+      </a>
+
+      <div className="text-center space-y-1">
+        {isLoading && (
+          <p className="text-sm text-muted-foreground" data-testid="text-release-loading">
+            Checking for the newest build…
+          </p>
+        )}
+        {!isLoading && release && (
+          <p className="text-sm text-muted-foreground" data-testid="text-release-version">
+            <span className="font-mono text-primary/80">{release.tag_name}</span>
+            {publishedAt && (
+              <span>
+                {' '}· built{' '}
+                {publishedAt.toLocaleString('en-US', {
+                  month: 'short', day: 'numeric', year: 'numeric',
+                  hour: 'numeric', minute: '2-digit',
+                })}
+              </span>
+            )}
+          </p>
+        )}
+        {!isLoading && (isError || !release) && (
+          <p className="text-sm text-amber-400" data-testid="text-release-unavailable">
+            Couldn't fetch the latest release info from GitHub — use the release
+            history below to pick the newest build manually.
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground/70 max-w-md">
+          New builds publish automatically a few minutes after code is pushed to
+          GitHub (push → CI build &amp; tests → release). This page always links the
+          newest published build.
+        </p>
+        <a
+          href={RELEASES_PAGE_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs text-primary/60 hover:text-primary transition-colors inline-flex items-center space-x-1"
+        >
+          <span>View full release history</span>
+          <ExternalLink className="w-3 h-3" />
+        </a>
+      </div>
     </div>
   );
 }
