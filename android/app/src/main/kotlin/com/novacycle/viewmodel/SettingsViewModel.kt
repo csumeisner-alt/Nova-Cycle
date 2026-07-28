@@ -12,8 +12,11 @@ import com.novacycle.domain.model.*
 import com.novacycle.notifications.NovaCycleFirebaseService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /** State for an in-progress or completed connection test. */
@@ -40,6 +43,9 @@ class SettingsViewModel @Inject constructor(
     private val connectivityErrorMapper: ConnectivityErrorMapper,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+
+    /** IO dispatcher for the connection test; replaceable in unit tests. */
+    internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 
     // DataStore preference keys
     companion object {
@@ -151,23 +157,32 @@ class SettingsViewModel @Inject constructor(
         _connectionTestState.value = ConnectionTestState.Testing
         viewModelScope.launch {
             try {
-                // Build a one-shot OkHttp call to <url>/healthz (or <url>healthz)
-                val base = url.trim().trimEnd('/')
-                val healthUrl = "$base/healthz"
-                val client = okhttp3.OkHttpClient.Builder()
-                    .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-                    .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-                    .build()
-                val request = okhttp3.Request.Builder().url(healthUrl).get().build()
-                val response = client.newCall(request).execute()
-                if (response.isSuccessful) {
-                    _connectionTestState.value = ConnectionTestState.Success("Connected ✓ (HTTP ${response.code})")
-                } else {
-                    _connectionTestState.value = ConnectionTestState.Failure(
-                        "Server responded HTTP ${response.code} — the backend may be down or misconfigured"
-                    )
+                // Network I/O must run off the main thread: a synchronous
+                // OkHttp execute() on Dispatchers.Main throws
+                // NetworkOnMainThreadException before the request is sent,
+                // which previously made this test always fail.
+                _connectionTestState.value = withContext(ioDispatcher) {
+                    // Build a one-shot OkHttp call to <url>/healthz (or <url>healthz)
+                    val base = url.trim().trimEnd('/')
+                    val healthUrl = "$base/healthz"
+                    val client = okhttp3.OkHttpClient.Builder()
+                        .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                        .build()
+                    val request = okhttp3.Request.Builder().url(healthUrl).get().build()
+                    client.newCall(request).execute().use { response ->
+                        if (response.isSuccessful) {
+                            ConnectionTestState.Success("Connected ✓ (HTTP ${response.code})")
+                        } else {
+                            ConnectionTestState.Failure(
+                                "Server responded HTTP ${response.code} — the backend may be down or misconfigured"
+                            )
+                        }
+                    }
                 }
-                response.close()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Never convert coroutine cancellation into a user-facing failure.
+                throw e
             } catch (e: Exception) {
                 // Classify the failure (offline / DNS / unreachable / timeout / TLS)
                 // so the user never sees a raw "Could not reach server: null".

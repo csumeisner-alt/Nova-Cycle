@@ -97,10 +97,17 @@ class ConnectivityErrorMapper @Inject constructor(
                 is java.io.IOException -> ConnectivityErrorCode.NETWORK_UNREACHABLE
                 else -> ConnectivityErrorCode.UNKNOWN
             }
+            // For unclassified failures, include the exception class name so
+            // the surfaced message is diagnosable instead of just "unknown".
+            val detail = if (code == ConnectivityErrorCode.UNKNOWN) {
+                "${throwable.javaClass.simpleName}: ${throwable.message ?: "no message"}"
+            } else {
+                throwable.message
+            }
             return ConnectivityError(
                 code = code,
                 userMessage = code.userMessage,
-                detail = throwable.message
+                detail = detail
             )
         }
     }
