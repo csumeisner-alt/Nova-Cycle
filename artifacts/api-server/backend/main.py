@@ -291,6 +291,17 @@ app.include_router(notifications.router, prefix="/api", tags=["Notifications"])
 # ---------------------------------------------------------------------------
 # Connectivity check — used by the Android app to verify it can reach the API
 # ---------------------------------------------------------------------------
+@app.get("/api")
+async def api_root():
+    """Return a lightweight readiness response for the artifact proxy."""
+    return {
+        "service": "NovaCycle API",
+        "status": "running",
+        "health": "/api/healthz",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
 @app.get("/api/test")
 async def api_test():
     return {

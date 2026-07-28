@@ -22,3 +22,11 @@ The NovaCycle backend uses two things that break on the default `autoscale` depl
 - The seeded SQLite database (`artifacts/api-server/backend/novacycle.db`) is tracked in git so the production VM has historical data on first boot.
 - After publishing, read `getDeploymentInfo()` for the production URL — never guess from env vars or dev domains.
 - Update `android/app/build.gradle.kts` `buildConfigField("String", "API_BASE_URL", ...)` with the production URL and rebuild the APK.
+
+## Artifact proxy readiness probe
+
+The artifact deployment proxy may probe `/api` during startup even when the configured health path is `/api/healthz`. Keep `/api` as a cheap, dependency-free 200 response so startup probing cannot fail before the database and ingestion tasks finish.
+
+**Why:** A deployment can start the FastAPI process successfully but still report repeated health-check 500/404 failures when `/api` has no route; this makes the published service appear down during promotion.
+
+**How to apply:** Preserve the lightweight `/api` route alongside the detailed `/api/healthz` route. Do not make `/api` perform database queries or model loading.
