@@ -51,6 +51,8 @@ _last_indicators: dict = {}
 # are safe because the backend runs as a single-process Reserved VM.
 _last_long_buy_conf: float = 0.5
 _last_short_buy_conf: float = 0.5
+_last_long_sell_conf: float = 0.5
+_last_short_sell_conf: float = 0.5
 
 # ---------------------------------------------------------------------------
 # ML fallback tracking: counts how often each endpoint served the neutral 0.5
@@ -560,8 +562,9 @@ async def predict_long(
 
         # Update in-memory confidence cache so the divergence check has the
         # latest long-trend buy confidence available.
-        global _last_long_buy_conf
+        global _last_long_buy_conf, _last_long_sell_conf
         _last_long_buy_conf = float(long_buy_conf)
+        _last_long_sell_conf = float(long_sell_conf)
 
         # Apply VOO-only decision-layer filters after the gauge.
         confidence_history = await _load_recent_confidence(session, ticker, limit=5)
@@ -587,7 +590,11 @@ async def predict_long(
         # Persist confidence history
         await _store_confidence(session, ticker,
                                 long_buy=long_buy_conf, long_sell=long_sell_conf,
-                                short_buy=0.0, short_sell=0.0,
+                                # Prediction endpoints run independently. Keep
+                                # the latest value from the other gauge instead
+                                # of writing a misleading zero into every row.
+                                short_buy=_last_short_buy_conf,
+                                short_sell=_last_short_sell_conf,
                                 session_type=session_type, is_extended=is_extended)
 
         # Persist signal if actionable, then push notification in background
@@ -744,8 +751,9 @@ async def predict_short(
 
         # Update in-memory confidence cache so the divergence check has the
         # latest short-trend buy confidence available.
-        global _last_short_buy_conf
+        global _last_short_buy_conf, _last_short_sell_conf
         _last_short_buy_conf = float(short_buy_conf)
+        _last_short_sell_conf = float(short_sell_conf)
 
         # Apply VOO-only decision-layer filters after the macro override.
         confidence_history = await _load_recent_confidence(session, ticker, limit=5)
@@ -770,7 +778,12 @@ async def predict_short(
 
         # Persist confidence history
         await _store_confidence(session, ticker,
-                                long_buy=0.0, long_sell=0.0,
+                                # Preserve the latest long-gauge values; the
+                                # long and short endpoints are called
+                                # separately but history rows represent a
+                                # combined chart snapshot.
+                                long_buy=_last_long_buy_conf,
+                                long_sell=_last_long_sell_conf,
                                 short_buy=short_buy_conf, short_sell=short_sell_conf,
                                 session_type=session_type, is_extended=is_extended)
 
