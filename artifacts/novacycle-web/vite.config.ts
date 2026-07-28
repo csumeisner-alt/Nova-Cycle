@@ -33,6 +33,21 @@ export default defineConfig({
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),
+    {
+      name: 'apk-download-headers',
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          if (req.url?.split('?')[0] === '/novacycle-chart-upgrade-debug.apk') {
+            res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+            res.setHeader(
+              'Content-Disposition',
+              'attachment; filename="novacycle-chart-upgrade-debug.apk"',
+            );
+          }
+          next();
+        });
+      },
+    },
     ...(process.env.NODE_ENV !== 'production' &&
     process.env.REPL_ID !== undefined
       ? [
