@@ -1220,6 +1220,37 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     except Exception as exc:
         logger.error("healthz: 5-min recovery status lookup failed: %s", exc)
 
+    # ── Push notification readiness ────────────────────────────────────────
+    # Keep this operational summary secret-free: it reports configuration
+    # state and counts, never the FCM credential or device-token contents.
+    notification_readiness = {
+        "fcm_server_configured": bool(settings.FCM_SERVER_KEY),
+        "registered_devices": 0,
+        "ready": False,
+        "blockers": [],
+    }
+    try:
+        device_count = await session.scalar(
+            select(func.count(DeviceToken.id))
+        ) or 0
+        notification_readiness["registered_devices"] = int(device_count)
+        if not settings.FCM_SERVER_KEY:
+            notification_readiness["blockers"].append(
+                "FCM_SERVER_KEY is not configured"
+            )
+        if device_count == 0:
+            notification_readiness["blockers"].append(
+                "No Android device token is registered"
+            )
+        notification_readiness["ready"] = (
+            bool(settings.FCM_SERVER_KEY) and device_count > 0
+        )
+    except Exception as exc:
+        logger.error("healthz: notification readiness lookup failed: %s", exc)
+        notification_readiness["blockers"].append(
+            "Could not inspect notification registration state"
+        )
+
     alerts = []
     if spx_data and spx_data.get("stale"):
         alerts.append(f"spx_futures: {spx_data.get('detail')}")
@@ -1277,6 +1308,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "vix": vix_data,
         "voo_5min": fivemin_data,
         "voo_5min_recovery": fivemin_recovery,
+        "notifications": notification_readiness,
         "alerts": alerts,
         "fallback_stats_last_reset_at": fallback_last_reset_at,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."

@@ -35,6 +35,35 @@ from ingestion import market_calendar
 logger = logging.getLogger(__name__)
 
 
+def ohlc_validation_issue(
+    open_price: object,
+    high: object,
+    low: object,
+    close: object,
+) -> Optional[str]:
+    """Return a reason when an OHLC row cannot represent a real candle.
+
+    Vendor feeds can occasionally return partial or internally contradictory
+    rows.  Letting one through is worse than dropping it: the row can become a
+    feature in both models and produce a plausible-looking but wrong signal.
+    """
+    try:
+        values = [float(open_price), float(high), float(low), float(close)]
+    except (TypeError, ValueError):
+        return "non_numeric_ohlc"
+
+    if not all(pd.notna(value) for value in values):
+        return "non_finite_ohlc"
+    if not all(value > 0 for value in values):
+        return "non_positive_ohlc"
+    open_value, high_value, low_value, close_value = values
+    if high_value < max(open_value, close_value):
+        return "high_below_open_or_close"
+    if low_value > min(open_value, close_value):
+        return "low_above_open_or_close"
+    return None
+
+
 class DataFetcher:
     """Async-friendly data fetcher backed by yfinance."""
 
@@ -210,8 +239,10 @@ class DataFetcher:
             )
             daily_df = self._normalise_columns(daily_df)
             if not daily_df.empty:
-                # Drop the row equal to last_timestamp to avoid duplicate
-                daily_df = daily_df[daily_df.index > pd.Timestamp(last_timestamp)]
+                # Keep the row equal to last_timestamp.  Storage skips an
+                # unchanged valid row, but can replace an older malformed row
+                # when Yahoo returns the corrected candle on a later run.
+                daily_df = daily_df[daily_df.index >= pd.Timestamp(last_timestamp)]
             daily_df["is_extended_hours"] = False
             daily_df["session_type"] = "regular"
             result["daily"] = daily_df
@@ -223,7 +254,9 @@ class DataFetcher:
         try:
             fivemin_df = await self.fetch_5min_candles(period="5d")
             if not fivemin_df.empty:
-                fivemin_df = fivemin_df[fivemin_df.index > pd.Timestamp(last_timestamp)]
+                # As with daily candles, re-read the boundary bar so a
+                # previously malformed vendor row can be repaired.
+                fivemin_df = fivemin_df[fivemin_df.index >= pd.Timestamp(last_timestamp)]
             result["5min"] = fivemin_df
             logger.info("Incremental: %d new 5-min candles", len(fivemin_df))
         except Exception as exc:
@@ -578,6 +611,39 @@ class DataFetcher:
 
         # Drop rows with all-NaN OHLC
         df.dropna(subset=["open", "high", "low", "close"], inplace=True)
+
+        # ── OHLC consistency checks ───────────────────────────────────────────
+        # yfinance has returned contradictory daily rows in the past (for
+        # example, a high below the open).  Drop those rows before they reach
+        # the database or model.  The incremental path deliberately re-fetches
+        # the latest timestamp so a later corrected vendor response can repair
+        # an already-stored bad row.
+        if not df.empty:
+            try:
+                issues = df.apply(
+                    lambda row: ohlc_validation_issue(
+                        row["open"], row["high"], row["low"], row["close"]
+                    ),
+                    axis=1,
+                )
+                invalid = issues.notna()
+                if invalid.any():
+                    for ts, issue in issues[invalid].items():
+                        logger.warning(
+                            "ingest_ohlc_anomaly issue=%s ts=%s",
+                            issue,
+                            pd.Timestamp(ts).isoformat(),
+                        )
+                    df = df.loc[~invalid].copy()
+                    logger.warning(
+                        "ingest_ohlc_anomaly_summary dropped=%d remaining=%d",
+                        int(invalid.sum()),
+                        len(df),
+                    )
+            except Exception as exc:
+                # A validation implementation error must never turn a feed
+                # outage into an unhandled ingestion crash.
+                logger.error("ingest_ohlc_sanity_check_failed error=%s", exc)
 
         # ── Timestamp sanity checks ────────────────────────────────────────────
         # Flag and drop implausible timestamps (before 2000 or in the future)

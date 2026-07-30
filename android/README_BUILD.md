@@ -80,10 +80,10 @@ Copy the APK to your phone and open it. You may need to allow **Install unknown 
   1. Create a Firebase project at https://console.firebase.google.com
   2. Add an Android app with package name `com.novacycle`
   3. Download `google-services.json` and place it at `android/app/google-services.json`
-  4. Un-comment the three Firebase-related lines in `android/app/build.gradle.kts`
-  5. Un-comment the FCM `<service>` block in `android/app/src/main/AndroidManifest.xml`
-  6. Replace the stub at `android/app/src/main/kotlin/com/novacycle/notifications/NovaCycleFirebaseService.kt` with the full implementation (the original code is in the comments)
-  7. Set the Firebase service account JSON as the `FCM_SERVER_KEY` secret on the Replit backend
+   4. Un-comment `alias(libs.plugins.google.services)` in the plugins block in `android/app/build.gradle.kts`
+   5. Build and install a new APK; the app requests notification permission on Android 13+ and registers its FCM token with the backend on launch
+   6. Set the Firebase service account JSON as the `FCM_SERVER_KEY` secret on the Replit backend
+   7. Check `GET /api/healthz`: notifications are ready only when both FCM is configured and at least one device token is registered
 
 ---
 

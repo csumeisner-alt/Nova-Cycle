@@ -1,7 +1,10 @@
 package com.novacycle
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Build
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -95,6 +98,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        requestNotificationPermissionIfNeeded()
         // Register FCM token with the backend (no-op when Firebase is disabled)
         registerFcmTokenIfNeeded()
 
@@ -165,6 +169,18 @@ class MainActivity : ComponentActivity() {
     // Private
     // ──────────────────────────────────────────────────────────────────────────
 
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                NOTIFICATION_PERMISSION_REQUEST_CODE,
+            )
+        }
+    }
+
     private fun registerFcmTokenIfNeeded() {
         val prefs = getSharedPreferences(NovaCycleFirebaseService.PREFS_NAME, MODE_PRIVATE)
         val token = prefs.getString(NovaCycleFirebaseService.PREF_TOKEN, null)
@@ -215,6 +231,10 @@ class MainActivity : ComponentActivity() {
                 registrationInFlight.set(false)
             }
         }
+    }
+
+    companion object {
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
     }
 
     /**

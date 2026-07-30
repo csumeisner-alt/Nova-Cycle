@@ -151,10 +151,12 @@ dependencies {
     implementation(libs.moshi)
     implementation(libs.moshi.kotlin)
 
-    // Firebase — uncomment these two lines once google-services.json is in android/app/
-    // and re-enable alias(libs.plugins.google.services) in the plugins block above.
-    // implementation(platform(libs.firebase.bom))
-    // implementation(libs.firebase.messaging)
+    // Firebase Messaging. The SDK is safe to ship before project configuration:
+    // without google-services.json Firebase initialization is caught and the
+    // app continues without push. Add the file and enable the Google Services
+    // plugin before producing a notification-enabled release.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 
     // DataStore for settings persistence
     implementation(libs.datastore.preferences)

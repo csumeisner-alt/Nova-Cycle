@@ -33,7 +33,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Firebase Cloud Messaging service — re-enable once google-services.json is added
+        <!-- Firebase Cloud Messaging service. It remains idle until a Firebase
+             project is configured with google-services.json. -->
         <service
             android:name=".notifications.NovaCycleFirebaseService"
             android:exported="false">
@@ -41,7 +42,6 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-        -->
 
     </application>
 </manifest>

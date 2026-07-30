@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database.models import VooCandle, VixCandle, SpxCandle
 from ingestion import market_calendar
-from ingestion.fetcher import DataFetcher
+from ingestion.fetcher import DataFetcher, ohlc_validation_issue
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,7 @@ class IngestionPipeline:
           - If data exists → run incremental update only
         """
         logger.info("IngestionPipeline.initialize() called")
+        await self.remove_invalid_voo_candles(db_session)
 
         # Check whether we already have daily candles
         result = await db_session.execute(
@@ -121,6 +122,40 @@ class IngestionPipeline:
                 "Found %d daily candles in DB. Running incremental update…", count
             )
             await self.run_incremental_update(db_session)
+
+    async def remove_invalid_voo_candles(self, db_session: AsyncSession) -> int:
+        """Remove malformed VOO rows left by older ingestion versions.
+
+        New fetches are validated before storage, but a bad row may already
+        exist from a prior process lifetime.  Remove it before predictions
+        select their feature window; the next incremental fetch re-reads the
+        boundary date and stores it only if the vendor returns a valid candle.
+        """
+        result = await db_session.execute(
+            select(VooCandle).where(VooCandle.ticker == settings.TICKER)
+        )
+        invalid_rows = [
+            row for row in result.scalars().all()
+            if ohlc_validation_issue(row.open, row.high, row.low, row.close)
+        ]
+        if not invalid_rows:
+            return 0
+
+        for row in invalid_rows:
+            issue = ohlc_validation_issue(row.open, row.high, row.low, row.close)
+            logger.warning(
+                "ingest_invalid_existing_candle_removed timeframe=%s ts=%s issue=%s",
+                row.timeframe,
+                row.timestamp.isoformat(),
+                issue,
+            )
+            await db_session.delete(row)
+        await db_session.flush()
+        logger.warning(
+            "ingest_invalid_existing_candles_removed count=%d",
+            len(invalid_rows),
+        )
+        return len(invalid_rows)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Full historical fetch
@@ -411,6 +446,7 @@ class IngestionPipeline:
 
         ticker = settings.TICKER
         inserted = 0
+        repaired = 0
         skipped = 0
 
         # ── In-frame duplicate detection ──────────────────────────────────────
@@ -435,12 +471,14 @@ class IngestionPipeline:
 
         # Pre-load existing timestamps to avoid duplicate queries
         result = await db_session.execute(
-            select(VooCandle.timestamp).where(
+            select(VooCandle).where(
                 VooCandle.ticker == ticker,
                 VooCandle.timeframe == timeframe,
             )
         )
-        existing_timestamps = set(row[0] for row in result.fetchall())
+        existing_rows = result.scalars().all()
+        existing_by_timestamp = {row.timestamp: row for row in existing_rows}
+        existing_timestamps = set(existing_by_timestamp)
 
         # ── Missing-candle detection + targeted backfill (daily + 5min) ───────
         # Detect trading days with no candle in the covered window, then
@@ -495,8 +533,55 @@ class IngestionPipeline:
             if ts_naive.tzinfo is not None:
                 ts_naive = ts_naive.replace(tzinfo=None)
 
-            if ts_naive in existing_timestamps:
+            try:
+                open_price = float(row.get("open", 0.0))
+                high_price = float(row.get("high", 0.0))
+                low_price = float(row.get("low", 0.0))
+                close_price = float(row.get("close", 0.0))
+                volume = float(row.get("volume", 0.0))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "ingest_ohlc_anomaly issue=non_numeric_ohlc timeframe=%s ts=%s",
+                    timeframe, ts_naive.isoformat(),
+                )
                 skipped += 1
+                continue
+
+            issue = ohlc_validation_issue(
+                open_price, high_price, low_price, close_price
+            )
+            if issue is not None:
+                logger.warning(
+                    "ingest_ohlc_anomaly issue=%s timeframe=%s ts=%s",
+                    issue, timeframe, ts_naive.isoformat()
+                )
+                skipped += 1
+                continue
+
+            existing = existing_by_timestamp.get(ts_naive)
+            if existing is not None:
+                # Valid duplicate rows remain immutable.  A previously stored
+                # malformed row is the exception: replace it with the newly
+                # validated vendor row so the repair is retroactive.
+                old_issue = ohlc_validation_issue(
+                    existing.open, existing.high, existing.low, existing.close
+                )
+                if old_issue is None:
+                    skipped += 1
+                    continue
+
+                existing.open = open_price
+                existing.high = high_price
+                existing.low = low_price
+                existing.close = close_price
+                existing.volume = volume
+                existing.is_extended_hours = bool(row.get("is_extended_hours", False))
+                existing.session_type = str(row.get("session_type", "regular"))
+                repaired += 1
+                logger.warning(
+                    "ingest_ohlc_repaired timeframe=%s ts=%s old_issue=%s",
+                    timeframe, ts_naive.isoformat(), old_issue
+                )
                 continue
 
             # Session classification
@@ -539,11 +624,11 @@ class IngestionPipeline:
             candle = VooCandle(
                 ticker=ticker,
                 timestamp=ts_naive,
-                open=float(row.get("open", 0.0)),
-                high=float(row.get("high", 0.0)),
-                low=float(row.get("low", 0.0)),
-                close=float(row.get("close", 0.0)),
-                volume=float(row.get("volume", 0.0)),
+                open=open_price,
+                high=high_price,
+                low=low_price,
+                close=close_price,
+                volume=volume,
                 timeframe=timeframe,
                 is_extended_hours=is_extended,
                 session_type=session_type,
@@ -556,8 +641,8 @@ class IngestionPipeline:
 
         await db_session.flush()
         logger.info(
-            "VOO %s candles: inserted=%d, skipped=%d (duplicates)",
-            timeframe, inserted, skipped,
+            "VOO %s candles: inserted=%d, repaired=%d, skipped=%d",
+            timeframe, inserted, repaired, skipped,
         )
 
         # ── Targeted backfill of missing trading days ─────────────────────────
