@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import VooCandle, SpxCandle, VixCandle
@@ -106,12 +106,13 @@ async def remove_malformed_candles(session: AsyncSession) -> dict:
 
         found = len(bad_ids)
 
-        # Delete in a second pass so we never delete while iterating
-        for bad_id in bad_ids:
-            obj = await session.get(model_cls, bad_id)
-            if obj is not None:
-                await session.delete(obj)
-                removed += 1
+        # Single bulk DELETE — one atomic round-trip, no per-row fetching.
+        # Either every bad row is removed or none are (rolled back by caller).
+        if bad_ids:
+            result = await session.execute(
+                delete(model_cls).where(model_cls.id.in_(bad_ids))
+            )
+            removed = result.rowcount
 
         if found:
             tables_affected.append(table_name)

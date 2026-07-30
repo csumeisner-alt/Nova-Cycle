@@ -174,6 +174,48 @@ class TestRemoveMalformedCandles:
             assert d["rows_removed"] == 0
 
     @pytest.mark.asyncio
+    async def test_bulk_delete_is_atomic_rollback_leaves_no_rows_deleted(self, engine):
+        """Bulk DELETE is atomic: a rollback after remove_malformed_candles()
+        leaves every bad row intact — no partial deletion is possible.
+
+        This verifies the single-statement DELETE WHERE id IN (...) approach:
+        because the whole operation is one SQL statement inside the session's
+        transaction, rolling back the transaction restores *all* rows, not just
+        some of them.
+        """
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        ts1 = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        ts2 = datetime(2026, 5, 2, tzinfo=timezone.utc)
+        ts3 = datetime(2026, 5, 3, tzinfo=timezone.utc)
+
+        # Seed three bad rows across two tables.
+        async with factory() as s:
+            s.add(_bad_voo(ts1))
+            s.add(_bad_voo(ts2))
+            s.add(_bad_vix(ts3))
+            await s.commit()
+
+        # Run cleanup but roll back instead of committing.
+        async with factory() as s:
+            summary = await remove_malformed_candles(s)
+            assert summary["rows_found"] == 3
+            assert summary["rows_removed"] == 3
+            await s.rollback()  # ← simulate crash / caller never commits
+
+        # After rollback, ALL bad rows must still be present.
+        async with factory() as s:
+            voo_rows = (await s.execute(select(VooCandle))).scalars().all()
+            vix_rows = (await s.execute(select(VixCandle))).scalars().all()
+
+        assert len(voo_rows) == 2, (
+            f"Expected 2 bad VOO rows to survive rollback, got {len(voo_rows)}"
+        )
+        assert len(vix_rows) == 1, (
+            f"Expected 1 bad VIX row to survive rollback, got {len(vix_rows)}"
+        )
+
+    @pytest.mark.asyncio
     async def test_concurrent_cleanup_and_upsert_no_valid_row_deleted(self, engine):
         """Concurrent cleanup + ingest upsert must never delete a valid row.
 
