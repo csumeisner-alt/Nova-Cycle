@@ -19,6 +19,8 @@ function TrendArrow({ trend }: { trend: PredictionDisplay['trend'] }) {
 }
 
 export function PredictionCard({ name, label }: { name: string; label: string }) {
+  const [showReason, setShowReason] = useState(false);
+
   const { data, isLoading, isError } = useQuery<PredictionDisplay>({
     queryKey: ['predict', name],
     queryFn: async () => {
@@ -78,7 +80,6 @@ export function PredictionCard({ name, label }: { name: string; label: string })
   const zone = confidenceZone(pct);
   const degraded = data?.data_quality_degraded === true;
   const degradedReason = data?.data_quality_reason ?? '';
-  const [showReason, setShowReason] = useState(false);
 
   return (
     <div className="p-4 bg-black/30 rounded-lg border border-white/5 space-y-3" data-testid={`prediction-card-${name}`}>
