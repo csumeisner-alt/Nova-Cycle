@@ -80,11 +80,28 @@ def _good_vix(ts: datetime) -> VixCandle:
 
 
 def _bad_vix(ts: datetime) -> VixCandle:
-    """low > close."""
+    """low > close — classic yfinance glitch."""
     return VixCandle(
         ticker="^VIX", timestamp=ts,
-        open=20.0, high=22.0, low=25.0, close=21.0,
+        open=30.0, high=32.0, low=35.0, close=31.0,
         volume=0.0, timeframe="daily",
+    )
+
+
+def _good_spx(ts: datetime) -> SpxCandle:
+    return SpxCandle(
+        ticker="ES=F", timestamp=ts,
+        open=5000.0, high=5050.0, low=4950.0, close=5020.0,
+        volume=1_000_000.0, timeframe="daily",
+    )
+
+
+def _bad_spx(ts: datetime) -> SpxCandle:
+    """high < open — classic yfinance glitch."""
+    return SpxCandle(
+        ticker="ES=F", timestamp=ts,
+        open=5200.0, high=5180.0, low=5100.0, close=5190.0,
+        volume=500_000.0, timeframe="daily",
     )
 
 
@@ -284,6 +301,81 @@ class TestRemoveMalformedCandles:
         # but if it is present it must also be valid (asserted above).
         assert len(remaining) >= 2, (
             f"Expected ≥2 valid rows after concurrent cleanup, got {len(remaining)}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model_cls,good_fn,bad_fn,good_open,bad_open,table_name", [
+        (VixCandle, _good_vix, _bad_vix, 20.0, 30.0, "vix_candles"),
+        (SpxCandle, _good_spx, _bad_spx, 5000.0, 5200.0, "spx_candles"),
+    ])
+    async def test_concurrent_cleanup_and_upsert_no_valid_row_deleted_vix_spx(
+        self, engine, model_cls, good_fn, bad_fn, good_open, bad_open, table_name,
+    ):
+        """Concurrent cleanup + ingest upsert must never delete a valid VIX or SPX row.
+
+        Mirrors the VooCandle race test but parameterised over VixCandle and SpxCandle,
+        ensuring the same two-pass (scan → collect bad IDs → delete by ID) logic is
+        safe for those tables too.
+        """
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        ts_bad   = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        ts_good1 = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        ts_good2 = datetime(2026, 6, 3, tzinfo=timezone.utc)
+        ts_new   = datetime(2026, 6, 4, tzinfo=timezone.utc)
+
+        async with factory() as s:
+            s.add(bad_fn(ts_bad))
+            s.add(good_fn(ts_good1))
+            s.add(good_fn(ts_good2))
+            await s.commit()
+
+        async def run_cleanup() -> dict:
+            async with factory() as s:
+                summary = await remove_malformed_candles(s)
+                await s.commit()
+                return summary
+
+        async def run_upsert() -> None:
+            async with factory() as s:
+                s.add(good_fn(ts_new))
+                await s.commit()
+
+        results = await asyncio.gather(run_cleanup(), run_upsert(), return_exceptions=True)
+
+        for r in results:
+            assert not isinstance(r, Exception), f"Concurrent task raised: {r}"
+
+        summary = results[0]
+
+        # Cleanup must have found and removed exactly the one malformed row.
+        assert summary["rows_found"] >= 1
+        assert summary["rows_removed"] >= 1
+        assert table_name in summary["tables_affected"]
+
+        # Verify the DB directly: no malformed rows should remain.
+        async with factory() as s:
+            result = await s.execute(select(model_cls))
+            remaining = result.scalars().all()
+
+        opens = {r.open for r in remaining}
+
+        # The malformed row must be gone.
+        assert bad_open not in opens, (
+            f"Malformed row (open={bad_open}) was not deleted from {table_name}"
+        )
+
+        # Every surviving row must be a valid candle.
+        for r in remaining:
+            assert r.open == pytest.approx(good_open), (
+                f"Valid row unexpectedly mutated or malformed row survived in "
+                f"{table_name}: open={r.open}"
+            )
+
+        # At minimum the two pre-seeded good rows must survive.
+        assert len(remaining) >= 2, (
+            f"Expected ≥2 valid rows in {table_name} after concurrent cleanup, "
+            f"got {len(remaining)}"
         )
 
 
