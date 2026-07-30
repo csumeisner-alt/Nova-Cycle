@@ -612,34 +612,34 @@ class DataFetcher:
         # Drop rows with all-NaN OHLC
         df.dropna(subset=["open", "high", "low", "close"], inplace=True)
 
-        # ── OHLC consistency checks ───────────────────────────────────────────
+        # ── OHLC consistency + cross-bar spike checks ─────────────────────────
         # yfinance has returned contradictory daily rows in the past (for
         # example, a high below the open).  Drop those rows before they reach
         # the database or model.  The incremental path deliberately re-fetches
         # the latest timestamp so a later corrected vendor response can repair
         # an already-stored bad row.
+        #
+        # A second cross-bar pass flags bars whose close deviates more than
+        # SPIKE_CLOSE_THRESHOLD (default 10 %) from the rolling median of
+        # their neighbours — these are internally self-consistent but are
+        # probable data glitches that would skew RSI / Bollinger features.
         if not df.empty:
             try:
-                issues = df.apply(
-                    lambda row: ohlc_validation_issue(
-                        row["open"], row["high"], row["low"], row["close"]
-                    ),
-                    axis=1,
-                )
-                invalid = issues.notna()
-                if invalid.any():
-                    for ts, issue in issues[invalid].items():
+                from ingestion.ohlc_validator import filter_valid_ohlc
+                df_valid, df_quarantined = filter_valid_ohlc(df)
+                if not df_quarantined.empty:
+                    for ts, row in df_quarantined.iterrows():
                         logger.warning(
                             "ingest_ohlc_anomaly issue=%s ts=%s",
-                            issue,
+                            row.get("ohlc_invalid_reason", "unknown"),
                             pd.Timestamp(ts).isoformat(),
                         )
-                    df = df.loc[~invalid].copy()
                     logger.warning(
                         "ingest_ohlc_anomaly_summary dropped=%d remaining=%d",
-                        int(invalid.sum()),
-                        len(df),
+                        len(df_quarantined),
+                        len(df_valid),
                     )
+                    df = df_valid
             except Exception as exc:
                 # A validation implementation error must never turn a feed
                 # outage into an unhandled ingestion crash.

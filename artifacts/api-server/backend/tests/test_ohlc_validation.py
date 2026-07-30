@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from database.models import Base, VooCandle
 from ingestion.fetcher import DataFetcher, ohlc_validation_issue
 from ingestion.pipeline import IngestionPipeline
-from ingestion.ohlc_validator import filter_valid_ohlc, validate_ohlc_row
+from ingestion.ohlc_validator import filter_valid_ohlc, flag_cross_bar_spikes, validate_ohlc_row
 
 
 @pytest_asyncio.fixture
@@ -483,11 +483,17 @@ class TestIntradaySpikeBar:
     def _make_5min_frame(self, rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(rows)
 
-    def test_internally_valid_spike_is_not_quarantined(self):
+    def test_internally_valid_spike_is_now_quarantined_by_cross_bar_check(self):
         """A bar that closes +15 % above neighbours but is internally valid
-        (high >= close) passes through without degraded=True."""
+        (high >= close) is NOW caught by the cross-bar spike check and
+        quarantined with degraded=True.
+
+        Before Task-177 this bar passed through undetected because the validator
+        only checked intra-bar consistency.  The cross-bar rolling-median check
+        flags it as a probable data glitch.
+        """
         base_close = 500.0
-        spike_close = base_close * 1.15  # +15 % — plausible data glitch
+        spike_close = base_close * 1.15  # +15 % — exceeds SPIKE_CLOSE_THRESHOLD (10 %)
 
         rows = [
             {
@@ -495,7 +501,8 @@ class TestIntradaySpikeBar:
                 "open": 499.0, "high": 504.0, "low": 497.0, "close": base_close,
             },
             {
-                # Spike bar: high keeps pace with close → internally valid
+                # Spike bar: high keeps pace with close → internally valid but
+                # 15 % above rolling median → cross-bar spike
                 "timestamp": datetime(2024, 7, 30, 9, 35),
                 "open": 500.0, "high": spike_close + 1.0, "low": 499.0, "close": spike_close,
             },
@@ -506,9 +513,11 @@ class TestIntradaySpikeBar:
         ]
         df = self._make_5min_frame(rows)
         clean, degraded, reason = self._drop(df)
-        # Internally valid spike: not quarantined
-        assert not degraded
-        assert len(clean) == 3
+        # Cross-bar spike is now quarantined
+        assert degraded is True
+        assert "cross_bar_spike" in reason
+        # Two valid neighbours survive
+        assert len(clean) == 2
 
     def test_internally_invalid_spike_is_quarantined(self):
         """A bar that spikes +15 % in close but high does not keep pace is
@@ -643,3 +652,202 @@ class TestPredictShort20PctQuarantined:
         clean, degraded, reason = self._drop(df)
         assert clean.empty
         assert degraded is True
+
+
+# ---------------------------------------------------------------------------
+# Task-177: Cross-bar spike detection
+# ---------------------------------------------------------------------------
+
+class TestFlagCrossBarSpikes:
+    """Unit tests for flag_cross_bar_spikes() — the rolling-median deviation check."""
+
+    def _make_close_df(self, closes: list[float]) -> pd.DataFrame:
+        """Build a minimal DataFrame with a ``close`` column."""
+        base = datetime(2024, 7, 30, 9, 30)
+        timestamps = [base + timedelta(minutes=i * 5) for i in range(len(closes))]
+        return pd.DataFrame({"close": closes}, index=pd.DatetimeIndex(timestamps))
+
+    def test_flat_series_no_spikes(self):
+        """A perfectly flat close series should never trigger a spike."""
+        df = self._make_close_df([500.0] * 10)
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        assert not result.any()
+
+    def test_normal_intraday_move_not_flagged(self):
+        """Typical 0.3 % intraday moves are well below the 10 % threshold."""
+        closes = [500.0, 500.3, 500.6, 500.9, 501.2, 501.5, 501.2, 500.9]
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        assert not result.any()
+
+    def test_one_pct_intraday_move_not_flagged(self):
+        """Even a sharp 1 % single-bar move (within normal VOO intraday range)
+        must not trip the 10 % threshold."""
+        closes = [500.0, 500.0, 505.0, 500.0, 500.0, 500.0, 500.0]  # +1 % spike
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        # 505 vs median ≈ 500 → deviation ~1 % < 10 %
+        assert not result.any()
+
+    def test_fifteen_pct_spike_is_flagged(self):
+        """A bar 15 % above its neighbours is flagged."""
+        closes = [500.0, 500.0, 575.0, 500.0, 500.0]
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        # Only the spike bar (index 2) should be flagged
+        assert result.iloc[2] is True or result.iloc[2]
+        assert result.iloc[0] is False or not result.iloc[0]
+        assert result.iloc[4] is False or not result.iloc[4]
+
+    def test_exactly_at_threshold_not_flagged(self):
+        """A deviation exactly equal to the threshold is NOT flagged (strict >)."""
+        # median([500, 500, 550, 500, 500]) = 500; deviation = 50/500 = 0.10
+        closes = [500.0, 500.0, 550.0, 500.0, 500.0]
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        assert not result.iloc[2]
+
+    def test_just_over_threshold_is_flagged(self):
+        """A deviation of 10.01 % is flagged."""
+        # median([500, 500, 550.05, 500, 500]) = 500; deviation ≈ 10.01 %
+        closes = [500.0, 500.0, 550.05, 500.0, 500.0]
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        assert result.iloc[2]
+
+    def test_edge_bars_not_flagged_due_to_insufficient_context(self):
+        """Edge bars with fewer than 3 valid neighbours in the window are not flagged
+        even if their value differs wildly from adjacent bars."""
+        # Only 3 bars: the window=5 centered median at edge has fewer than 3
+        # neighbours for a bar that sits at position 0 or 2 with a window of 5.
+        # With min_periods=3 and 3 total bars, the middle bar has context but
+        # edge bars at positions 0 and 2 with window=5 only have 2-3 bars visible.
+        closes = [500.0, 500.0, 500.0]
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        # No spikes in a flat series regardless of edge context
+        assert not result.any()
+
+    def test_empty_df_returns_empty_series(self):
+        df = pd.DataFrame()
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        assert result.empty
+
+    def test_missing_close_column_returns_false_series(self):
+        df = pd.DataFrame({"open": [500.0, 501.0, 502.0]})
+        result = flag_cross_bar_spikes(df, threshold=0.10)
+        assert not result.any()
+
+    def test_zero_threshold_returns_no_flags(self):
+        """When threshold is 0, the check is a no-op (never flag)."""
+        closes = [500.0, 500.0, 800.0, 500.0, 500.0]  # +60 % spike
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=0)
+        assert not result.any()
+
+    def test_negative_threshold_returns_no_flags(self):
+        closes = [500.0, 600.0, 500.0]
+        df = self._make_close_df(closes)
+        result = flag_cross_bar_spikes(df, threshold=-0.05)
+        assert not result.any()
+
+
+class TestFilterValidOhlcCrossBar:
+    """Verify that filter_valid_ohlc catches cross-bar spikes on top of intra-bar checks."""
+
+    def _frame(self, rows: list[dict]) -> pd.DataFrame:
+        base = datetime(2024, 7, 30, 9, 30)
+        df = pd.DataFrame(rows)
+        df.index = pd.DatetimeIndex(
+            [base + timedelta(minutes=i * 5) for i in range(len(rows))]
+        )
+        return df
+
+    def test_internally_valid_spike_quarantined_by_cross_bar(self):
+        """An internally-valid bar whose close is +15 % above neighbours is
+        quarantined with reason 'cross_bar_spike'."""
+        rows = [
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            # Spike: internally valid (high > close) but +15 % above neighbours
+            {"open": 500.0, "high": 580.0, "low": 499.0, "close": 575.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+        ]
+        df = self._frame(rows)
+        valid, quarantined = filter_valid_ohlc(df)
+        assert len(quarantined) == 1
+        assert "cross_bar_spike" in quarantined.iloc[0]["ohlc_invalid_reason"]
+        assert len(valid) == 4
+
+    def test_normal_volatility_passes_through(self):
+        """A 1 % intraday move does not trip the cross-bar check."""
+        rows = [
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 500.0, "high": 506.0, "low": 499.0, "close": 505.0},  # +1 %
+            {"open": 504.0, "high": 509.0, "low": 502.0, "close": 507.0},
+            {"open": 506.0, "high": 511.0, "low": 504.0, "close": 509.0},
+            {"open": 508.0, "high": 513.0, "low": 506.0, "close": 511.0},
+        ]
+        df = self._frame(rows)
+        valid, quarantined = filter_valid_ohlc(df)
+        assert quarantined.empty
+        assert len(valid) == 5
+
+    def test_spike_threshold_zero_disables_cross_bar_check(self):
+        """Passing spike_threshold=0 disables cross-bar detection; an internally
+        valid spike bar passes through without being quarantined."""
+        rows = [
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 500.0, "high": 580.0, "low": 499.0, "close": 575.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+        ]
+        df = self._frame(rows)
+        valid, quarantined = filter_valid_ohlc(df, spike_threshold=0)
+        # Spike bar is internally valid; with check disabled it is not quarantined
+        assert quarantined.empty
+        assert len(valid) == 5
+
+    def test_intrabar_violation_still_caught_regardless_of_spike_check(self):
+        """An intra-bar violation (high < open) is quarantined even when the
+        cross-bar spike check would not have flagged it."""
+        rows = [
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            # high < open: internally invalid
+            {"open": 680.12, "high": 676.71, "low": 675.58, "close": 676.01},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+        ]
+        df = self._frame(rows)
+        valid, quarantined = filter_valid_ohlc(df)
+        assert len(quarantined) == 1
+        assert "high_below_open" in quarantined.iloc[0]["ohlc_invalid_reason"]
+
+    def test_quarantined_row_has_ohlc_invalid_reason_column(self):
+        """Quarantined cross-bar spike rows always carry the ohlc_invalid_reason column."""
+        rows = [
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 500.0, "high": 580.0, "low": 499.0, "close": 575.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+        ]
+        df = self._frame(rows)
+        _, quarantined = filter_valid_ohlc(df)
+        assert "ohlc_invalid_reason" in quarantined.columns
+        assert quarantined.iloc[0]["ohlc_invalid_reason"] != ""
+
+    def test_close_value_appears_in_cross_bar_reason(self):
+        """The quarantine reason string includes the actual close value for auditability."""
+        rows = [
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 500.0, "high": 580.0, "low": 499.0, "close": 575.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+            {"open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0},
+        ]
+        df = self._frame(rows)
+        _, quarantined = filter_valid_ohlc(df)
+        reason = quarantined.iloc[0]["ohlc_invalid_reason"]
+        assert "575." in reason  # close value present

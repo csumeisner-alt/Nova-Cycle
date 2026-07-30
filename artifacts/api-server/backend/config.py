@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     # ── Firebase Cloud Messaging ───────────────────────────────────────────────
     FCM_SERVER_KEY: str = ""
 
+    # ── Cross-bar spike detection ─────────────────────────────────────────────
+    # A candle whose close deviates more than this fraction from the rolling
+    # median of its neighbours is flagged as a cross-bar spike and quarantined.
+    # Checked against a centered window of 5 bars (min 3 valid neighbours).
+    # Normal intraday VOO 5-min moves stay well below this threshold; a 10 %
+    # jump in a single bar is characteristic of a vendor data glitch.
+    SPIKE_CLOSE_THRESHOLD: float = 0.10  # 10 % deviation from rolling median
+
     # ── Data history ──────────────────────────────────────────────────────────
     HISTORY_YEARS: int = 10
 
