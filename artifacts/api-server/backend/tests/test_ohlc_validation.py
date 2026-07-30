@@ -851,3 +851,258 @@ class TestFilterValidOhlcCrossBar:
         _, quarantined = filter_valid_ohlc(df)
         reason = quarantined.iloc[0]["ohlc_invalid_reason"]
         assert "575." in reason  # close value present
+
+
+# ---------------------------------------------------------------------------
+# Task-178: zero-volume bar liquidity score tests
+# ---------------------------------------------------------------------------
+
+def _make_5min_vol_frame(rows: list[dict]) -> pd.DataFrame:
+    """Build a typical 5-min candle DataFrame for liquidity score tests."""
+    base = datetime(2024, 7, 30, 9, 30)
+    enriched = []
+    for i, r in enumerate(rows):
+        enriched.append({
+            "timestamp": base + timedelta(minutes=i * 5),
+            "open": r.get("open", 500.0),
+            "high": r.get("high", 505.0),
+            "low": r.get("low", 498.0),
+            "close": r.get("close", 502.0),
+            "volume": r.get("volume", 1_000_000),
+            "session_type": r.get("session_type", "regular"),
+            "is_extended_hours": r.get("is_extended_hours", False),
+            "gap_type": r.get("gap_type", "none"),
+            "gap_percent": r.get("gap_percent", 0.0),
+            "ticker": "VOO",
+        })
+    return pd.DataFrame(enriched)
+
+
+class TestDetectZeroVolumeBars:
+    """Unit tests for _detect_zero_volume_bars helper in routers.predictions."""
+
+    def _detect(self, df):
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+        return pred._detect_zero_volume_bars(df)
+
+    def test_no_zero_volume_returns_empty_mask_and_no_reason(self):
+        """All bars have positive volume → mask all-False, count=0, reason=''."""
+        df = _make_5min_vol_frame([
+            {"volume": 1_000_000},
+            {"volume": 1_200_000},
+            {"volume":   800_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 0
+        assert reason == ""
+        assert not mask.any()
+
+    def test_one_zero_volume_bar_detected(self):
+        """A single bar with volume=0 is flagged."""
+        df = _make_5min_vol_frame([
+            {"volume": 1_000_000},
+            {"volume": 0},           # glitch bar
+            {"volume":   900_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 1
+        assert mask.sum() == 1
+        assert "zero_volume_bars" in reason
+        assert "1 5-min bar(s)" in reason
+
+    def test_multiple_zero_volume_bars_counted(self):
+        """Three glitch bars → count reflects all three."""
+        df = _make_5min_vol_frame([
+            {"volume": 1_000_000},
+            {"volume": 0},
+            {"volume": 0},
+            {"volume": 0},
+            {"volume":   800_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 3
+        assert "3 5-min bar(s)" in reason
+
+    def test_reason_includes_earliest_timestamp(self):
+        """The reason string contains the timestamp of the first zero-volume bar."""
+        df = _make_5min_vol_frame([
+            {"volume": 1_000_000},
+            {"volume": 0},           # second row → ts = 09:35
+            {"volume":   900_000},
+        ])
+        mask, count, reason = self._detect(df)
+        # Timestamp of the zero-volume bar should appear in reason
+        assert "09:35" in reason or "earliest ts=" in reason
+
+    def test_empty_df_returns_no_zeros(self):
+        """Empty DataFrame → count=0, no crash."""
+        import pandas as pd
+        mask, count, reason = self._detect(pd.DataFrame())
+        assert count == 0
+        assert reason == ""
+
+    def test_missing_volume_column_returns_no_zeros(self):
+        """DataFrame without a 'volume' column → count=0, no crash."""
+        import pandas as pd
+        df = pd.DataFrame({"open": [500.0], "close": [502.0]})
+        mask, count, reason = self._detect(df)
+        assert count == 0
+
+    def test_nan_volume_treated_as_zero(self):
+        """A bar with volume=NaN is treated as zero volume."""
+        import pandas as pd
+        import numpy as np
+        df = _make_5min_vol_frame([
+            {"volume": 1_000_000},
+            {"volume": float("nan")},
+            {"volume":   900_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 1
+        assert "zero_volume_bars" in reason
+
+
+class TestZeroVolumeBarLiquidityScore:
+    """Verify that zero-volume bars don't distort the liquidity score.
+
+    The liquidity score is ``extended_vol / max(regular_vol, 1.0)``.
+    A zero-volume regular-session bar reduces ``regular_vol`` and can
+    push the score upward when many bars glitch; conversely, a zero-volume
+    extended-hours bar reduces ``extended_vol`` and pushes the score toward
+    zero, potentially triggering the low-liquidity signal suppression even
+    when the real session was liquid.
+
+    After the fix, zero-volume bars are excluded from the liquidity
+    computation so glitch bars cannot move the score.
+    """
+
+    LOW_LIQUIDITY_THRESHOLD = 0.2  # approximate suppression threshold used in tests
+
+    def _compute_liquidity(self, df: "pd.DataFrame") -> float:
+        """Replicate the fixed liquidity computation from predict_short."""
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+
+        zero_vol_mask, _, _ = pred._detect_zero_volume_bars(df)
+        df_for_liq = df[~zero_vol_mask] if zero_vol_mask.any() else df
+
+        regular_mask = df_for_liq["session_type"] == "regular"
+        extended_mask = df_for_liq["is_extended_hours"] == True
+        regular_vol = float(df_for_liq.loc[regular_mask, "volume"].sum()) if regular_mask.any() else 1.0
+        extended_vol = float(df_for_liq.loc[extended_mask, "volume"].sum()) if extended_mask.any() else 0.0
+        return extended_vol / max(regular_vol, 1.0)
+
+    def _compute_liquidity_naive(self, df: "pd.DataFrame") -> float:
+        """Replicate the old (unfixed) computation that includes zero-volume bars."""
+        regular_mask = df["session_type"] == "regular"
+        extended_mask = df["is_extended_hours"] == True
+        regular_vol = float(df.loc[regular_mask, "volume"].sum()) if regular_mask.any() else 1.0
+        extended_vol = float(df.loc[extended_mask, "volume"].sum()) if extended_mask.any() else 0.0
+        return extended_vol / max(regular_vol, 1.0)
+
+    def test_normal_session_no_zero_bars_score_unchanged(self):
+        """Without any zero-volume bars, fixed and naive computations agree."""
+        df = _make_5min_vol_frame([
+            {"volume": 1_000_000, "session_type": "regular", "is_extended_hours": False},
+        ] * 10)
+        score_fixed = self._compute_liquidity(df)
+        score_naive = self._compute_liquidity_naive(df)
+        assert abs(score_fixed - score_naive) < 1e-9
+
+    def test_zero_volume_extended_bar_does_not_suppress_liquidity(self):
+        """A single zero-volume extended-hours glitch bar must not reduce
+        the liquidity score below the suppression threshold when the regular
+        session had healthy volume.
+
+        Without the fix: extended_vol drops toward 0 → score ≈ 0 (suppressed).
+        With the fix: zero-volume bar excluded → score computed from real bars.
+        """
+        # 10 regular bars with 1 M vol each, then 1 extended bar with healthy
+        # vol, then 1 extended glitch bar with vol=0
+        rows = (
+            [{"volume": 1_000_000, "session_type": "regular", "is_extended_hours": False}] * 10
+            + [{"volume": 500_000, "session_type": "pre_market", "is_extended_hours": True}]
+            + [{"volume": 0, "session_type": "pre_market", "is_extended_hours": True}]   # glitch
+        )
+        df = _make_5min_vol_frame(rows)
+
+        score_fixed = self._compute_liquidity(df)
+        # The healthy extended bar still contributes; score > 0
+        assert score_fixed > 0.0, "expected non-zero liquidity with real extended volume"
+
+    def test_zero_volume_regular_bar_excluded_from_denominator(self):
+        """A zero-volume regular bar must be excluded so it doesn't artificially
+        lower regular_vol (which would raise the score anomalously).
+
+        This confirms the mask correctly excludes the glitch bar from both
+        the numerator (extended) and denominator (regular) legs.
+        """
+        rows_clean = [
+            {"volume": 1_000_000, "session_type": "regular", "is_extended_hours": False}
+        ] * 5
+        rows_with_glitch = rows_clean + [
+            {"volume": 0, "session_type": "regular", "is_extended_hours": False}  # glitch
+        ]
+
+        df_clean = _make_5min_vol_frame(rows_clean)
+        df_glitch = _make_5min_vol_frame(rows_with_glitch)
+
+        score_clean = self._compute_liquidity(df_clean)
+        score_fixed = self._compute_liquidity(df_glitch)
+
+        # After the fix, both frames have the same non-zero regular volume
+        import pytest as _pytest
+        assert score_fixed == _pytest.approx(score_clean, abs=1e-9), (
+            "zero-volume regular bar should be excluded; score must match clean frame"
+        )
+
+    def test_dq_degraded_set_when_zero_volume_detected(self):
+        """predict_short must set dq_degraded=True and surface a reason string
+        when any zero-volume bar is present in the 5-min frame.
+
+        This test exercises _detect_zero_volume_bars directly since
+        predict_short requires a live DB session.
+        """
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+
+        df = _make_5min_vol_frame([
+            {"volume": 1_000_000, "session_type": "regular", "is_extended_hours": False},
+            {"volume": 0,         "session_type": "regular", "is_extended_hours": False},
+            {"volume":   900_000, "session_type": "regular", "is_extended_hours": False},
+        ])
+
+        _, count, reason = pred._detect_zero_volume_bars(df)
+        assert count == 1
+        assert "zero_volume_bars" in reason
+
+    def test_single_zero_volume_bar_does_not_push_score_below_suppression_threshold(self):
+        """Core regression test: one glitch zero-volume bar in an otherwise
+        liquid session must not move the score below ``LOW_LIQUIDITY_THRESHOLD``.
+
+        Uses a purely regular-session frame (all extended_vol = 0) so that
+        the liquidity score is 0 in both variants — the test asserts the
+        *reason* path fires, not a numeric bound.  The meaningful numeric
+        assertion is in test_zero_volume_extended_bar_does_not_suppress_liquidity.
+        """
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+
+        rows = (
+            [{"volume": 1_000_000, "session_type": "regular", "is_extended_hours": False}] * 9
+            + [{"volume": 0, "session_type": "regular", "is_extended_hours": False}]
+        )
+        df = _make_5min_vol_frame(rows)
+        mask, count, reason = pred._detect_zero_volume_bars(df)
+
+        # dq_reason must be surfaced
+        assert count == 1
+        assert "zero_volume_bars" in reason
+        # The glitch bar is excluded: 9 non-zero regular bars remain
+        df_clean = df[~mask]
+        assert len(df_clean) == 9

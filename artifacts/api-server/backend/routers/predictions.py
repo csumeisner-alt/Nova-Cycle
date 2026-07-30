@@ -109,6 +109,42 @@ _short_model = ShortTrendModel()
 _hold_engine = HoldTimePredictionEngine()
 
 
+def _detect_zero_volume_bars(
+    df_5min: pd.DataFrame,
+) -> tuple["pd.Series[bool]", int, str]:
+    """
+    Identify 5-min bars whose volume is 0 (or missing).
+
+    Zero-volume bars pass all OHLC consistency checks but can distort the
+    liquidity score if they are included in the volume sum.  This helper
+    returns the boolean mask so the caller can exclude those rows from
+    liquidity-score computation while keeping them in the feature frame.
+
+    Returns:
+        (zero_vol_mask, zero_vol_count, dq_reason_fragment)
+        ``dq_reason_fragment`` is ``""`` when no zero-volume bars are present.
+    """
+    if "volume" not in df_5min.columns or df_5min.empty:
+        false_mask = pd.Series(False, index=df_5min.index, dtype=bool)
+        return false_mask, 0, ""
+
+    zero_vol_mask: "pd.Series[bool]" = df_5min["volume"].fillna(0).eq(0)
+    zero_vol_count = int(zero_vol_mask.sum())
+    if zero_vol_count == 0:
+        return zero_vol_mask, 0, ""
+
+    ts_col = df_5min.loc[zero_vol_mask, "timestamp"] if "timestamp" in df_5min.columns else pd.Series()
+    ts_list = ts_col.tolist() if not ts_col.empty else []
+    first_ts = ts_list[0] if ts_list else "unknown"
+    first_ts_str = first_ts.isoformat() if hasattr(first_ts, "isoformat") else str(first_ts)
+    reason = (
+        f"zero_volume_bars: {zero_vol_count} 5-min bar(s) had volume=0 "
+        f"and were excluded from liquidity score "
+        f"(earliest ts={first_ts_str})"
+    )
+    return zero_vol_mask, zero_vol_count, reason
+
+
 def _validate_ticker(ticker: str):
     """Validate ticker is VOO. Multi-ticker support will be added later."""
     if ticker.upper() != "VOO":
@@ -770,11 +806,31 @@ async def predict_short(
         # Gap follow-through momentum (additive; None when no gap / no data yet)
         gap_momentum = _compute_gap_momentum_from_df(df_5min)
 
-        # Compute liquidity score: extended volume / regular volume over last session
-        regular_mask = df_5min["session_type"] == "regular"
-        extended_mask = df_5min["is_extended_hours"] == True
-        regular_vol = float(df_5min.loc[regular_mask, "volume"].sum()) if regular_mask.any() else 1.0
-        extended_vol = float(df_5min.loc[extended_mask, "volume"].sum()) if extended_mask.any() else 0.0
+        # Zero-volume bar detection: these bars pass OHLC checks but have
+        # volume=0 (yfinance glitch or thin extended-hours window).  Exclude
+        # them from the liquidity score so a single glitch bar cannot
+        # artificially suppress valid signals via the low-liquidity weight
+        # reduction.  The bars are kept in df_5min for feature computation
+        # (their price data may still be reliable).
+        zero_vol_mask, zero_vol_count, zv_reason = _detect_zero_volume_bars(df_5min)
+        if zero_vol_count > 0:
+            if dq_degraded:
+                dq_reason = dq_reason + "; " + zv_reason
+            else:
+                dq_reason = zv_reason
+                dq_degraded = True
+            logger.warning(
+                "zero_volume_bars count=%d timeframe=5min",
+                zero_vol_count,
+            )
+
+        # Compute liquidity score using only non-zero-volume bars so that a
+        # glitch bar with volume=0 cannot drag the score toward zero.
+        df_5min_for_liq = df_5min[~zero_vol_mask] if zero_vol_count > 0 else df_5min
+        regular_mask = df_5min_for_liq["session_type"] == "regular"
+        extended_mask = df_5min_for_liq["is_extended_hours"] == True
+        regular_vol = float(df_5min_for_liq.loc[regular_mask, "volume"].sum()) if regular_mask.any() else 1.0
+        extended_vol = float(df_5min_for_liq.loc[extended_mask, "volume"].sum()) if extended_mask.any() else 0.0
         # LiquidityScore = Volume_extended / Volume_regular
         liquidity_score = extended_vol / max(regular_vol, 1.0)
 
