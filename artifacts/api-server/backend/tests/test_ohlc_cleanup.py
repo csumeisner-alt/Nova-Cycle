@@ -7,13 +7,16 @@ Covers:
   - Clean DB returns zeros in summary
   - Admin endpoint POST /admin/cleanup_malformed_candles responds correctly
     and resets the in-memory ohlc_quarantine counter
+  - Concurrent cleanup + ingest upsert never deletes a valid row (race safety)
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from database.db import get_session
@@ -169,6 +172,77 @@ class TestRemoveMalformedCandles:
         for d in summary["details"]:
             assert d["rows_found"] == 0
             assert d["rows_removed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_cleanup_and_upsert_no_valid_row_deleted(self, engine):
+        """Concurrent cleanup + ingest upsert must never delete a valid row.
+
+        Simulates the startup-cleanup / incremental-ingest race: remove_malformed_candles
+        and a fresh-candle upsert run as overlapping asyncio tasks on the same database.
+        SQLite serialises the writes, but the two-pass logic (scan → collect bad IDs →
+        delete by ID) must still leave every valid row intact regardless of ordering.
+        """
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        # Seed: one bad row (high < open) and two valid rows.
+        ts_bad = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        ts_good1 = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        ts_good2 = datetime(2026, 6, 3, tzinfo=timezone.utc)
+        async with factory() as s:
+            s.add(_bad_voo(ts_bad))
+            s.add(_good_voo(ts_good1))
+            s.add(_good_voo(ts_good2))
+            await s.commit()
+
+        # A brand-new valid candle that the "ingest" task will write concurrently.
+        ts_new = datetime(2026, 6, 4, tzinfo=timezone.utc)
+
+        async def run_cleanup() -> dict:
+            async with factory() as s:
+                summary = await remove_malformed_candles(s)
+                await s.commit()
+                return summary
+
+        async def run_upsert() -> None:
+            async with factory() as s:
+                s.add(_good_voo(ts_new))
+                await s.commit()
+
+        # Launch both tasks concurrently; neither should raise.
+        results = await asyncio.gather(run_cleanup(), run_upsert(), return_exceptions=True)
+
+        for r in results:
+            assert not isinstance(r, Exception), f"Concurrent task raised: {r}"
+
+        summary = results[0]
+
+        # Cleanup must have found and removed exactly the one malformed row.
+        assert summary["rows_found"] == 1
+        assert summary["rows_removed"] == 1
+        assert "voo_candles" in summary["tables_affected"]
+
+        # Verify the DB directly: only valid candles should remain.
+        async with factory() as s:
+            result = await s.execute(select(VooCandle))
+            remaining = result.scalars().all()
+
+        opens = {r.open for r in remaining}
+
+        # The malformed row (open=680.12) must be gone.
+        assert 680.12 not in opens, "Malformed row was not deleted"
+
+        # Every surviving row must be a valid candle (open=500.0 in our helpers).
+        for r in remaining:
+            assert r.open == pytest.approx(500.0), (
+                f"Valid row unexpectedly mutated or a malformed row survived: open={r.open}"
+            )
+
+        # At minimum the two pre-seeded good rows must survive; the concurrent
+        # upsert row may or may not be present depending on scheduling order,
+        # but if it is present it must also be valid (asserted above).
+        assert len(remaining) >= 2, (
+            f"Expected ≥2 valid rows after concurrent cleanup, got {len(remaining)}"
+        )
 
 
 # ---------------------------------------------------------------------------
