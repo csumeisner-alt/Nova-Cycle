@@ -19,6 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from database.cleanup_state import mark_cleanup_finished, mark_cleanup_started
 from database.db import create_tables, get_session_factory
 from database.maintenance import reclassify_session_labels
 from database.ohlc_cleanup import remove_malformed_candles
@@ -76,26 +77,6 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Data initialization warning (will retry on schedule): {e}")
 
-            # One-time retroactive cleanup: remove candles that were stored before
-            # ingest-time OHLC validation was in place.  Runs every startup but is
-            # a no-op when the DB is already clean (found == 0).
-            try:
-                session_factory = get_session_factory()
-                async with session_factory() as session:
-                    summary = await remove_malformed_candles(session)
-                    await session.commit()
-                if summary["rows_found"]:
-                    logger.info(
-                        "ohlc_startup_cleanup rows_found=%d rows_removed=%d "
-                        "tables=%s timeframes=%s",
-                        summary["rows_found"], summary["rows_removed"],
-                        summary["tables_affected"], summary["timeframes_affected"],
-                    )
-                else:
-                    logger.info("ohlc_startup_cleanup: no malformed candles found.")
-            except Exception as exc:
-                logger.error("ohlc_startup_cleanup failed (non-fatal): %s", exc)
-
             # Startup retrain check: catch up if models are stale (>7 days) or missing.
             await _run_weekly_retrain()
         finally:
@@ -108,6 +89,12 @@ async def lifespan(app: FastAPI):
             pipeline._get_initialized_event().set()
 
     asyncio.create_task(_init_pipeline())
+
+    # 2b. One-time retroactive cleanup: remove candles stored before ingest-time
+    #     OHLC validation was in place.  Launched as its own background task so
+    #     it never delays _init_pipeline() or the first request.  A hard 300 s
+    #     timeout prevents it from running indefinitely on very large databases.
+    asyncio.create_task(_run_startup_cleanup())
 
     # 3. Configure APScheduler for incremental updates
     # Every 5 minutes during extended-hours trading window: Mon-Fri 04:00-20:00 ET
@@ -221,6 +208,53 @@ async def _run_weekly_retrain():
             record_training_result(
                 model_name, success=False, error=f"Weekly retrain job failed: {e}"
             )
+
+
+#: Hard time-limit for the background OHLC cleanup task (seconds).
+#: Override with CLEANUP_TIMEOUT_SECONDS environment variable.
+_CLEANUP_TIMEOUT_SECONDS = float(os.environ.get("CLEANUP_TIMEOUT_SECONDS", "300"))
+
+
+async def _run_startup_cleanup():
+    """Background task: scan all candle tables and delete malformed rows.
+
+    Runs independently of _init_pipeline() so the server starts accepting
+    requests immediately.  A hard timeout (default 300 s) ensures it cannot
+    block the event loop indefinitely on very large databases.
+
+    State is exposed through database.cleanup_state so /api/healthz can report
+    a ``cleanup_pending`` flag while the task is in progress.
+    """
+    mark_cleanup_started()
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            try:
+                summary = await asyncio.wait_for(
+                    remove_malformed_candles(session),
+                    timeout=_CLEANUP_TIMEOUT_SECONDS,
+                )
+                await session.commit()
+                if summary["rows_found"]:
+                    logger.info(
+                        "ohlc_startup_cleanup rows_found=%d rows_removed=%d "
+                        "tables=%s timeframes=%s",
+                        summary["rows_found"], summary["rows_removed"],
+                        summary["tables_affected"], summary["timeframes_affected"],
+                    )
+                else:
+                    logger.info("ohlc_startup_cleanup: no malformed candles found.")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "ohlc_startup_cleanup: timed out after %.0f s — "
+                    "cleanup aborted; will retry on next startup.",
+                    _CLEANUP_TIMEOUT_SECONDS,
+                )
+                await session.rollback()
+    except Exception as exc:
+        logger.error("ohlc_startup_cleanup failed (non-fatal): %s", exc)
+    finally:
+        mark_cleanup_finished()
 
 
 # ---------------------------------------------------------------------------

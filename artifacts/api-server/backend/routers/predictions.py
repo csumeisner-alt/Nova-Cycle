@@ -1456,11 +1456,15 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             f"at {_ohlc_quarantine_stats['last_at']})"
         )
 
+    from database.cleanup_state import is_cleanup_pending
+    cleanup_pending = is_cleanup_pending()
+
     return {
         "status": "degraded" if degraded else "ok",
         "ticker": "VOO",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "NovaCycle API",
+        "cleanup_pending": cleanup_pending,
         "models": models,
         "spx_futures": spx_data,
         "vix": vix_data,
