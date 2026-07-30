@@ -55,42 +55,57 @@ async def lifespan(app: FastAPI):
     #    only needs to catch up incremental updates. Endpoints gracefully
     #    return "no data" messages if the DB is temporarily empty.
     async def _init_pipeline():
+        # Safety net: the initialized guard MUST be released before this
+        # coroutine exits regardless of how it exits.  pipeline.initialize()
+        # releases it in its own finally block, but if anything before that
+        # call raises (e.g. get_session_factory, reclassify_session_labels)
+        # the except below would swallow the error and return — leaving
+        # every scheduled job blocked forever on wait_for_initialized().
         try:
-            session_factory = get_session_factory()
-            async with session_factory() as session:
-                corrected = await reclassify_session_labels(session)
-                if corrected:
+            try:
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    corrected = await reclassify_session_labels(session)
+                    if corrected:
+                        logger.info(
+                            f"Repaired {corrected} candle(s) with stale session labels."
+                        )
+                    await pipeline.initialize(session)
+                    await session.commit()
+                logger.info("Data ingestion pipeline initialized.")
+            except Exception as e:
+                logger.warning(f"Data initialization warning (will retry on schedule): {e}")
+
+            # One-time retroactive cleanup: remove candles that were stored before
+            # ingest-time OHLC validation was in place.  Runs every startup but is
+            # a no-op when the DB is already clean (found == 0).
+            try:
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    summary = await remove_malformed_candles(session)
+                    await session.commit()
+                if summary["rows_found"]:
                     logger.info(
-                        f"Repaired {corrected} candle(s) with stale session labels."
+                        "ohlc_startup_cleanup rows_found=%d rows_removed=%d "
+                        "tables=%s timeframes=%s",
+                        summary["rows_found"], summary["rows_removed"],
+                        summary["tables_affected"], summary["timeframes_affected"],
                     )
-                await pipeline.initialize(session)
-                await session.commit()
-            logger.info("Data ingestion pipeline initialized.")
-        except Exception as e:
-            logger.warning(f"Data initialization warning (will retry on schedule): {e}")
+                else:
+                    logger.info("ohlc_startup_cleanup: no malformed candles found.")
+            except Exception as exc:
+                logger.error("ohlc_startup_cleanup failed (non-fatal): %s", exc)
 
-        # One-time retroactive cleanup: remove candles that were stored before
-        # ingest-time OHLC validation was in place.  Runs every startup but is
-        # a no-op when the DB is already clean (found == 0).
-        try:
-            session_factory = get_session_factory()
-            async with session_factory() as session:
-                summary = await remove_malformed_candles(session)
-                await session.commit()
-            if summary["rows_found"]:
-                logger.info(
-                    "ohlc_startup_cleanup rows_found=%d rows_removed=%d "
-                    "tables=%s timeframes=%s",
-                    summary["rows_found"], summary["rows_removed"],
-                    summary["tables_affected"], summary["timeframes_affected"],
-                )
-            else:
-                logger.info("ohlc_startup_cleanup: no malformed candles found.")
-        except Exception as exc:
-            logger.error("ohlc_startup_cleanup failed (non-fatal): %s", exc)
-
-        # Startup retrain check: catch up if models are stale (>7 days) or missing.
-        await _run_weekly_retrain()
+            # Startup retrain check: catch up if models are stale (>7 days) or missing.
+            await _run_weekly_retrain()
+        finally:
+            # Guarantee: release the initialized guard even if an unhandled
+            # exception escapes the inner try blocks above (e.g. the session
+            # factory itself raising before initialize() is ever entered).
+            # pipeline.initialize() already sets the flag in its own finally,
+            # so calling set() again here is always idempotent.
+            pipeline._initialized_flag = True
+            pipeline._get_initialized_event().set()
 
     asyncio.create_task(_init_pipeline())
 
@@ -152,7 +167,13 @@ async def lifespan(app: FastAPI):
 
 
 async def _run_incremental_update():
-    """Scheduled task: fetch new 5-min candles since last stored."""
+    """Scheduled task: fetch new 5-min candles since last stored.
+
+    Waits for the startup pipeline to finish before running so that the
+    scheduler firing in the brief window between scheduler.start() and
+    initialize() completing doesn't race with cleanup.
+    """
+    await pipeline.wait_for_initialized()
     try:
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -163,7 +184,12 @@ async def _run_incremental_update():
 
 
 async def _run_daily_update():
-    """Scheduled task: fetch new daily candles."""
+    """Scheduled task: fetch new daily candles.
+
+    Waits for the startup pipeline to finish before running (same guard as
+    _run_incremental_update).
+    """
+    await pipeline.wait_for_initialized()
     try:
         session_factory = get_session_factory()
         async with session_factory() as session:

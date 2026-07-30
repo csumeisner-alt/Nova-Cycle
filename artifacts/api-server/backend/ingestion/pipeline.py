@@ -10,6 +10,7 @@ Schedule:
 NOTE: "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -91,6 +92,40 @@ class IngestionPipeline:
         self.fetcher = DataFetcher()
         # Timestamp of the last 5-min stall recovery attempt (cooldown guard).
         self._last_5min_recovery_attempt: Optional[datetime] = None
+        # Set to True once initialize() has completed so scheduled jobs can
+        # check whether startup is done without importing asyncio at call sites.
+        # The matching asyncio.Event is created lazily (inside the running loop)
+        # to avoid "attached to a different loop" issues in tests.
+        self._initialized_flag: bool = False
+        self._initialized_event: Optional[asyncio.Event] = None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Startup-ordering guard
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _get_initialized_event(self) -> asyncio.Event:
+        """Return (creating lazily) the asyncio.Event that guards scheduled jobs.
+
+        The event is created on first call so it is always attached to the
+        event loop that is actually running — safe both in production and in
+        pytest-asyncio tests, each of which creates a fresh loop.
+        """
+        if self._initialized_event is None:
+            self._initialized_event = asyncio.Event()
+            if self._initialized_flag:
+                # initialize() already completed before the event was created
+                # (e.g. during a test that bypasses the normal startup path).
+                self._initialized_event.set()
+        return self._initialized_event
+
+    async def wait_for_initialized(self) -> None:
+        """Await until initialize() has completed.
+
+        Called by every scheduled job so that a job firing in the brief window
+        between scheduler.start() and initialize() completing will simply pause
+        rather than run on a partially-cleaned DB.
+        """
+        await self._get_initialized_event().wait()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Initialisation
@@ -101,27 +136,37 @@ class IngestionPipeline:
         Smart initialisation:
           - If no VOO daily data in DB → run full historical fetch + store
           - If data exists → run incremental update only
+
+        Always sets the _initialized guard on exit (success or failure is
+        handled by the caller; the guard prevents scheduled jobs from waiting
+        forever if initialize() raises).
         """
         logger.info("IngestionPipeline.initialize() called")
-        await self.remove_invalid_voo_candles(db_session)
+        try:
+            await self.remove_invalid_voo_candles(db_session)
 
-        # Check whether we already have daily candles
-        result = await db_session.execute(
-            select(func.count(VooCandle.id)).where(
-                VooCandle.ticker == settings.TICKER,
-                VooCandle.timeframe == "daily",
+            # Check whether we already have daily candles
+            result = await db_session.execute(
+                select(func.count(VooCandle.id)).where(
+                    VooCandle.ticker == settings.TICKER,
+                    VooCandle.timeframe == "daily",
+                )
             )
-        )
-        count = result.scalar() or 0
+            count = result.scalar() or 0
 
-        if count == 0:
-            logger.info("No existing data found. Running full historical fetch…")
-            await self._run_full_fetch(db_session)
-        else:
-            logger.info(
-                "Found %d daily candles in DB. Running incremental update…", count
-            )
-            await self.run_incremental_update(db_session)
+            if count == 0:
+                logger.info("No existing data found. Running full historical fetch…")
+                await self._run_full_fetch(db_session)
+            else:
+                logger.info(
+                    "Found %d daily candles in DB. Running incremental update…", count
+                )
+                await self.run_incremental_update(db_session)
+        finally:
+            # Signal scheduled jobs that startup is done regardless of outcome.
+            self._initialized_flag = True
+            self._get_initialized_event().set()
+            logger.info("IngestionPipeline initialized — scheduled jobs may now run.")
 
     async def remove_invalid_voo_candles(self, db_session: AsyncSession) -> int:
         """Remove malformed VOO rows left by older ingestion versions.
