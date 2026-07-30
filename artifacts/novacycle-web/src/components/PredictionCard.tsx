@@ -1,12 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
 import { confidenceZone } from '@/lib/confidenceZone';
+import { useState } from 'react';
 
 export type PredictionDisplay = {
   confidence_percent?: number;
   trend?: 'UP' | 'DOWN' | 'NEUTRAL';
   display_signal?: 'BUY BIAS' | 'SELL BIAS' | 'NEUTRAL / HOLD';
   note?: string;
+  data_quality_degraded?: boolean;
+  data_quality_reason?: string;
 };
 
 function TrendArrow({ trend }: { trend: PredictionDisplay['trend'] }) {
@@ -73,6 +76,9 @@ export function PredictionCard({ name, label }: { name: string; label: string })
   }
 
   const zone = confidenceZone(pct);
+  const degraded = data?.data_quality_degraded === true;
+  const degradedReason = data?.data_quality_reason ?? '';
+  const [showReason, setShowReason] = useState(false);
 
   return (
     <div className="p-4 bg-black/30 rounded-lg border border-white/5 space-y-3" data-testid={`prediction-card-${name}`}>
@@ -102,6 +108,38 @@ export function PredictionCard({ name, label }: { name: string; label: string })
           data-testid={`bar-confidence-${name}`}
         />
       </div>
+      {degraded && (
+        <div
+          className="rounded-md border border-amber-400/30 bg-amber-400/5 px-3 py-2 space-y-1"
+          data-testid={`banner-data-quality-${name}`}
+        >
+          <button
+            type="button"
+            onClick={() => setShowReason((v) => !v)}
+            className="flex w-full items-center justify-between text-amber-400 gap-2"
+            aria-expanded={showReason}
+            aria-label="Toggle data quality detail"
+          >
+            <span className="flex items-center gap-1.5 text-xs font-mono font-medium">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              ⚠ Data quality issue: one or more candles were filtered. Signal may be less reliable.
+            </span>
+            {showReason ? (
+              <ChevronUp className="w-3.5 h-3.5 shrink-0" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+            )}
+          </button>
+          {showReason && degradedReason && (
+            <p
+              className="text-[11px] font-mono text-amber-200/70 leading-relaxed break-words"
+              data-testid={`text-data-quality-reason-${name}`}
+            >
+              {degradedReason}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

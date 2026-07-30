@@ -325,6 +325,79 @@ function FallbackHistoryPanel({ health }: { health: any }) {
 }
 
 
+function OhlcQuarantinePanel({ health }: { health: any }) {
+  const q: { count?: number; last_at?: string | null; last_ts?: string | null; last_reason?: string | null } =
+    health?.ohlc_quarantine ?? {};
+  const count = q.count ?? 0;
+
+  return (
+    <div
+      className={`mt-8 p-4 rounded-lg border ${
+        count > 0
+          ? 'bg-amber-400/5 border-amber-400/25'
+          : 'bg-white/[0.02] border-white/5'
+      }`}
+      data-testid="panel-ohlc-quarantine"
+    >
+      <div className="flex items-center space-x-2 mb-4">
+        {count > 0 ? (
+          <AlertTriangle className="w-4 h-4 text-amber-400" />
+        ) : (
+          <CheckCircle2 className="w-4 h-4 text-muted-foreground" />
+        )}
+        <span
+          className={`text-sm font-medium tracking-wide ${count > 0 ? 'text-amber-400' : 'text-muted-foreground'}`}
+        >
+          OHLC DATA QUALITY
+        </span>
+        {count > 0 && (
+          <span
+            className="ml-auto inline-flex items-center text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-400/15 text-amber-400 border border-amber-400/30"
+            data-testid="badge-quarantine-count"
+          >
+            {count} candle{count === 1 ? '' : 's'} quarantined
+          </span>
+        )}
+      </div>
+
+      {count > 0 ? (
+        <div className="space-y-3 font-mono text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Total quarantined</div>
+              <div className="text-lg text-amber-400" data-testid="text-quarantine-count">{count}</div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Last candle timestamp</div>
+              <div className="text-sm pt-1" data-testid="text-quarantine-last-ts">
+                {q.last_ts ?? '—'}
+              </div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Detected at</div>
+              <div className="text-sm pt-1" data-testid="text-quarantine-last-at">
+                {q.last_at ? new Date(q.last_at).toLocaleString('en-US', { hour12: false }) : '—'}
+              </div>
+            </div>
+          </div>
+          {q.last_reason && (
+            <div
+              className="p-3 bg-black/30 rounded-lg border border-amber-400/20 text-[11px] text-amber-200/80 leading-relaxed break-words"
+              data-testid="text-quarantine-last-reason"
+            >
+              {q.last_reason}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground font-mono" data-testid="text-quarantine-clean">
+          No malformed candles detected since last startup.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function PredictionsPanel() {
   return (
     <div className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5" data-testid="panel-predictions">
@@ -484,6 +557,8 @@ function StatusDashboard() {
             {!isLoading && !isError && health && <RetrainStatusPanel health={health} />}
 
             {!isLoading && !isError && health && <FallbackHistoryPanel health={health} />}
+
+            {!isLoading && !isError && health && <OhlcQuarantinePanel health={health} />}
 
             {/* Raw JSON View */}
             {!isLoading && !isError && health && (
