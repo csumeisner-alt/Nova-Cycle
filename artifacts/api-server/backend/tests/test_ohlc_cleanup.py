@@ -304,6 +304,44 @@ class TestRemoveMalformedCandles:
         )
 
     @pytest.mark.asyncio
+    async def test_database_locked_on_delete_reraises_and_rollback_clean(
+        self, session: AsyncSession
+    ):
+        """If the DB raises OperationalError during the DELETE statement,
+        remove_malformed_candles() must re-raise it (not swallow it), and the
+        session must still accept a rollback without a secondary error.
+
+        This verifies the behaviour documented in the module docstring:
+        "The caller is responsible for committing the session (or rolling back
+        on error)."
+        """
+        from unittest.mock import patch
+        from sqlalchemy.exc import OperationalError
+        from sqlalchemy.sql.dml import Delete
+
+        ts_bad = datetime(2026, 7, 30, tzinfo=timezone.utc)
+        session.add(_bad_voo(ts_bad))
+        await session.commit()
+
+        original_execute = session.execute
+
+        async def _patched_execute(statement, *args, **kwargs):
+            # Let SELECT calls through so the scan phase works normally;
+            # raise OperationalError only for the DELETE statement.
+            if isinstance(statement, Delete):
+                raise OperationalError(
+                    "DELETE 1", {}, Exception("database is locked")
+                )
+            return await original_execute(statement, *args, **kwargs)
+
+        with patch.object(session, "execute", side_effect=_patched_execute):
+            with pytest.raises(OperationalError):
+                await remove_malformed_candles(session)
+
+        # Session must still accept rollback without raising a secondary error.
+        await session.rollback()  # must not raise
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("model_cls,good_fn,bad_fn,good_open,bad_open,table_name", [
         (VixCandle, _good_vix, _bad_vix, 20.0, 30.0, "vix_candles"),
         (SpxCandle, _good_spx, _bad_spx, 5000.0, 5200.0, "spx_candles"),
