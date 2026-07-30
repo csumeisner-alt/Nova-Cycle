@@ -64,6 +64,17 @@ _ml_fallback_stats: dict = {
     "short_trend": {"count": 0, "last_at": None, "last_reason": None},
 }
 
+# ---------------------------------------------------------------------------
+# OHLC quarantine tracking: records when a malformed candle was detected at
+# prediction time so /api/healthz can surface the condition to operators.
+# ---------------------------------------------------------------------------
+_ohlc_quarantine_stats: dict = {
+    "count": 0,        # total bad candles seen since startup
+    "last_at": None,   # ISO timestamp of the most recent detection
+    "last_ts": None,   # market timestamp of the bad candle
+    "last_reason": None,
+}
+
 
 def _record_ml_fallback(model_name: str, reason: str) -> None:
     """Record that a prediction served the neutral fallback (never raises).
@@ -149,7 +160,50 @@ async def _load_daily_candles(session: AsyncSession, ticker: str, limit: int = 3
         "gap_type": r.gap_type, "ticker": r.ticker
     } for r in rows])
 
+def _drop_invalid_ohlc(df: pd.DataFrame, timeframe: str = "daily") -> tuple[pd.DataFrame, bool, str]:
+    """
+    Remove internally-inconsistent OHLC rows from a loaded candle DataFrame.
 
+    Called at prediction time so already-stored malformed candles (e.g. a
+    yfinance ingest glitch) don't corrupt model features.
+
+    Returns:
+        (clean_df, data_quality_degraded, data_quality_reason)
+
+    data_quality_degraded is True when any row was quarantined; the reason
+    string describes the worst / most-recent bad candle.
+    """
+    from ingestion.ohlc_validator import filter_valid_ohlc
+
+    try:
+        if df.empty:
+            return df, False, ""
+        valid_df, bad_df = filter_valid_ohlc(df)
+        if bad_df.empty:
+            return df, False, ""
+
+        # Record each quarantined candle for healthz tracking
+        for _, row in bad_df.iterrows():
+            ts_val = row.get("timestamp", "unknown")
+            ts_str = ts_val.isoformat() if hasattr(ts_val, "isoformat") else str(ts_val)
+            reason = str(row.get("ohlc_invalid_reason", "unknown"))
+            _record_ohlc_quarantine(ts_str, reason)
+
+        latest_bad = bad_df.iloc[-1]
+        latest_ts = latest_bad.get("timestamp", "unknown")
+        latest_ts_str = (
+            latest_ts.isoformat() if hasattr(latest_ts, "isoformat") else str(latest_ts)
+        )
+        degraded_reason = (
+            f"quarantined {len(bad_df)} malformed {timeframe} candle(s); "
+            f"latest bad candle ts={latest_ts_str} "
+            f"reason={latest_bad.get('ohlc_invalid_reason', 'unknown')}; "
+            f"using last valid candle instead"
+        )
+        return valid_df, True, degraded_reason
+    except Exception as exc:
+        logger.error("_drop_invalid_ohlc error: %s", exc)
+        return df, False, ""
 async def _load_5min_candles(session: AsyncSession, ticker: str, limit: int = 500) -> pd.DataFrame:
     """Load 5-minute candles from DB (all sessions)."""
     result = await session.execute(
@@ -513,6 +567,23 @@ async def predict_long(
                 "note": "No historical data yet. Run data ingestion first."
             }
 
+        # OHLC integrity filter: drop any malformed candles stored in the DB
+        # (e.g. a yfinance ingest glitch where high < open/close).
+        daily_df, dq_degraded, dq_reason = _drop_invalid_ohlc(daily_df, timeframe="daily")
+        if daily_df.empty:
+            return {
+                "score": 0, "signal": "neutral", "confidence": 0.5,
+                "indicator_breakdown": {}, "ml_confidence": 0.5,
+                "ml_fallback": True,
+                "liquidity_score": 1.0, "gap_type": "none",
+                "macro_override_applied": False,
+                **dict(NEUTRAL_DEFAULTS),
+                "data_quality_degraded": True,
+                "data_quality_reason": dq_reason,
+                "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
+                "note": "All recent daily candles failed OHLC integrity check."
+            }
+
         # Compute indicators (exclude extended hours always for long-trend)
         indicators = _indicators_engine.compute_all(daily_df, vix_df, exclude_extended=True)
 
@@ -634,6 +705,8 @@ async def predict_long(
             "volatility_regime": decision.get("volatility_regime", "calm"),
             "liquidity_class": decision.get("liquidity_class", "normal"),
             "confidence_momentum": decision.get("confidence_momentum", 0.0),
+            "data_quality_degraded": dq_degraded,
+            "data_quality_reason": dq_reason,
             "timestamp": datetime.utcnow().isoformat(),
             "ticker": ticker
         }
@@ -672,6 +745,22 @@ async def predict_short(
                 **dict(NEUTRAL_DEFAULTS),
                 "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
                 "note": "No 5-min data yet. Run data ingestion first."
+            }
+
+        # OHLC integrity filter: drop any malformed candles stored in the DB.
+        df_5min, dq_degraded, dq_reason = _drop_invalid_ohlc(df_5min, timeframe="5min")
+        if df_5min.empty:
+            return {
+                "score": 0, "signal": "neutral", "confidence": 0.5,
+                "indicator_breakdown": {}, "ml_confidence": 0.5,
+                "ml_fallback": True,
+                "liquidity_score": 1.0, "gap_type": "none",
+                "macro_override_applied": False,
+                **dict(NEUTRAL_DEFAULTS),
+                "data_quality_degraded": True,
+                "data_quality_reason": dq_reason,
+                "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
+                "note": "All recent 5-min candles failed OHLC integrity check."
             }
 
         latest = df_5min.iloc[-1]
@@ -832,6 +921,8 @@ async def predict_short(
             "volatility_regime": decision.get("volatility_regime", "calm"),
             "liquidity_class": decision.get("liquidity_class", "normal"),
             "confidence_momentum": decision.get("confidence_momentum", 0.0),
+            "data_quality_degraded": dq_degraded,
+            "data_quality_reason": dq_reason,
             "session_type": session_type,
             "is_extended_hours": is_extended,
             "timestamp": datetime.utcnow().isoformat(),
@@ -1298,6 +1389,17 @@ async def healthz(session: AsyncSession = Depends(get_session)):
                 f"since startup (last: {info['ml_fallback_last_reason']} at {info['ml_fallback_last_at']})"
             )
 
+    # ── OHLC data-quality quarantine summary ─────────────────────────────
+    ohlc_quarantine = dict(_ohlc_quarantine_stats)
+    if _ohlc_quarantine_stats["count"] > 0:
+        degraded = True
+        alerts.append(
+            f"ohlc_invalid: {_ohlc_quarantine_stats['count']} malformed candle(s) quarantined "
+            f"since startup (last ts={_ohlc_quarantine_stats['last_ts']} "
+            f"reason={_ohlc_quarantine_stats['last_reason']} "
+            f"at {_ohlc_quarantine_stats['last_at']})"
+        )
+
     return {
         "status": "degraded" if degraded else "ok",
         "ticker": "VOO",
@@ -1309,6 +1411,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "voo_5min": fivemin_data,
         "voo_5min_recovery": fivemin_recovery,
         "notifications": notification_readiness,
+        "ohlc_quarantine": ohlc_quarantine,
         "alerts": alerts,
         "fallback_stats_last_reset_at": fallback_last_reset_at,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
@@ -1371,3 +1474,21 @@ async def reset_fallback_stats_endpoint():
         "previous_persisted": previous,
         "previous_in_memory": previous_in_memory,
     }
+
+def _record_ohlc_quarantine(ts: str, reason: str) -> None:
+    """Record that a malformed OHLC candle was detected at prediction time.
+
+    Updates the in-memory tracker so /healthz can surface the condition.
+    Never raises.
+    """
+    try:
+        _ohlc_quarantine_stats["count"] += 1
+        _ohlc_quarantine_stats["last_at"] = datetime.utcnow().isoformat()
+        _ohlc_quarantine_stats["last_ts"] = ts
+        _ohlc_quarantine_stats["last_reason"] = str(reason)[:300]
+        logger.warning(
+            "prediction_ohlc_invalid ts=%s reason=%s total_quarantined=%d",
+            ts, reason, _ohlc_quarantine_stats["count"],
+        )
+    except Exception as exc:
+        logger.error("_record_ohlc_quarantine error: %s", exc)
