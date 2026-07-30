@@ -1,6 +1,6 @@
 """Regression coverage for malformed vendor OHLC rows and repairs."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -382,3 +382,264 @@ class TestFilterValidOhlc:
         assert "volume" in quarantined.columns
         assert "session_type" in quarantined.columns
         assert float(quarantined.iloc[0]["volume"]) == 123456.0
+
+
+# ---------------------------------------------------------------------------
+# Task-172: yfinance mid-session data glitch tests
+# ---------------------------------------------------------------------------
+
+class TestZeroCloseNormaliseColumns:
+    """Zero-close (and zero-open/high/low) candles must be dropped by _normalise_columns.
+
+    ohlc_validation_issue returns 'non_positive_ohlc' for any value <= 0, so the
+    OHLC sanity pass inside _normalise_columns quarantines these rows before they
+    ever reach the database.
+    """
+
+    def _run_normalise(self, df: pd.DataFrame) -> pd.DataFrame:
+        from ingestion.fetcher import DataFetcher
+        return DataFetcher._normalise_columns(df)
+
+    def test_zero_close_is_dropped(self):
+        """A candle with close=0 is non-positive and must be quarantined at ingest."""
+        df = pd.DataFrame(
+            {
+                "Open":  [500.0, 501.0],
+                "High":  [505.0, 506.0],
+                "Low":   [498.0, 499.0],
+                "Close": [503.0,   0.0],
+                "Volume": [1_000_000, 1_000_000],
+            },
+            index=pd.DatetimeIndex(["2024-07-29", "2024-07-30"]),
+        )
+        result = self._run_normalise(df)
+        assert len(result) == 1
+        assert float(result.iloc[0]["open"]) == pytest.approx(500.0)
+
+    def test_zero_open_is_dropped(self):
+        """A zero open price is non-positive and must be quarantined."""
+        df = pd.DataFrame(
+            {
+                "Open":  [0.0,   500.0],
+                "High":  [505.0, 505.0],
+                "Low":   [498.0, 498.0],
+                "Close": [503.0, 503.0],
+                "Volume": [1_000_000, 1_000_000],
+            },
+            index=pd.DatetimeIndex(["2024-07-29", "2024-07-30"]),
+        )
+        result = self._run_normalise(df)
+        assert len(result) == 1
+        assert float(result.iloc[0]["open"]) == pytest.approx(500.0)
+
+    def test_zero_close_only_row_gives_empty_frame(self):
+        """When the only row has close=0 the result is empty (no crash)."""
+        df = pd.DataFrame(
+            {
+                "Open":  [500.0],
+                "High":  [505.0],
+                "Low":   [498.0],
+                "Close": [  0.0],
+                "Volume": [1_000_000],
+            },
+            index=pd.DatetimeIndex(["2024-07-30"]),
+        )
+        result = self._run_normalise(df)
+        assert result.empty
+
+    def test_mixed_zero_and_valid_keeps_only_valid(self):
+        """Multiple zero-close rows are all dropped; valid rows survive."""
+        df = pd.DataFrame(
+            {
+                "Open":  [500.0, 501.0, 502.0],
+                "High":  [505.0, 506.0, 507.0],
+                "Low":   [498.0, 499.0, 500.0],
+                "Close": [503.0,   0.0,   0.0],
+                "Volume": [1e6, 1e6, 1e6],
+            },
+            index=pd.DatetimeIndex(["2024-07-28", "2024-07-29", "2024-07-30"]),
+        )
+        result = self._run_normalise(df)
+        assert len(result) == 1
+        assert float(result.iloc[0]["open"]) == pytest.approx(500.0)
+
+
+class TestIntradaySpikeBar:
+    """Single intraday 5-min bar whose close deviates > 10 % from neighbours.
+
+    The OHLC validator checks *internal* self-consistency only.  A spike where
+    high keeps pace with close (so high >= close) is internally valid and will
+    NOT be quarantined — the test documents this expectation and verifies that
+    the pipeline does not crash either way.  A spike where high does NOT keep
+    pace is internally inconsistent (high_below_close) and IS quarantined.
+    """
+
+    def _drop(self, df: pd.DataFrame) -> tuple:
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+        return pred._drop_invalid_ohlc(df, timeframe="5min")
+
+    def _make_5min_frame(self, rows: list[dict]) -> pd.DataFrame:
+        return pd.DataFrame(rows)
+
+    def test_internally_valid_spike_is_not_quarantined(self):
+        """A bar that closes +15 % above neighbours but is internally valid
+        (high >= close) passes through without degraded=True."""
+        base_close = 500.0
+        spike_close = base_close * 1.15  # +15 % — plausible data glitch
+
+        rows = [
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": base_close,
+            },
+            {
+                # Spike bar: high keeps pace with close → internally valid
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.0, "high": spike_close + 1.0, "low": 499.0, "close": spike_close,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 40),
+                "open": 500.5, "high": 505.0, "low": 499.0, "close": 502.0,
+            },
+        ]
+        df = self._make_5min_frame(rows)
+        clean, degraded, reason = self._drop(df)
+        # Internally valid spike: not quarantined
+        assert not degraded
+        assert len(clean) == 3
+
+    def test_internally_invalid_spike_is_quarantined(self):
+        """A bar that spikes +15 % in close but high does not keep pace is
+        quarantined (high_below_close) and degraded=True is set."""
+        base_close = 500.0
+        spike_close = base_close * 1.15  # +15 % glitch
+
+        rows = [
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": base_close,
+            },
+            {
+                # high does NOT keep up with spiking close → high_below_close
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.0, "high": 503.0, "low": 499.0, "close": spike_close,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 40),
+                "open": 500.5, "high": 505.0, "low": 499.0, "close": 502.0,
+            },
+        ]
+        df = self._make_5min_frame(rows)
+        clean, degraded, reason = self._drop(df)
+        assert degraded is True
+        assert "high_below_close" in reason
+        # Two valid neighbours survive
+        assert len(clean) == 2
+
+    def test_pipeline_does_not_crash_with_spike_bar(self):
+        """Regardless of whether the spike bar is quarantined, _drop_invalid_ohlc
+        always returns a 3-tuple without raising."""
+        spike_close = 600.0  # +20 % above neighbours at ~500
+        base = datetime(2024, 7, 30, 9, 30)
+
+        rows = [
+            {
+                "timestamp": base + timedelta(minutes=i * 5),
+                "open": 499.0,
+                "high": spike_close + 1.0 if i == 5 else 504.0,
+                "low": 497.0,
+                "close": spike_close if i == 5 else 500.0,
+            }
+            for i in range(12)
+        ]
+        df = pd.DataFrame(rows)
+        result = self._drop(df)
+        assert len(result) == 3
+        clean_df, degraded, reason = result
+        assert isinstance(clean_df, pd.DataFrame)
+        assert isinstance(degraded, bool)
+        assert isinstance(reason, str)
+
+
+class TestPredictShort20PctQuarantined:
+    """When 20 % of the 5-min frame is quarantined, the prediction engine must:
+      - return degraded=True with an informative reason string
+      - keep the remaining 80 % of valid rows in the clean frame
+      - never raise (predict_short can continue to build a valid signal response)
+    """
+
+    def _drop(self, df: pd.DataFrame) -> tuple:
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+        return pred._drop_invalid_ohlc(df, timeframe="5min")
+
+    def _make_mixed_frame(self, total: int, bad_fraction: float) -> pd.DataFrame:
+        """Build a frame where *bad_fraction* rows have high < open (invalid)."""
+        bad_count = int(total * bad_fraction)
+        rows = []
+        base_ts = datetime(2024, 7, 30, 9, 30)
+        for i in range(total):
+            minutes_offset = i * 5
+            ts = base_ts.replace(
+                minute=(base_ts.minute + minutes_offset) % 60,
+                hour=base_ts.hour + (base_ts.minute + minutes_offset) // 60,
+            )
+            if i < bad_count:
+                # high < open → internally invalid
+                rows.append({
+                    "timestamp": ts,
+                    "open": 500.0, "high": 495.0, "low": 490.0, "close": 497.0,
+                })
+            else:
+                rows.append({
+                    "timestamp": ts,
+                    "open": 500.0, "high": 505.0, "low": 498.0, "close": 503.0,
+                })
+        return pd.DataFrame(rows)
+
+    def test_20pct_quarantine_returns_degraded_flag(self):
+        """degraded=True and reason cites quarantine count when 20 rows are bad."""
+        df = self._make_mixed_frame(total=100, bad_fraction=0.20)
+        clean, degraded, reason = self._drop(df)
+        assert degraded is True
+        assert "quarantined 20" in reason
+
+    def test_20pct_quarantine_clean_frame_size(self):
+        """80 valid rows survive after 20 % quarantine."""
+        df = self._make_mixed_frame(total=100, bad_fraction=0.20)
+        clean, degraded, reason = self._drop(df)
+        assert len(clean) == 80
+
+    def test_20pct_quarantine_response_shape(self):
+        """The returned tuple carries the three values predict_short expects."""
+        df = self._make_mixed_frame(total=50, bad_fraction=0.20)
+        clean, degraded, reason = self._drop(df)
+
+        # predict_short unpacks exactly this 3-tuple
+        assert isinstance(clean, pd.DataFrame)
+        assert isinstance(degraded, bool)
+        assert isinstance(reason, str)
+
+        # Clean slice is non-empty → predict_short continues (does not fall
+        # through to the all-invalid neutral return)
+        assert not clean.empty
+        assert "quarantined" in reason
+        assert "5min" in reason
+
+    def test_50pct_quarantine_still_no_crash(self):
+        """Half the frame invalid: clean has 50 % remaining, no exception raised."""
+        df = self._make_mixed_frame(total=40, bad_fraction=0.50)
+        clean, degraded, reason = self._drop(df)
+        assert degraded is True
+        assert len(clean) == 20
+
+    def test_100pct_quarantine_returns_empty_clean_degraded(self):
+        """All candles invalid → empty clean frame with degraded=True.
+        predict_short returns the neutral fallback, not a crash."""
+        df = self._make_mixed_frame(total=10, bad_fraction=1.0)
+        clean, degraded, reason = self._drop(df)
+        assert clean.empty
+        assert degraded is True
