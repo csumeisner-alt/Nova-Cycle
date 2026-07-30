@@ -21,6 +21,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from database.db import create_tables, get_session_factory
 from database.maintenance import reclassify_session_labels
+from database.ohlc_cleanup import remove_malformed_candles
 from ingestion.pipeline import IngestionPipeline
 from ml.trainer import ModelTrainer
 from ml.training_status import record_training_result
@@ -67,6 +68,26 @@ async def lifespan(app: FastAPI):
             logger.info("Data ingestion pipeline initialized.")
         except Exception as e:
             logger.warning(f"Data initialization warning (will retry on schedule): {e}")
+
+        # One-time retroactive cleanup: remove candles that were stored before
+        # ingest-time OHLC validation was in place.  Runs every startup but is
+        # a no-op when the DB is already clean (found == 0).
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                summary = await remove_malformed_candles(session)
+                await session.commit()
+            if summary["rows_found"]:
+                logger.info(
+                    "ohlc_startup_cleanup rows_found=%d rows_removed=%d "
+                    "tables=%s timeframes=%s",
+                    summary["rows_found"], summary["rows_removed"],
+                    summary["tables_affected"], summary["timeframes_affected"],
+                )
+            else:
+                logger.info("ohlc_startup_cleanup: no malformed candles found.")
+        except Exception as exc:
+            logger.error("ohlc_startup_cleanup failed (non-fatal): %s", exc)
 
         # Startup retrain check: catch up if models are stale (>7 days) or missing.
         await _run_weekly_retrain()

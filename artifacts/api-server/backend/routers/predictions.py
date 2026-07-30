@@ -1475,6 +1475,56 @@ async def reset_fallback_stats_endpoint():
         "previous_in_memory": previous_in_memory,
     }
 
+# ---------------------------------------------------------------------------
+# POST /admin/cleanup_malformed_candles  (operator-only)
+# ---------------------------------------------------------------------------
+@router.post("/admin/cleanup_malformed_candles", dependencies=[Depends(_require_admin_token)])
+async def cleanup_malformed_candles_endpoint(session: AsyncSession = Depends(get_session)):
+    """
+    Operator action: scan voo_candles, vix_candles, and spx_candles for rows
+    that violate OHLC consistency rules (high < open, low > close, etc.) and
+    permanently delete them.
+
+    This is the on-demand counterpart to the automatic startup cleanup.  Run it
+    after a data-quality incident to clear debris without restarting the server.
+
+    On success the in-memory ohlc_quarantine counter is reset to zero so
+    /api/healthz immediately reflects a clean state.  The counter will only
+    increment again when a *new* malformed candle is encountered at prediction
+    time (i.e. a live ingest glitch, not historical debris).
+
+    Returns a structured summary:
+        rows_found, rows_removed, tables_affected, timeframes_affected, details
+    """
+    from database.ohlc_cleanup import remove_malformed_candles
+
+    try:
+        summary = await remove_malformed_candles(session)
+        await session.commit()
+    except Exception as exc:
+        logger.error("cleanup_malformed_candles failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {exc}")
+
+    # Reset the in-memory quarantine counter so healthz shows count=0 immediately.
+    # The counter will re-increment only if new live bad candles appear.
+    _ohlc_quarantine_stats["count"] = 0
+    _ohlc_quarantine_stats["last_at"] = None
+    _ohlc_quarantine_stats["last_ts"] = None
+    _ohlc_quarantine_stats["last_reason"] = None
+
+    logger.info(
+        "cleanup_malformed_candles triggered by operator: rows_found=%d rows_removed=%d "
+        "tables=%s timeframes=%s",
+        summary["rows_found"], summary["rows_removed"],
+        summary["tables_affected"], summary["timeframes_affected"],
+    )
+    return {
+        "status": "ok",
+        "cleanup_at": datetime.now(timezone.utc).isoformat(),
+        **summary,
+    }
+
+
 def _record_ohlc_quarantine(ts: str, reason: str) -> None:
     """Record that a malformed OHLC candle was detected at prediction time.
 
