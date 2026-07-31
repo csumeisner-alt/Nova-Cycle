@@ -20,6 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from database.cleanup_state import mark_cleanup_finished, mark_cleanup_started
+from database.startup_state import mark_startup_ok, mark_startup_degraded
 from database.db import create_tables, get_session_factory
 from database.maintenance import reclassify_session_labels
 from database.ohlc_cleanup import remove_malformed_candles
@@ -74,8 +75,10 @@ async def lifespan(app: FastAPI):
                     await pipeline.initialize(session)
                     await session.commit()
                 logger.info("Data ingestion pipeline initialized.")
+                mark_startup_ok()
             except Exception as e:
                 logger.warning(f"Data initialization warning (will retry on schedule): {e}")
+                mark_startup_degraded(str(e))
 
             # Startup retrain check: catch up if models are stale (>7 days) or missing.
             await _run_weekly_retrain()
