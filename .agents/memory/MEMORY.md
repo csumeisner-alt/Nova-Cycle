@@ -10,3 +10,4 @@
 - [Dashboard gauge semantics](dashboard-gauge-semantics.md) — gauge big % is directional position, small % is model confidence; never conflate them in UI copy
 - [Short-trend leakage & imbalance](short-trend-leakage-fixes.md) — fold-local scalers, purged splits, metric-kind-aware regression checks, minority oversampling for rare-event labels
 - [Market data and push readiness](novacycle-market-data-and-push.md) — validate OHLC before prediction and treat FCM credentials plus device registration as separate blockers
+- [SQLite async cancellation](sqlite-async-cancellation.md) — cancelled aiosqlite queries kill the pooled connection; timeout tests need file-based DBs, not :memory:

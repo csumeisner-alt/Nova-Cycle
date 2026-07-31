@@ -215,3 +215,127 @@ class TestHealthzCleanupPending:
         assert resp.status_code == 200
         body = resp.json()
         assert body["cleanup_pending"] is False
+
+
+# ---------------------------------------------------------------------------
+# Load / integration tests: real database, no mocked sleeps
+# ---------------------------------------------------------------------------
+#
+# Task: confirm the CLEANUP_TIMEOUT_SECONDS guard is calibrated against a
+# realistic row count and that asyncio.wait_for can actually cancel the real
+# remove_malformed_candles() coroutine (it only works if the coroutine yields
+# to the event loop regularly — which it does, once per 2 000-row batch).
+#
+# Measured baseline (Replit container, July 2026): 150 000 rows scan+delete in
+# ~3 s, i.e. ~50 000 rows/s.  The 300 s default budget therefore covers
+# roughly 15 million rows — two orders of magnitude above the seeded volume.
+
+import random
+import time
+
+from sqlalchemy import func, insert, select
+
+
+def _seed_rows(n_rows: int, bad_every: int) -> list[dict]:
+    """Build n_rows candle dicts; every `bad_every`-th row violates OHLC rules."""
+    rows = []
+    for i in range(n_rows):
+        bad = i % bad_every == 0
+        rows.append(dict(
+            ticker="VOO",
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None),
+            open=100.0,
+            high=99.0 if bad else 102.0,   # bad: high < open (and < close)
+            low=98.0,
+            close=101.0,
+            volume=1_000_000.0,
+            timeframe="daily",
+            is_extended_hours=False,
+            session_type="regular",
+        ))
+    return rows
+
+
+class TestCleanupLoad:
+    """Integration tests against a real (in-memory) SQLite DB with >=100k rows."""
+
+    N_ROWS = 120_000
+    BAD_EVERY = 50  # 2 400 malformed rows
+
+    @pytest.mark.asyncio
+    async def test_timeout_budget_realistic_for_100k_rows(self, engine):
+        """Seed >=100k rows and verify the real cleanup finishes far inside
+        the 300 s budget (require at least 10x headroom)."""
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        rows = _seed_rows(self.N_ROWS, self.BAD_EVERY)
+        async with factory() as s:
+            for j in range(0, len(rows), 10_000):
+                await s.execute(insert(VooCandle), rows[j:j + 10_000])
+            await s.commit()
+
+        async with factory() as s:
+            t0 = time.perf_counter()
+            summary = await remove_malformed_candles(s)
+            await s.commit()
+            elapsed = time.perf_counter() - t0
+
+        expected_bad = self.N_ROWS // self.BAD_EVERY
+        assert summary["rows_found"] == expected_bad
+        assert summary["rows_removed"] == expected_bad
+
+        # Validate CLEANUP_TIMEOUT_SECONDS is realistic: the default budget
+        # must leave at least 10x headroom at this row count.
+        assert _CLEANUP_TIMEOUT_SECONDS >= 300
+        assert elapsed < _CLEANUP_TIMEOUT_SECONDS / 10, (
+            f"cleanup of {self.N_ROWS} rows took {elapsed:.1f}s — "
+            f"too close to the {_CLEANUP_TIMEOUT_SECONDS:.0f}s budget; "
+            "refactor to a server-side SQL filter."
+        )
+
+        # Sanity: bad rows really gone from the DB.
+        async with factory() as s:
+            remaining = (await s.execute(
+                select(func.count()).select_from(VooCandle)
+            )).scalar_one()
+        assert remaining == self.N_ROWS - expected_bad
+
+    @pytest.mark.asyncio
+    async def test_wait_for_cancels_real_cleanup_on_large_db(self, tmp_path):
+        """The timeout must fire against the REAL coroutine (not a mocked
+        sleep): remove_malformed_candles yields to the event loop on every
+        batched SELECT, so asyncio.wait_for can cancel it mid-scan.
+
+        Uses a file-based SQLite DB (not :memory:) because cancelling a
+        query mid-flight invalidates the pooled connection — and an
+        in-memory DB lives and dies with that connection.
+        """
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'cleanup_load.db'}", echo=False
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        rows = _seed_rows(self.N_ROWS, self.BAD_EVERY)
+        async with factory() as s:
+            for j in range(0, len(rows), 10_000):
+                await s.execute(insert(VooCandle), rows[j:j + 10_000])
+            await s.commit()
+
+        # A timeout far below the measured full-scan duration for this row
+        # count: the scan takes ~2-3 s, so 0.2 s must interrupt it mid-flight.
+        async with factory() as s:
+            t0 = time.perf_counter()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(remove_malformed_candles(s), timeout=0.2)
+            elapsed = time.perf_counter() - t0
+            await s.rollback()
+        # It must have been cut off promptly, not run to completion.
+        assert elapsed < 1.5
+
+        # Nothing was deleted (rolled back / never committed).
+        async with factory() as s:
+            remaining = (await s.execute(
+                select(func.count()).select_from(VooCandle)
+            )).scalar_one()
+        assert remaining == self.N_ROWS
+        await engine.dispose()
