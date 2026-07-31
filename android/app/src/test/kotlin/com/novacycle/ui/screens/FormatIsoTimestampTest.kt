@@ -76,6 +76,64 @@ class FormatIsoTimestampTest {
         assertEquals("2026-03-08 15:45", result)
     }
 
+    // ── Buy / sell cycle timestamps ───────────────────────────────────────────
+    //
+    // These tests mirror the actual buyTimestamp / sellTimestamp fields rendered
+    // in ReliabilityScreen's cycle detail rows (DetailLine calls).  They confirm
+    // that the same formatter honours DST for intraday trade timestamps, not just
+    // the retrain-history column that was tested first.
+
+    @Test
+    fun `buy timestamp just before DST spring-forward renders in EST`() {
+        // A hypothetical BUY recorded at 06:45 UTC on 2026-03-08.
+        // DST springs forward at 07:00 UTC (= 02:00 AM local), so this is still
+        // in EST (UTC-5): 01:45 AM EST.  A fixed-offset bug would silently match
+        // by accident here — the sell test below is what catches it.
+        val result = formatIsoTimestamp("2026-03-08T06:45:00Z", zone = newYork)
+        assertEquals("2026-03-08 01:45", result)
+    }
+
+    @Test
+    fun `sell timestamp just after DST spring-forward renders in EDT`() {
+        // A hypothetical SELL recorded at 08:15 UTC on 2026-03-08.
+        // DST is now active (UTC-4): 04:15 AM EDT.
+        // A bug that always applies UTC-5 would produce "03:15" — off by one hour.
+        val result = formatIsoTimestamp("2026-03-08T08:15:00Z", zone = newYork)
+        assertEquals("2026-03-08 04:15", result)
+    }
+
+    @Test
+    fun `buy timestamp just before DST fall-back renders in EDT`() {
+        // In 2026, America/New_York falls back on 2026-11-01.
+        // Clocks roll back from 02:00 AM EDT to 01:00 AM EST at 06:00 UTC.
+        // A BUY at 05:30 UTC is still in EDT (UTC-4): 01:30 AM EDT.
+        val result = formatIsoTimestamp("2026-11-01T05:30:00Z", zone = newYork)
+        assertEquals("2026-11-01 01:30", result)
+    }
+
+    @Test
+    fun `sell timestamp just after DST fall-back renders in EST`() {
+        // A SELL at 07:30 UTC on 2026-11-01 is after the fall-back (UTC-5):
+        // 02:30 AM EST.  A bug that keeps UTC-4 all day would produce "03:30".
+        val result = formatIsoTimestamp("2026-11-01T07:30:00Z", zone = newYork)
+        assertEquals("2026-11-01 02:30", result)
+    }
+
+    @Test
+    fun `null buy timestamp renders as double-dash placeholder`() {
+        // TradeCycleResponse.buyTimestamp is nullable; a null means no trade yet.
+        val result = formatIsoTimestamp(null, zone = newYork)
+        assertEquals("--", result)
+    }
+
+    @Test
+    fun `naive buy timestamp without Z suffix is treated as local time`() {
+        // Some backend paths store timestamps without a UTC suffix.
+        // The formatter must not shift these by any zone offset.
+        val result = formatIsoTimestamp("2026-03-08T09:30:00.123456", zone = newYork)
+        assertEquals("2026-03-08 09:30", result)
+    }
+
     // ── Edge / fallback cases ─────────────────────────────────────────────────
 
     @Test
