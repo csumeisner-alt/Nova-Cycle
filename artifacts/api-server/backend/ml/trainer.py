@@ -56,8 +56,16 @@ def _sidecar_files(model_path: Path) -> list:
             from ml.calibration import CALIBRATOR_PATH, REPORT_PATH
             return [CALIBRATOR_PATH, REPORT_PATH]
         if model_path.name == "short_trend_model.pkl":
-            from ml.calibration import _walkforward_report_path
-            return [_walkforward_report_path("short_trend")]
+            from ml.calibration import (
+                _walkforward_report_path,
+                calibration_report_path,
+                calibrator_path,
+            )
+            return [
+                _walkforward_report_path("short_trend"),
+                calibrator_path("short_trend"),
+                calibration_report_path("short_trend"),
+            ]
     except Exception as exc:
         logger.error("_sidecar_files error for %s: %s", model_path, exc)
     return []

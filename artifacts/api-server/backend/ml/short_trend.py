@@ -178,8 +178,10 @@ class ShortTrendModel:
     def __init__(self):
         self.model: Optional[MLPClassifier] = None
         self.scaler: Optional[StandardScaler] = None
+        self.calibrator: Optional[ml_calibration.ProbabilityCalibrator] = None
         self._model_loaded = False
         self._loaded_mtime: Optional[float] = None
+        self._calibrator_mtime: Optional[float] = None
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     def _maybe_reload(self) -> None:
@@ -196,6 +198,22 @@ class ShortTrendModel:
         if not self._model_loaded or mtime != self._loaded_mtime:
             self.load_model()
             self._loaded_mtime = mtime
+
+        # Reload the calibrator when its file appears or changes (e.g. after
+        # a retrain in the trainer component of the same process).
+        try:
+            cal_path = ml_calibration.calibrator_path("short_trend")
+            cal_mtime = cal_path.stat().st_mtime if cal_path.exists() else None
+        except OSError:
+            cal_mtime = None
+        if cal_mtime != self._calibrator_mtime:
+            calibrator = ml_calibration.load_calibrator("short_trend")
+            self.calibrator = calibrator
+            # Only pin the mtime when the load succeeded (or the file is
+            # genuinely absent); a transient read failure must be retried on
+            # the next prediction rather than silently disabling calibration.
+            if calibrator is not None or cal_mtime is None:
+                self._calibrator_mtime = cal_mtime
 
     # ──────────────────────────────────────────────────────────────────────────
     # Feature engineering
@@ -402,13 +420,51 @@ class ShortTrendModel:
             # Chronological folds with an embargo gap >= the 12-bar label
             # horizon so no training label overlaps test-window prices; the
             # scaler is re-fitted inside each fold's training window.
-            wf_metrics, _, _ = ml_calibration.walk_forward_evaluate(
+            wf_metrics, oos_probs, oos_labels = ml_calibration.walk_forward_evaluate(
                 X, y, sample_weights,
                 model_factory=ScaledMLP,
                 embargo=LABEL_HORIZON_BARS,
             )
             ml_calibration.save_walkforward_report("short_trend", wf_metrics)
             oos_acc = wf_metrics.get("oos_accuracy") if wf_metrics.get("evaluated") else None
+
+            # ── Probability calibration on pooled OOS predictions ────────────
+            # The MLP trains on a class-balanced sample, so its raw probability
+            # does not equal the true base rate of a >0.3% move within the
+            # hour. Fit a calibrator on the pooled out-of-sample predictions
+            # (same machinery as the long-trend model) so the gauge's ML
+            # contribution reflects real-world frequencies. Never blocks
+            # training on failure.
+            calibration_summary: dict = {"calibrated": False}
+            try:
+                calibration_summary.update(wf_metrics)
+                calibrator = None
+                if wf_metrics.get("evaluated"):
+                    calibrator = ml_calibration.fit_calibrator(oos_probs, oos_labels)
+                if calibrator is not None:
+                    cal_brier = ml_calibration.calibrated_brier(
+                        calibrator, oos_probs, oos_labels
+                    )
+                    calibration_summary["calibrated"] = True
+                    calibration_summary["calibration_method"] = calibrator.method
+                    calibration_summary["calibrated_brier_score"] = cal_brier
+                    if ml_calibration.save_calibrator(calibrator, "short_trend"):
+                        self.calibrator = calibrator
+                        self._calibrator_mtime = None  # force mtime re-read
+                else:
+                    calibration_summary.setdefault(
+                        "reason", "calibrator could not be fitted"
+                    )
+                    logger.warning(
+                        "ml_calibration_skipped model=short_trend reason=%s",
+                        calibration_summary.get("reason"),
+                    )
+                ml_calibration.save_calibration_report(
+                    calibration_summary, "short_trend"
+                )
+            except Exception as exc:
+                logger.error("Short-trend calibration error: %s", exc)
+                calibration_summary = {"calibrated": False, "reason": str(exc)}
 
             # ── Final fit on ALL data (scaler fitted here, on training data
             # only — there is no held-out set for the deployed model) ─────────
@@ -456,6 +512,7 @@ class ShortTrendModel:
                 "train_accuracy": train_acc,
                 "val_accuracy": val_acc,
                 "walk_forward": wf_metrics,
+                "calibration": calibration_summary,
                 "degenerate": degenerate,
                 "degeneracy_reason": degeneracy_reason,
             }
@@ -490,8 +547,21 @@ class ShortTrendModel:
 
             probs = self.model.predict_proba(features)
             # predict_proba returns [[p_class0, p_class1]]
+            prob = float(probs[0][1]) if probs.shape[1] > 1 else float(probs[0][0])
+
+            # Apply the persisted probability calibrator when available: the
+            # model trains on a class-balanced sample, so the raw probability
+            # overstates the true chance of a >0.3% move within the hour. Raw
+            # probability is the fallback — calibration must never break
+            # prediction.
+            if self.calibrator is not None:
+                try:
+                    prob = self.calibrator.transform(prob)
+                except Exception as exc:
+                    logger.error("Short-trend calibration apply error: %s", exc)
+
             self.last_prediction_was_fallback = False
-            return float(probs[0][1]) if probs.shape[1] > 1 else float(probs[0][0])
+            return float(prob)
 
         except Exception as exc:
             logger.error("Short-trend predict error: %s", exc)

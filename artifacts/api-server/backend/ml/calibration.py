@@ -35,6 +35,16 @@ MODEL_DIR = Path(__file__).parent / "models"
 CALIBRATOR_PATH = MODEL_DIR / "long_trend_calibrator.pkl"
 REPORT_PATH = MODEL_DIR / "long_trend_calibration.json"
 
+
+def calibrator_path(model_name: str = "long_trend") -> Path:
+    """Per-model calibrator pickle path (ml/models/<name>_calibrator.pkl)."""
+    return MODEL_DIR / f"{model_name}_calibrator.pkl"
+
+
+def calibration_report_path(model_name: str = "long_trend") -> Path:
+    """Per-model calibration report path (ml/models/<name>_calibration.json)."""
+    return MODEL_DIR / f"{model_name}_calibration.json"
+
 # Label horizon of the long-trend model (21-day forward return). The embargo
 # gap between each walk-forward train window and its test window must be at
 # least this many rows, or training labels leak information from test prices.
@@ -227,35 +237,39 @@ def _atomic_write(path: Path, write_fn) -> None:
     os.replace(tmp, path)
 
 
-def save_calibrator(calibrator: ProbabilityCalibrator) -> bool:
+def save_calibrator(calibrator: ProbabilityCalibrator,
+                    model_name: str = "long_trend") -> bool:
     try:
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
         def _write(f):
             pickle.dump(calibrator, f)
         _write.__mode__ = "wb"
-        _atomic_write(CALIBRATOR_PATH, _write)
+        _atomic_write(calibrator_path(model_name), _write)
         return True
     except Exception as exc:
-        logger.error("save_calibrator error: %s", exc)
+        logger.error("save_calibrator error (%s): %s", model_name, exc)
         return False
 
 
-def load_calibrator() -> Optional[ProbabilityCalibrator]:
+def load_calibrator(model_name: str = "long_trend") -> Optional[ProbabilityCalibrator]:
     try:
-        if CALIBRATOR_PATH.exists():
-            with open(CALIBRATOR_PATH, "rb") as f:
+        path = calibrator_path(model_name)
+        if path.exists():
+            with open(path, "rb") as f:
                 obj = pickle.load(f)
             if isinstance(obj, ProbabilityCalibrator):
                 return obj
-            logger.warning("long_trend calibrator file has unexpected type; ignoring")
+            logger.warning(
+                "%s calibrator file has unexpected type; ignoring", model_name
+            )
         return None
     except Exception as exc:
-        logger.error("load_calibrator error: %s", exc)
+        logger.error("load_calibrator error (%s): %s", model_name, exc)
         return None
 
 
-def save_calibration_report(metrics: dict) -> None:
+def save_calibration_report(metrics: dict, model_name: str = "long_trend") -> None:
     try:
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         payload = dict(metrics)
@@ -264,9 +278,9 @@ def save_calibration_report(metrics: dict) -> None:
         def _write(f):
             json.dump(payload, f, indent=2)
         _write.__mode__ = "w"
-        _atomic_write(REPORT_PATH, _write)
+        _atomic_write(calibration_report_path(model_name), _write)
     except Exception as exc:
-        logger.error("save_calibration_report error: %s", exc)
+        logger.error("save_calibration_report error (%s): %s", model_name, exc)
 
 
 def _walkforward_report_path(model_name: str) -> Path:
@@ -303,11 +317,12 @@ def get_walkforward_report(model_name: str) -> Optional[dict]:
         return None
 
 
-def get_calibration_report() -> Optional[dict]:
+def get_calibration_report(model_name: str = "long_trend") -> Optional[dict]:
     """Load the persisted walk-forward calibration report (never raises)."""
     try:
-        if REPORT_PATH.exists():
-            with open(REPORT_PATH, "r") as f:
+        path = calibration_report_path(model_name)
+        if path.exists():
+            with open(path, "r") as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 return data
