@@ -1907,6 +1907,104 @@ class TestPredictLongZeroVolumeDailyBar:
             "data_quality_reason must mention zero_volume_bars"
         )
 
+    # ------------------------------------------------------------------
+    # 5. All bars zero-volume: predict_long returns neutral fallback
+    # ------------------------------------------------------------------
+
+    def _build_all_zero_volume_daily_df(self) -> pd.DataFrame:
+        """Three daily bars where every row has volume=0."""
+        return pd.DataFrame([
+            {
+                "timestamp": datetime(2024, 7, 28),
+                "open": 495.0, "high": 500.0, "low": 493.0, "close": 498.0,
+                "volume": 0,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+            {
+                "timestamp": datetime(2024, 7, 29),
+                "open": 498.0, "high": 503.0, "low": 496.0, "close": 501.0,
+                "volume": 0,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30),
+                "open": 501.0, "high": 506.0, "low": 499.0, "close": 504.0,
+                "volume": 0,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+        ])
+
+    def test_all_zero_volume_daily_bars_frame_is_empty_after_mask(self):
+        """After applying the zero-volume mask to an all-zero-volume daily_df,
+        the resulting filtered frame must be empty."""
+        import routers.predictions as pred
+
+        df = self._build_all_zero_volume_daily_df()
+        mask, count, reason = pred._detect_zero_volume_bars(df)
+
+        assert count == 3, "All three bars should be detected as zero-volume"
+        filtered = df[~mask].reset_index(drop=True)
+        assert filtered.empty, "Filtered daily_df must be empty when all bars had zero volume"
+        assert "zero_volume_bars" in reason
+
+    @pytest.mark.asyncio
+    async def test_predict_long_all_zero_volume_daily_bars_returns_neutral_fallback(self):
+        """predict_long returns a neutral fallback with dq_degraded=True and no
+        exception when every loaded daily bar has volume=0.
+
+        After _detect_zero_volume_bars removes all rows daily_df becomes empty,
+        and predict_long must return the 'All recent daily candles had zero
+        volume.' response rather than crashing or proceeding with an empty frame.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        daily_df = self._build_all_zero_volume_daily_df()
+        vix_df = pd.DataFrame([
+            {
+                "timestamp": datetime(2024, 7, 29),
+                "open": 15.0, "high": 16.0, "low": 14.5, "close": 15.5,
+                "ticker": "VIX",
+            }
+        ])
+
+        mock_session = AsyncMock()
+
+        with (
+            patch("routers.predictions._load_daily_candles", new=AsyncMock(return_value=daily_df)),
+            patch("routers.predictions._load_vix_candles", new=AsyncMock(return_value=vix_df)),
+            patch("routers.predictions._load_spx_close_series", new=AsyncMock(return_value=pd.Series(dtype=float))),
+            patch("routers.predictions._load_recent_confidence", new=AsyncMock(return_value=[])),
+            patch("routers.predictions._store_confidence", new=AsyncMock()),
+            patch("routers.predictions._store_signal", new=AsyncMock()),
+            patch("routers.predictions._indicators_engine"),
+            patch("routers.predictions._long_model"),
+            patch("routers.predictions._long_gauge"),
+            patch("routers.predictions._macro_override"),
+            patch("routers.predictions._decision_filter"),
+        ):
+            import routers.predictions as pred
+            response = await pred.predict_long(ticker="VOO", session=mock_session)
+
+        assert isinstance(response, dict), "Response must be a dict (no crash)"
+        assert response.get("data_quality_degraded") is True, (
+            "Expected data_quality_degraded=True when all daily bars had zero volume"
+        )
+        assert response.get("ml_fallback") is True, (
+            "Expected ml_fallback=True in the neutral response"
+        )
+        assert response.get("signal") == "neutral", (
+            "Expected signal='neutral' in the all-zero-volume fallback response"
+        )
+        assert "All recent daily candles had zero volume" in response.get("note", ""), (
+            "note must say 'All recent daily candles had zero volume'"
+        )
+        assert "zero_volume_bars" in response.get("data_quality_reason", ""), (
+            "data_quality_reason must mention zero_volume_bars"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Task-212: Zero-volume VIX and SPX ingest gate + startup cleanup
