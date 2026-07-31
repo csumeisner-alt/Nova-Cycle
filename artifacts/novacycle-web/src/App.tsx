@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge } from 'lucide-react';
 import { PredictionCard } from '@/components/PredictionCard';
+import { PerformanceDashboard } from '@/components/PerformanceDashboard';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { useState, useEffect } from 'react';
 
@@ -755,6 +756,45 @@ function DownloadApkSection() {
   );
 }
 
+function Dashboard() {
+  const [tab, setTab] = useState<'system' | 'performance'>('system');
+
+  return (
+    <div className="relative">
+      <div className="sticky top-0 z-40 w-full border-b border-white/5 bg-background/80 backdrop-blur-md">
+        <div className="mx-auto max-w-7xl px-6">
+          <div className="flex items-center space-x-1 py-2 font-mono text-sm">
+            <button
+              data-testid="tab-system"
+              onClick={() => setTab('system')}
+              className={`px-4 py-2 rounded-md tracking-wide transition-colors ${
+                tab === 'system'
+                  ? 'bg-primary/20 text-primary'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              SYSTEM
+            </button>
+            <button
+              data-testid="tab-performance"
+              onClick={() => setTab('performance')}
+              className={`px-4 py-2 rounded-md tracking-wide transition-colors ${
+                tab === 'performance'
+                  ? 'bg-primary/20 text-primary'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              PERFORMANCE
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {tab === 'system' ? <StatusDashboard /> : <PerformanceDashboard />}
+    </div>
+  );
+}
+
 function NotFound() {
   return (
     <div className="min-h-[100dvh] flex flex-col items-center justify-center bg-background text-foreground">
@@ -773,7 +813,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
         <Switch>
-          <Route path="/" component={StatusDashboard} />
+          <Route path="/" component={Dashboard} />
           <Route component={NotFound} />
         </Switch>
       </WouterRouter>

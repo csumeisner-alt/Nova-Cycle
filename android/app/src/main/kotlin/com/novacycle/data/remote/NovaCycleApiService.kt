@@ -88,6 +88,16 @@ interface NovaCycleApiService {
         @Query("window") window: String = "30d"
     ): TradeHistoryResponse
 
+    /** Retrieve model-performance analytics (precision, calibration, streaks, missed rallies) */
+    @GET("model_performance")
+    suspend fun getModelPerformance(
+        @Query("ticker") ticker: String = "VOO",
+        @Query("window") window: String = "90d",
+        @Query("period") period: String = "day",
+        @Query("confidence_min") confidenceMin: Float? = null,
+        @Query("confidence_max") confidenceMax: Float? = null
+    ): ModelPerformanceResponse
+
     /** Register or refresh an FCM device token with the backend */
     @POST("register_device")
     suspend fun registerDeviceToken(

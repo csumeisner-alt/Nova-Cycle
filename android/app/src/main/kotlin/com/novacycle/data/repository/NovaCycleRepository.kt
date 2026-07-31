@@ -206,11 +206,28 @@ open class NovaCycleRepository @Inject constructor(
      * Kept as a simple remote call because the backend is the source of truth
      * for generated cycles and computed metrics.
      */
-    suspend fun getTradeHistory(
+    open suspend fun getTradeHistory(
         ticker: String = "VOO",
         window: String = "30d"
     ): Result<TradeHistoryResponse> =
         runCatching { apiService.getTradeHistory(ticker, window).recordDataFreshness() }
+
+    /**
+     * Fetch model-performance analytics from /model_performance.
+     * Kept as a simple remote call because the backend is the source of truth
+     * for computed precision, calibration, streaks and missed-rally metrics.
+     */
+    open suspend fun getModelPerformance(
+        ticker: String = "VOO",
+        window: String = "90d",
+        period: String = "day",
+        confidenceMin: Float? = null,
+        confidenceMax: Float? = null
+    ): Result<ModelPerformanceResponse> =
+        runCatching {
+            apiService.getModelPerformance(ticker, window, period, confidenceMin, confidenceMax)
+                .recordDataFreshness()
+        }
 
     /**
      * Check whether the backend still holds this token.

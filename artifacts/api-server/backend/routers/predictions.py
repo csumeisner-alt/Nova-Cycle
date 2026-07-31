@@ -1364,6 +1364,42 @@ async def trade_history(
 
 
 # ---------------------------------------------------------------------------
+# GET /model_performance  (Model Performance Dashboard)
+# ---------------------------------------------------------------------------
+@router.get("/model_performance")
+async def model_performance(
+    ticker: str = Query(default="VOO"),
+    period: str = Query(default="day"),
+    window: str = Query(default="90d"),
+    confidence_min: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    confidence_max: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Model performance report: period-bucketed BUY precision, confidence
+    buckets, calibration curve, cumulative P&L, streaks, missed rallies,
+    session/VIX breakdowns, and retrain accuracy history.
+
+    Safe empty shapes are returned when no trade data exists (never a 500).
+    """
+    _validate_ticker(ticker)
+    if period not in ("day", "week", "month"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"period must be one of day, week, month (got '{period}')",
+        )
+    from performance_engine import get_model_performance
+    return await get_model_performance(
+        session,
+        ticker=ticker,
+        period=period,
+        window=window,
+        confidence_min=confidence_min,
+        confidence_max=confidence_max,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /healthz
 # ---------------------------------------------------------------------------
 @router.get("/healthz")

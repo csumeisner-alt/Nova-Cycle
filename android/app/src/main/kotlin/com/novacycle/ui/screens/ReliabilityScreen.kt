@@ -29,7 +29,9 @@ import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.NovaBuyGreen
 import com.novacycle.ui.theme.NovaSellRed
+import com.novacycle.viewmodel.ConfidenceBand
 import com.novacycle.viewmodel.CycleSortColumn
+import com.novacycle.viewmodel.PeriodFilter
 import com.novacycle.viewmodel.ReliabilityUiState
 import com.novacycle.viewmodel.ReliabilityViewModel
 import com.novacycle.viewmodel.WinLossFilter
@@ -97,11 +99,29 @@ fun ReliabilityScreen(
             }
 
             item {
+                PeriodChipRow(
+                    selected = uiState.periodFilter,
+                    onSelected = { viewModel.setPeriodFilter(it) }
+                )
+            }
+
+            item {
+                ConfidenceChipRow(
+                    selected = uiState.confidenceBand,
+                    onSelected = { viewModel.setConfidenceBand(it) }
+                )
+            }
+
+            item {
                 SummaryPanel(
                     summary = uiState.summary,
                     isLoading = uiState.isLoading,
                     cycleCount = uiState.filteredCycles.size
                 )
+            }
+
+            item {
+                ModelPerformancePanel(uiState = uiState)
             }
 
             item {
@@ -128,17 +148,21 @@ fun ReliabilityScreen(
 
             if (uiState.filteredCycles.isEmpty()) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 48.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (uiState.isLoading) "Loading cycles…" else "No cycles match the current filters.",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    if (uiState.isLoading) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Loading cycles…",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        EmptyCyclesCard()
                     }
                 }
             } else {
@@ -235,6 +259,203 @@ private fun SummaryMetric(label: String, value: String, modifier: Modifier = Mod
         ) {
             Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(label, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Period + confidence chip rows
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun PeriodChipRow(
+    selected: PeriodFilter,
+    onSelected: (PeriodFilter) -> Unit
+) {
+    val options = listOf(
+        "1D" to PeriodFilter.D1,
+        "7D" to PeriodFilter.D7,
+        "30D" to PeriodFilter.D30
+    )
+    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Period", style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(72.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { (text, value) ->
+                FilterChip(
+                    selected = selected == value,
+                    onClick = { onSelected(value) },
+                    label = { Text(text) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfidenceChipRow(
+    selected: ConfidenceBand,
+    onSelected: (ConfidenceBand) -> Unit
+) {
+    val options = listOf(
+        "All" to ConfidenceBand.ALL,
+        "Low" to ConfidenceBand.LOW,
+        "Med" to ConfidenceBand.MEDIUM,
+        "High" to ConfidenceBand.HIGH
+    )
+    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Confidence", style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(72.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { (text, value) ->
+                FilterChip(
+                    selected = selected == value,
+                    onClick = { onSelected(value) },
+                    label = { Text(text) }
+                )
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Model-performance panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun ModelPerformancePanel(uiState: ReliabilityUiState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = "Model Performance",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(12.dp))
+
+            if (uiState.performanceError != null) {
+                Text(
+                    text = uiState.performanceError,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            // Missed-rallies counter card alongside a cumulative P&L value.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MissedRalliesCard(count = uiState.missedRallyCount, modifier = Modifier.weight(1f))
+                CumulativePnlCard(percent = uiState.cumulativeReturnPercent, modifier = Modifier.weight(1f))
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Calibration summary line under the win-rate area.
+            val winRate = uiState.highConfidenceWinRate
+            val claim = uiState.highConfidenceClaim
+            val calibrationText = if (winRate != null) {
+                "High-confidence calls win ${(winRate * 100).format1f()}% of the time " +
+                    "(model claims ${(claim * 100).format1f()}%)"
+            } else {
+                "High-confidence calibration not available yet."
+            }
+            Text(
+                text = calibrationText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun MissedRalliesCard(count: Int, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Missed Rallies",
+                style = MaterialTheme.typography.labelSmall,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun CumulativePnlCard(percent: Float, modifier: Modifier = Modifier) {
+    val color = when {
+        percent > 0f -> NovaBuyGreen
+        percent < 0f -> NovaSellRed
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val prefix = if (percent >= 0f) "+" else "−"
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "$prefix${kotlin.math.abs(percent).format2f()}%",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = color
+            )
+            Text(
+                text = "Cumulative P&L",
+                style = MaterialTheme.typography.labelSmall,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyCyclesCard() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "No completed trades yet",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Once BUY→SELL cycles complete for the selected period and " +
+                    "confidence band, they'll appear here with full reliability metrics.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
