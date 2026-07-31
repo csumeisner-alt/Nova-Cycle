@@ -10,21 +10,39 @@ model) is wired into ShortTrendModel:
   - predict() applies the calibrator and stays within [0, 1]
   - raw probability is served when the calibrator is missing or broken
   - train() fits + persists a calibrator and returns a calibration summary
+  - get_neutral_probability() reflects the loaded positive_rate across several
+    different calibration reports
+  - gauge ml_score is zero when ml_prediction equals the base rate
+  - a changed on-disk report causes the rate to be re-read (no stale value)
+  - missing or invalid report metadata falls back safely to 0.5
 """
 
+import json
 import pickle
+import time
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from ml import calibration as cal
+from ml import short_trend as st
 from ml.short_trend import ShortTrendModel, N_FEATURES
 
 
 @pytest.fixture
 def tmp_model_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(cal, "MODEL_DIR", tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def tmp_model_dir_full(tmp_path, monkeypatch):
+    """Patch both cal.MODEL_DIR and st.MODEL_PATH so _maybe_reload() never
+    tries to read a production model file from the real models/ directory."""
+    monkeypatch.setattr(cal, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(st, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(st, "MODEL_PATH", tmp_path / "short_trend_model.pkl")
     return tmp_path
 
 
@@ -180,3 +198,173 @@ def test_train_fits_and_persists_short_calibrator(tmp_model_dir, monkeypatch, tm
         m._maybe_reload = lambda: None
         p = m.predict(feats)
         assert 0.0 <= p <= 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_neutral_probability(): calibration report → base rate
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("positive_rate", [0.05, 0.08, 0.12, 0.25, 0.35, 0.48])
+def test_get_neutral_probability_matches_report(tmp_model_dir_full, positive_rate):
+    """get_neutral_probability() returns the exact positive_rate from a valid
+    calibration report. Parametrized over realistic rare-event base rates to
+    confirm the gauge's neutral point shifts correctly with each retrain."""
+    cal.save_calibration_report({"positive_rate": positive_rate}, "short_trend")
+    m = ShortTrendModel()
+    result = m.get_neutral_probability()
+    assert result == pytest.approx(positive_rate, abs=1e-6)
+
+
+def test_get_neutral_probability_missing_report_returns_half(tmp_model_dir_full):
+    """With no calibration report on disk the safe fallback is 0.5."""
+    m = ShortTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("bad_rate", [None, "abc", 0.0, 1.0, -0.1, 1.5])
+def test_get_neutral_probability_invalid_rate_returns_half(tmp_model_dir_full, bad_rate):
+    """Invalid or out-of-range positive_rate values (boundary, non-numeric,
+    negative, >1) all fall back to 0.5 rather than biasing the gauge."""
+    cal.save_calibration_report({"positive_rate": bad_rate}, "short_trend")
+    m = ShortTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.5)
+
+
+def test_get_neutral_probability_report_without_rate_key_returns_half(tmp_model_dir_full):
+    """A report that exists but has no positive_rate key falls back to 0.5."""
+    cal.save_calibration_report({"calibrated": True, "oos_accuracy": 0.55}, "short_trend")
+    m = ShortTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.5)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stale-rate guard: report replaced on disk → new rate is picked up
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_neutral_probability_does_not_use_stale_rate(tmp_model_dir_full):
+    """When the calibration report file is overwritten (simulating a retrain),
+    the model re-reads the new positive_rate on the next call rather than
+    returning the cached value from before the retrain."""
+    report_path = cal.calibration_report_path("short_trend")
+
+    # First report
+    cal.save_calibration_report({"positive_rate": 0.08}, "short_trend")
+    m = ShortTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.08)
+
+    # Overwrite the report to simulate a retrain with a higher base rate.
+    # Sleep briefly so the OS records a later mtime; write via the path directly
+    # to guarantee the file object is closed before the next stat() call.
+    time.sleep(0.05)
+    report_path.write_text(json.dumps({"positive_rate": 0.30}))
+
+    # Must return the updated rate, not the stale 0.08.
+    assert m.get_neutral_probability() == pytest.approx(0.30)
+
+
+def test_get_neutral_probability_cycles_across_multiple_reports(tmp_model_dir_full):
+    """Simulate three consecutive retrains with materially different positive
+    rates; each call after a file change returns the current rate."""
+    report_path = cal.calibration_report_path("short_trend")
+    rates = [0.07, 0.18, 0.42]
+
+    m = ShortTrendModel()
+    for rate in rates:
+        time.sleep(0.05)
+        report_path.write_text(json.dumps({"positive_rate": rate}))
+        assert m.get_neutral_probability() == pytest.approx(rate, abs=1e-6), (
+            f"Expected neutral probability {rate} after report update"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ShortTrendGauge: ml_score is zero when prediction equals the base rate
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("base_rate", [0.05, 0.08, 0.12, 0.25, 0.35, 0.48, 0.50])
+def test_gauge_ml_score_zero_when_prediction_equals_base_rate(base_rate):
+    """When ml_prediction == neutral_probability the ML contributes 0 to the
+    gauge score, so a market behaving at its normal move rate stays neutral
+    regardless of what the calibrated base rate is."""
+    from signal_engine.short_gauge import ShortTrendGauge
+
+    gauge = ShortTrendGauge()
+    result = gauge.compute_score(
+        indicators={
+            "latest": {
+                "rsi": 50.0,
+                "stoch_rsi_k": 50.0,
+                "stoch_k": 50.0,
+                "bb_pct_b": 0.5,
+            }
+        },
+        ml_prediction=base_rate,
+        is_extended=False,
+        liquidity_score=1.0,
+        gap_type="none",
+        age_in_minutes=0.0,
+        neutral_probability=base_rate,
+    )
+    assert result["ml_score"] == pytest.approx(0.0, abs=1e-6), (
+        f"ml_score should be 0 when prediction equals base_rate={base_rate}"
+    )
+    assert result["neutral_probability"] == pytest.approx(
+        min(0.99, max(0.01, base_rate)), abs=1e-6
+    )
+
+
+def test_gauge_ml_score_direction_above_and_below_base_rate():
+    """Predictions above the base rate produce a positive ml_score (bullish);
+    predictions below produce a negative ml_score (bearish). This is
+    consistent across a low base rate typical for the short-trend label."""
+    from signal_engine.short_gauge import ShortTrendGauge
+
+    gauge = ShortTrendGauge()
+    base_rate = 0.08  # realistic calibrated positive rate
+
+    def _ml_score(pred):
+        return gauge.compute_score(
+            indicators={"latest": {"rsi": 50.0, "stoch_rsi_k": 50.0,
+                                   "stoch_k": 50.0, "bb_pct_b": 0.5}},
+            ml_prediction=pred,
+            is_extended=False,
+            liquidity_score=1.0,
+            gap_type="none",
+            age_in_minutes=0.0,
+            neutral_probability=base_rate,
+        )["ml_score"]
+
+    assert _ml_score(base_rate) == pytest.approx(0.0, abs=1e-6)
+    assert _ml_score(base_rate + 0.10) > 0.0, "Above base rate → bullish ml_score"
+    assert _ml_score(max(0.01, base_rate - 0.05)) < 0.0, "Below base rate → bearish ml_score"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# End-to-end: model loads report → gauge uses correct neutral probability
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_model_neutral_probability_feeds_gauge_correctly(tmp_model_dir_full, monkeypatch):
+    """get_neutral_probability() from a freshly-loaded report produces an ml_score
+    of zero when passed as neutral_probability to the gauge — confirms the wiring
+    between ShortTrendModel and ShortTrendGauge is bias-free."""
+    from signal_engine.short_gauge import ShortTrendGauge
+
+    positive_rate = 0.11
+    cal.save_calibration_report({"positive_rate": positive_rate}, "short_trend")
+
+    m = ShortTrendModel()
+    neutral = m.get_neutral_probability()
+    assert neutral == pytest.approx(positive_rate)
+
+    gauge = ShortTrendGauge()
+    result = gauge.compute_score(
+        indicators={"latest": {"rsi": 50.0, "stoch_rsi_k": 50.0,
+                               "stoch_k": 50.0, "bb_pct_b": 0.5}},
+        ml_prediction=neutral,
+        is_extended=False,
+        liquidity_score=1.0,
+        gap_type="none",
+        age_in_minutes=0.0,
+        neutral_probability=neutral,
+    )
+    assert result["ml_score"] == pytest.approx(0.0, abs=1e-6)
