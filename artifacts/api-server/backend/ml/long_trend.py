@@ -73,6 +73,8 @@ class LongTrendModel:
         self._model_loaded = False
         self._loaded_mtime: Optional[float] = None
         self._calibrator_mtime: Optional[float] = None
+        self.calibration_base_rate: Optional[float] = None
+        self._calibration_report_mtime: Optional[float] = None
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     def _maybe_reload(self) -> None:
@@ -105,6 +107,37 @@ class LongTrendModel:
             # the next prediction rather than silently disabling calibration.
             if calibrator is not None or cal_mtime is None:
                 self._calibrator_mtime = cal_mtime
+
+        # Reload the calibration report's positive rate when the report file
+        # appears, changes, or disappears.  A deleted report (e.g. a failed
+        # retrain that removed the old file) must reset the base rate so the
+        # gauge falls back to the safe 0.5 neutral point rather than silently
+        # retaining a stale rate.
+        try:
+            report_path = ml_calibration.calibration_report_path("long_trend")
+            report_mtime = report_path.stat().st_mtime if report_path.exists() else None
+        except OSError:
+            report_mtime = None
+        if report_mtime != self._calibration_report_mtime:
+            report = ml_calibration.get_calibration_report("long_trend")
+            rate = report.get("positive_rate") if isinstance(report, dict) else None
+            try:
+                rate = float(rate)
+                self.calibration_base_rate = (
+                    min(0.99, max(0.01, rate)) if 0.0 < rate < 1.0 else None
+                )
+            except (TypeError, ValueError):
+                self.calibration_base_rate = None
+            self._calibration_report_mtime = report_mtime
+
+    def get_neutral_probability(self) -> float:
+        """Return the calibrated probability that represents a normal outcome.
+
+        A missing or invalid calibration report deliberately returns 0.5 so
+        legacy models and neutral fallbacks retain the old behavior.
+        """
+        self._maybe_reload()
+        return self.calibration_base_rate or 0.5
 
     # ──────────────────────────────────────────────────────────────────────────
     # Feature engineering

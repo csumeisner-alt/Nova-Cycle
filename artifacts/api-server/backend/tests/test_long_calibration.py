@@ -12,6 +12,7 @@ Covers:
 
 import json
 import pickle
+import time
 
 import numpy as np
 import pytest
@@ -279,3 +280,91 @@ def test_train_returns_calibration_summary(tmp_paths, monkeypatch, tmp_path):
     assert feats is not None
     p = m.predict(feats)
     assert 0.0 <= p <= 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Neutral probability / calibration base rate (report lifecycle)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def tmp_model_dir_full(tmp_path, monkeypatch):
+    """Patch cal.MODEL_DIR plus lt.MODEL_PATH and the legacy calibrator path
+    so _maybe_reload() never touches production files in the real models/
+    directory."""
+    from ml import long_trend as lt
+
+    monkeypatch.setattr(cal, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(cal, "CALIBRATOR_PATH", tmp_path / "long_trend_calibrator.pkl")
+    monkeypatch.setattr(cal, "REPORT_PATH", tmp_path / "long_trend_calibration.json")
+    monkeypatch.setattr(lt, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(lt, "MODEL_PATH", tmp_path / "long_trend_model.pkl")
+    return tmp_path
+
+
+def test_get_neutral_probability_matches_report(tmp_model_dir_full):
+    cal.save_calibration_report({"positive_rate": 0.62}, "long_trend")
+    m = LongTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.62)
+
+
+def test_get_neutral_probability_missing_report_returns_half(tmp_model_dir_full):
+    m = LongTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.5)
+    assert m._calibration_report_mtime is None
+
+
+def test_get_neutral_probability_resets_to_half_when_report_deleted(tmp_model_dir_full):
+    """When the calibration report file is deleted after an initial successful
+    load (e.g. a failed retrain that removes the old report before writing the
+    new one), get_neutral_probability() must return the safe 0.5 fallback
+    rather than silently retaining the previously loaded rate.
+
+    Also confirms that _calibration_report_mtime is cleared (set to None) so
+    that any subsequent file write is detected as a change on the next call.
+    """
+    report_path = cal.calibration_report_path("long_trend")
+
+    # Write a valid report and confirm the rate is loaded.
+    cal.save_calibration_report({"positive_rate": 0.58}, "long_trend")
+    m = LongTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.58)
+    assert m._calibration_report_mtime is not None, (
+        "mtime should be set after a successful load"
+    )
+
+    # Delete the report file to simulate a failed retrain that removed it.
+    report_path.unlink()
+
+    # Must fall back to 0.5, not retain the stale 0.58.
+    assert m.get_neutral_probability() == pytest.approx(0.5), (
+        "Expected 0.5 fallback after calibration report was deleted"
+    )
+
+    # _calibration_report_mtime must be cleared so any future file write
+    # (mtime != None) triggers a fresh reload.
+    assert m._calibration_report_mtime is None, (
+        "_calibration_report_mtime should be None after the file disappears"
+    )
+
+
+def test_get_neutral_probability_recovers_after_delete_then_rewrite(tmp_model_dir_full):
+    """After a deletion resets the base rate to 0.5, writing a replacement
+    report (e.g. a successful retrain) must be picked up on the next call —
+    the model must not stay stuck at 0.5 due to stale mtime bookkeeping."""
+    report_path = cal.calibration_report_path("long_trend")
+
+    cal.save_calibration_report({"positive_rate": 0.58}, "long_trend")
+    m = LongTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.58)
+
+    report_path.unlink()
+    assert m.get_neutral_probability() == pytest.approx(0.5)
+
+    # Sleep briefly so the OS records a distinct mtime from the original file.
+    time.sleep(0.05)
+    report_path.write_text(json.dumps({"positive_rate": 0.71}))
+
+    assert m.get_neutral_probability() == pytest.approx(0.71), (
+        "Expected the replacement report's positive_rate after delete+rewrite, "
+        "not the stuck 0.5 fallback"
+    )
