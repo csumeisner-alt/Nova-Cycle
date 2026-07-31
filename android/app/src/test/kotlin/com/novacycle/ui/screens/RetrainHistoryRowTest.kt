@@ -166,4 +166,49 @@ class RetrainHistoryRowTest {
             shouldShowModelName(entry)
         )
     }
+
+    // ── Date label: null / empty trainedAt ────────────────────────────────────
+
+    /**
+     * Mirrors the Text composable in RetrainHistoryRow:
+     *   Text(text = formatIsoTimestamp(entry.trainedAt), ...)
+     *
+     * When the backend sends null for trainedAt, formatIsoTimestamp must return
+     * "--" so the row displays a placeholder rather than crashing or rendering
+     * an empty string.
+     */
+    @Test
+    fun `null trainedAt produces dash placeholder via formatIsoTimestamp`() {
+        val entry = AccuracyHistoryEntry(
+            modelName = "",
+            trainedAt = null,
+            accuracy = 0.70f
+        )
+        val displayed = formatIsoTimestamp(entry.trainedAt)
+        assertEquals(
+            "formatIsoTimestamp(null) must return \"--\" so RetrainHistoryRow shows a placeholder",
+            "--",
+            displayed
+        )
+    }
+
+    /**
+     * When trainedAt is an empty string the backend has sent an unparseable value.
+     * formatIsoTimestamp falls back to returning the original string unchanged,
+     * so the row displays "" rather than crashing.
+     */
+    @Test
+    fun `empty string trainedAt returns empty string via formatIsoTimestamp`() {
+        val entry = AccuracyHistoryEntry(
+            modelName = "",
+            trainedAt = "",
+            accuracy = 0.70f
+        )
+        val displayed = formatIsoTimestamp(entry.trainedAt)
+        assertEquals(
+            "formatIsoTimestamp(\"\") must return \"\" (raw fallback) so RetrainHistoryRow does not crash",
+            "",
+            displayed
+        )
+    }
 }
