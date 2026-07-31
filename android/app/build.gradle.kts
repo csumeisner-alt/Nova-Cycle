@@ -13,6 +13,12 @@ plugins {
 android {
     namespace = "com.novacycle"
     compileSdk = 35
+    val hasCiSigning = listOf(
+        "KEYSTORE_BASE64",
+        "KEYSTORE_PASSWORD",
+        "KEY_ALIAS",
+        "KEY_PASSWORD",
+    ).all { !System.getenv(it).isNullOrBlank() }
 
     defaultConfig {
         applicationId = "com.novacycle"
@@ -66,7 +72,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            // CI uses the protected release key. Local builds use the same
+            // debug key as debug APKs so the generated download remains
+            // installable over an existing local/debug NovaCycle build.
+            signingConfig = if (hasCiSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
         debug {
             // Debug keeps API URL readable, minification off.

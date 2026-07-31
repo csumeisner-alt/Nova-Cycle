@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
     }
 
     @Inject
@@ -231,10 +232,6 @@ class MainActivity : ComponentActivity() {
                 registrationInFlight.set(false)
             }
         }
-    }
-
-    companion object {
-        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
     }
 
     /**
