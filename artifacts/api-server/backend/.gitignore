@@ -1,0 +1,12 @@
+# Runtime state files — never commit
+spike_quarantine_state.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
