@@ -834,13 +834,6 @@ async def predict_short(
                 "note": "All recent 5-min candles failed OHLC integrity check."
             }
 
-        latest = df_5min.iloc[-1]
-        is_extended = bool(latest.get("is_extended_hours", False))
-        session_type = str(latest.get("session_type", "regular"))
-        gap_type = str(latest.get("gap_type", "none"))
-        # Gap follow-through momentum (additive; None when no gap / no data yet)
-        gap_momentum = _compute_gap_momentum_from_df(df_5min)
-
         # Zero-volume bar detection: these bars pass OHLC checks but have
         # volume=0 (yfinance glitch or thin extended-hours window).  Exclude
         # them from the liquidity score so a single glitch bar cannot
@@ -858,6 +851,22 @@ async def predict_short(
                 "zero_volume_bars count=%d timeframe=5min",
                 zero_vol_count,
             )
+
+        # Choose the "latest" candle for session context (session_type, gap_type,
+        # is_extended).  When the most recent bar has volume=0 (a glitch bar) we
+        # fall back to the last non-zero-volume bar so that a single empty bar
+        # cannot corrupt the signal context.  If all bars are zero-volume we keep
+        # the raw last row as a best-effort fallback (extremely rare edge case).
+        if zero_vol_count > 0 and bool(zero_vol_mask.iloc[-1]):
+            valid_rows = df_5min[~zero_vol_mask]
+            latest = valid_rows.iloc[-1] if not valid_rows.empty else df_5min.iloc[-1]
+        else:
+            latest = df_5min.iloc[-1]
+        is_extended = bool(latest.get("is_extended_hours", False))
+        session_type = str(latest.get("session_type", "regular"))
+        gap_type = str(latest.get("gap_type", "none"))
+        # Gap follow-through momentum (additive; None when no gap / no data yet)
+        gap_momentum = _compute_gap_momentum_from_df(df_5min)
 
         # Compute liquidity score using only non-zero-volume bars so that a
         # glitch bar with volume=0 cannot drag the score toward zero.

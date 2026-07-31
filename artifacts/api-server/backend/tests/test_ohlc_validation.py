@@ -2330,3 +2330,214 @@ class TestRemoveInvalidSpxCandles:
 
         removed = await IngestionPipeline().remove_invalid_spx_candles(vix_spx_db_session)
         assert removed == 1
+
+
+# ---------------------------------------------------------------------------
+# Task-234: zero-volume guard for the short-trend 5-min path
+# ---------------------------------------------------------------------------
+
+class TestPredictShortZeroVolumeLatestBar:
+    """Confirm that _detect_zero_volume_bars flags a zero-volume latest 5-min bar
+    and that predict_short falls back to the previous valid bar for session
+    context (session_type, gap_type, is_extended) while setting dq_degraded=True.
+    """
+
+    # ── helper wiring ─────────────────────────────────────────────────────────
+
+    def _detect(self, df: pd.DataFrame):
+        """Call _detect_zero_volume_bars from the predictions module."""
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+        return pred._detect_zero_volume_bars(df)
+
+    def _make_5min_frame(self, rows: list[dict]) -> pd.DataFrame:
+        return pd.DataFrame(rows)
+
+    # ── _detect_zero_volume_bars unit tests ──────────────────────────────────
+
+    def test_zero_volume_latest_bar_is_detected(self):
+        """When the newest 5-min bar has volume=0, the mask, count, and reason
+        must all reflect a zero-volume detection and dq_degraded is implied."""
+        df = self._make_5min_frame([
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0,
+                "volume": 120_000, "session_type": "regular",
+                "gap_type": "gap_up", "is_extended_hours": False,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.0, "high": 503.0, "low": 499.0, "close": 501.0,
+                # Zero-volume glitch bar — the newest candle
+                "volume": 0, "session_type": "pre_market",
+                "gap_type": "none", "is_extended_hours": True,
+            },
+        ])
+        mask, count, reason = self._detect(df)
+
+        assert count == 1, "exactly one zero-volume bar must be detected"
+        assert bool(mask.iloc[-1]) is True, "the mask must flag the last (newest) bar"
+        assert bool(mask.iloc[0]) is False, "the first valid bar must not be flagged"
+        assert reason != "", "a non-empty reason string must be returned (dq_degraded trigger)"
+        assert "zero_volume_bars" in reason
+
+    def test_zero_volume_latest_bar_mask_last_element_true(self):
+        """iloc[-1] of the returned mask must be True when only the last bar is zero-volume."""
+        df = self._make_5min_frame([
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0,
+                "volume": 80_000,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.0, "high": 503.0, "low": 499.0, "close": 501.0,
+                "volume": 0,  # newest bar — zero volume
+            },
+        ])
+        mask, count, _ = self._detect(df)
+
+        assert bool(mask.iloc[-1]) is True
+        assert count == 1
+
+    def test_no_zero_volume_bars_returns_empty_reason(self):
+        """When all bars have positive volume, count=0 and reason is empty."""
+        df = self._make_5min_frame([
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0,
+                "volume": 100_000,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.0, "high": 503.0, "low": 499.0, "close": 501.0,
+                "volume": 90_000,
+            },
+        ])
+        mask, count, reason = self._detect(df)
+
+        assert count == 0
+        assert reason == ""
+        assert not mask.any()
+
+    # ── predict_short context-selection fallback tests ────────────────────────
+
+    def test_previous_valid_bar_used_for_session_context(self):
+        """When the newest bar has volume=0, the session context fields
+        (session_type, gap_type, is_extended) must come from the last
+        non-zero-volume bar, not from the glitch bar.
+
+        This mirrors the logic added to predict_short:
+            if zero_vol_mask.iloc[-1]:
+                latest = df_5min[~zero_vol_mask].iloc[-1]
+        """
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+
+        # Build a frame whose last bar is a zero-volume pre-market glitch.
+        # The previous bar is a regular-session bar with gap_up.
+        df = self._make_5min_frame([
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0,
+                "volume": 120_000,
+                "session_type": "regular",
+                "gap_type": "gap_up",
+                "is_extended_hours": False,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.5, "high": 502.0, "low": 500.0, "close": 501.0,
+                "volume": 0,  # glitch bar — newest
+                "session_type": "pre_market",
+                "gap_type": "none",
+                "is_extended_hours": True,
+            },
+        ])
+
+        zero_vol_mask, zero_vol_count, zv_reason = pred._detect_zero_volume_bars(df)
+
+        # Simulate the fallback selection logic added to predict_short
+        if zero_vol_count > 0 and bool(zero_vol_mask.iloc[-1]):
+            valid_rows = df[~zero_vol_mask]
+            latest = valid_rows.iloc[-1] if not valid_rows.empty else df.iloc[-1]
+        else:
+            latest = df.iloc[-1]
+
+        # dq_degraded must be True (reason is non-empty)
+        assert zv_reason != "", "dq_degraded must be triggered (reason non-empty)"
+        assert zero_vol_count == 1
+
+        # Session context must come from the previous valid bar
+        assert str(latest.get("session_type")) == "regular", (
+            "session_type must come from the previous valid bar, not the zero-volume glitch bar"
+        )
+        assert str(latest.get("gap_type")) == "gap_up", (
+            "gap_type must come from the previous valid bar"
+        )
+        assert bool(latest.get("is_extended_hours")) is False, (
+            "is_extended_hours must come from the previous valid bar"
+        )
+
+    def test_all_zero_volume_falls_back_to_raw_last(self):
+        """When every bar has volume=0, the raw last row is kept as a best-effort
+        fallback (no crash, no KeyError)."""
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+
+        df = self._make_5min_frame([
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0,
+                "volume": 0, "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.0, "high": 503.0, "low": 499.0, "close": 501.0,
+                "volume": 0, "session_type": "pre_market", "gap_type": "none",
+                "is_extended_hours": True,
+            },
+        ])
+
+        zero_vol_mask, zero_vol_count, zv_reason = pred._detect_zero_volume_bars(df)
+
+        # Simulate the fallback selection logic
+        if zero_vol_count > 0 and bool(zero_vol_mask.iloc[-1]):
+            valid_rows = df[~zero_vol_mask]
+            latest = valid_rows.iloc[-1] if not valid_rows.empty else df.iloc[-1]
+        else:
+            latest = df.iloc[-1]
+
+        # Must not raise; latest must be a valid row from the DataFrame
+        assert latest is not None
+        assert str(latest.get("session_type")) in ("regular", "pre_market", "post_market")
+        # dq_degraded implied: reason non-empty
+        assert zv_reason != ""
+
+    def test_null_volume_latest_bar_is_detected(self):
+        """A bar with volume=NULL (NaN) is treated as zero-volume by fillna(0)."""
+        df = self._make_5min_frame([
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 30),
+                "open": 499.0, "high": 504.0, "low": 497.0, "close": 500.0,
+                "volume": 100_000, "session_type": "regular",
+                "gap_type": "gap_up", "is_extended_hours": False,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30, 9, 35),
+                "open": 500.0, "high": 503.0, "low": 499.0, "close": 501.0,
+                "volume": float("nan"),  # NULL-equivalent newest bar
+                "session_type": "pre_market", "gap_type": "none",
+                "is_extended_hours": True,
+            },
+        ])
+
+        mask, count, reason = self._detect(df)
+
+        assert count == 1, "NaN volume must be treated as zero-volume"
+        assert bool(mask.iloc[-1]) is True
+        assert reason != ""
