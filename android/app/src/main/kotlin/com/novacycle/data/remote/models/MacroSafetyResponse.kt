@@ -24,7 +24,13 @@ data class MacroSafetyResponse(
     @Json(name = "suppresses_short_sell") val suppressesShortSell: Boolean = false,
     @Json(name = "reason") val reason: String = "",
     @Json(name = "thresholds") val thresholds: MacroSafetyThresholds? = null,
-    @Json(name = "last_override_applied_at") val lastOverrideAppliedAt: String? = null
+    @Json(name = "last_override_applied_at") val lastOverrideAppliedAt: String? = null,
+    /** True when the database has no VIX rows at all. */
+    @Json(name = "vix_data_missing") val vixDataMissing: Boolean = false,
+    /** True when the latest VIX row is older than 48 hours (stale daily data). */
+    @Json(name = "vix_is_stale") val vixIsStale: Boolean = false,
+    /** Age of the latest stored VIX candle in hours; null when no VIX row exists. */
+    @Json(name = "vix_staleness_hours") val vixStalenessHours: Float? = null
 )
 
 @JsonClass(generateAdapter = true)

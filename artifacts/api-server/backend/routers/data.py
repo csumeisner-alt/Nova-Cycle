@@ -586,6 +586,20 @@ async def get_macro_safety(
         vix_close = float(vix.close) if vix and vix.close is not None else None
         vix_regime = _classify_vix_regime(vix_close) if vix_close is not None else None
 
+        # ── VIX data-quality flags ────────────────────────────────────────
+        # vix_data_missing: no VIX row in the database at all.
+        # vix_is_stale: a row exists but it is older than 48 h (covers
+        #   weekends; a healthy daily ingest should never exceed ~36 h).
+        # vix_staleness_hours: age of the latest VIX row in hours; None
+        #   when no row exists.
+        vix_data_missing = vix_close is None
+        vix_staleness_hours: Optional[float] = None
+        vix_is_stale = False
+        if vix and vix.timestamp:
+            age_hours = (datetime.utcnow() - vix.timestamp).total_seconds() / 3600
+            vix_staleness_hours = round(age_hours, 1)
+            vix_is_stale = age_hours > 48.0
+
         long_score = float(pred._last_long_score)
         suppresses_buy = long_score < LONG_STRONG_BEAR
         suppresses_sell = long_score > LONG_STRONG_BULL
@@ -624,6 +638,9 @@ async def get_macro_safety(
             "vix_close": vix_close,
             "vix_regime": vix_regime,
             "vix_timestamp": vix.timestamp.isoformat() if vix and vix.timestamp else None,
+            "vix_data_missing": vix_data_missing,
+            "vix_is_stale": vix_is_stale,
+            "vix_staleness_hours": vix_staleness_hours,
             "long_score": long_score,
             "override_active": suppresses_buy or suppresses_sell,
             "suppresses_short_buy": suppresses_buy,

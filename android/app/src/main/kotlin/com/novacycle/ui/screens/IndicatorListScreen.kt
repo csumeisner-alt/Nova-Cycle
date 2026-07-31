@@ -152,16 +152,22 @@ fun IndicatorListScreen(viewModel: IndicatorViewModel = hiltViewModel()) {
 }
 
 @Composable private fun VixCard(ind: IndicatorResponse) {
-    val (color, desc) = when (ind.vixRegime.lowercase()) {
-        "low"     -> VixLow     to "Low volatility — favorable for trend-following"
-        "high"    -> VixHigh    to "High volatility — wider stop-loss zones"
-        "extreme" -> VixExtreme to "Extreme volatility — signals may be less reliable"
-        else      -> VixNormal  to "Normal volatility regime"
+    val (color, desc) = when (ind.vixRegime?.lowercase()) {
+        "low"     -> VixLow          to "Low volatility — favorable for trend-following"
+        "high"    -> VixHigh         to "High volatility — wider stop-loss zones"
+        "extreme" -> VixExtreme      to "Extreme volatility — signals may be less reliable"
+        "normal"  -> VixNormal       to "Normal volatility regime"
+        else      -> NovaNeutralGray to "VIX data unavailable — macro regime unknown"
     }
     IndicatorCard("VIX Regime") {
         Surface(color = color.copy(alpha = 0.2f), shape = MaterialTheme.shapes.medium) {
-            Text(ind.vixRegime.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
-                color = color, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+            Text(
+                text = ind.vixRegime?.uppercase() ?: "N/A",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = color,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            )
         }
         Spacer(Modifier.height(6.dp))
         Text(desc, style = MaterialTheme.typography.bodyMedium)

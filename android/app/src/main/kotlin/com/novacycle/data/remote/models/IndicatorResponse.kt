@@ -30,6 +30,6 @@ data class IndicatorResponse(
     @Json(name = "williams_r") val williamsR: Float,
     @Json(name = "atr") val atr: Float,
     @Json(name = "adx") val adx: Float,
-    /** "low", "normal", "high", or "extreme" */
-    @Json(name = "vix_regime") val vixRegime: String
+    /** "low", "normal", "high", "extreme", or null when VIX data is missing. */
+    @Json(name = "vix_regime") val vixRegime: String?
 )

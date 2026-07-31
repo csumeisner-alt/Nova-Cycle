@@ -240,8 +240,8 @@ fun DualGaugeScreen(
                             )
                             IndicatorChip(
                                 label = "VIX",
-                                value = indicators.vixRegime.uppercase(),
-                                color = when (indicators.vixRegime.lowercase()) {
+                                value = indicators.vixRegime?.uppercase() ?: "N/A",
+                                color = when (indicators.vixRegime?.lowercase()) {
                                     "low"     -> VixLow
                                     "normal"  -> VixNormal
                                     "high"    -> VixHigh
@@ -441,9 +441,13 @@ private fun MacroSafetyChip(
             val dir = if (safety.suppressesShortBuy) "BUYs suppressed" else "SELLs suppressed"
             "Macro override · $dir" to NovaWarningYellow
         }
+        // VIX data is missing or stale — the regime shown would be unreliable
+        safety.vixDataMissing || safety.vixIsStale || safety.vixRegime == null -> {
+            "Macro · VIX data unavailable" to NovaNeutralGray
+        }
         else -> {
-            val regime = safety.vixRegime?.uppercase() ?: "?"
-            val regimeColor = when (safety.vixRegime?.lowercase()) {
+            val regime = safety.vixRegime.uppercase()
+            val regimeColor = when (safety.vixRegime.lowercase()) {
                 "low"     -> VixLow
                 "normal"  -> VixNormal
                 "high"    -> VixHigh
@@ -553,6 +557,32 @@ private fun MacroSafetyDetailSheet(
                     )
                 }
                 else -> {
+                    // ── VIX data-quality warning ───────────────────────────
+                    if (safety.vixDataMissing || safety.vixIsStale || safety.vixRegime == null) {
+                        val warningText = when {
+                            safety.vixDataMissing ->
+                                "No VIX data is stored. The macro regime shown above is unavailable — VIX NORMAL is not being assumed."
+                            safety.vixIsStale ->
+                                "VIX data is stale (${safety.vixStalenessHours?.toInt() ?: "?"}h old). The displayed regime may not reflect current market conditions."
+                            else ->
+                                "VIX regime is unknown. Macro sensitivity may be degraded."
+                        }
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = NovaWarningYellow.copy(alpha = 0.12f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text     = "⚠️ $warningText",
+                                style    = MaterialTheme.typography.bodySmall,
+                                color    = NovaWarningYellow,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
                     // ── Reason ────────────────────────────────────────────
                     if (safety.reason.isNotBlank()) {
                         Text(
@@ -571,6 +601,12 @@ private fun MacroSafetyDetailSheet(
                         label = "VIX regime",
                         value = safety.vixRegime?.uppercase() ?: "—"
                     )
+                    if (safety.vixStalenessHours != null) {
+                        DetailRow(
+                            label = "VIX data age",
+                            value = "${safety.vixStalenessHours.toInt()} h"
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
