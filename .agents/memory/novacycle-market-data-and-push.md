@@ -28,3 +28,10 @@ The displayed VOO quote must prefer Yahoo's session-specific live quote (`preMar
 **Why:** Yahoo extended-hours history can lag or omit the latest quote even while `postMarketPrice` is available, causing the UI to show the regular close as “live.”
 
 **How to apply:** Keep live quote fetching bounded and failure-safe, never substitute `previousClose`, and expose the source/session so the UI can explain whether the value is live or candle-backed.
+
+## Live quote cache policy
+Cache successful VOO live quotes in-process for 15 seconds and coalesce concurrent requests behind one async fetch. Do not cache failures; keep the five-second vendor timeout and stored-candle fallback.
+
+**Why:** Multiple dashboard clients can request the same quote together, and Yahoo calls are relatively expensive. A short cache reduces vendor load without making the displayed market quote meaningfully stale.
+
+**How to apply:** Keep the cache at the price-snapshot live-quote boundary, copy cached dictionaries before returning them, and invalidate naturally by monotonic age rather than wall-clock time.

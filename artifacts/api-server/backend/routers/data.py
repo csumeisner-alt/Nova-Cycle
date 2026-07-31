@@ -11,6 +11,7 @@ GET /api/price_snapshot?ticker=VOO
 """
 
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -39,6 +40,9 @@ _INGEST_LOCK = asyncio.Lock()
 
 _MARKET_TZ = ZoneInfo("America/New_York")
 _LIVE_QUOTE_FETCHER = DataFetcher()
+_LIVE_QUOTE_CACHE_TTL_SECONDS = 15.0
+_LIVE_QUOTE_CACHE: Optional[tuple[float, dict]] = None
+_LIVE_QUOTE_CACHE_LOCK = asyncio.Lock()
 
 
 def _trading_day(ts: datetime) -> date:
@@ -225,15 +229,46 @@ async def _latest_prior_daily_candle(
 
 
 async def _fetch_live_quote() -> Optional[dict]:
-    """Read a fresh vendor quote without making it a model input."""
-    try:
-        return await asyncio.wait_for(
-            _LIVE_QUOTE_FETCHER.fetch_live_quote(),
-            timeout=5.0,
-        )
-    except Exception as exc:
-        logger.warning("live_quote_endpoint_fetch_failed error=%s", exc)
-        return None
+    """Read a cached/coalesced vendor quote without making it a model input.
+
+    A short process-local cache keeps repeated dashboard requests from
+    hammering Yahoo while still allowing the displayed quote to refresh
+    frequently. The lock is held only for this single-ticker fetch; callers
+    arriving concurrently re-check the cache after the first fetch completes
+    and reuse its result instead of starting another vendor request.
+    """
+    global _LIVE_QUOTE_CACHE
+
+    now = time.monotonic()
+    if _LIVE_QUOTE_CACHE is not None:
+        cached_at, cached_quote = _LIVE_QUOTE_CACHE
+        if now - cached_at < _LIVE_QUOTE_CACHE_TTL_SECONDS:
+            logger.debug("live_quote_cache_hit age_seconds=%.3f", now - cached_at)
+            return dict(cached_quote)
+
+    async with _LIVE_QUOTE_CACHE_LOCK:
+        now = time.monotonic()
+        if _LIVE_QUOTE_CACHE is not None:
+            cached_at, cached_quote = _LIVE_QUOTE_CACHE
+            if now - cached_at < _LIVE_QUOTE_CACHE_TTL_SECONDS:
+                logger.debug("live_quote_cache_hit_after_wait age_seconds=%.3f", now - cached_at)
+                return dict(cached_quote)
+
+        try:
+            quote = await asyncio.wait_for(
+                _LIVE_QUOTE_FETCHER.fetch_live_quote(),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            logger.warning("live_quote_endpoint_fetch_failed error=%s", exc)
+            return None
+
+        if quote is None:
+            return None
+
+        _LIVE_QUOTE_CACHE = (time.monotonic(), dict(quote))
+        logger.debug("live_quote_cache_store ttl_seconds=%.1f", _LIVE_QUOTE_CACHE_TTL_SECONDS)
+        return dict(quote)
 
 
 def _vix_to_dict(r: VixCandle) -> dict:

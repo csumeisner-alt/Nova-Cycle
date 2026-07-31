@@ -1,6 +1,7 @@
 """Tests for the spec-gap endpoints (POST /api/ingest, GET /api/macro_safety,
 GET /api/extended_hours) and the notification reliability gate."""
 
+import asyncio
 import pytest
 from httpx import ASGITransport, AsyncClient
 from datetime import datetime, timedelta
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from main import app
 from database.db import get_db
 from database.models import Base, VooCandle
+from routers import data as data_router
 
 
 def _client():
@@ -16,6 +18,94 @@ def _client():
         transport=ASGITransport(app=app, raise_app_exceptions=False),
         base_url="http://test",
     )
+
+
+@pytest.mark.asyncio
+async def test_live_quote_cache_reuses_successful_quote(monkeypatch):
+    calls = 0
+    quote = {
+        "price": 684.48,
+        "timestamp": "2026-07-31T22:28:00",
+        "session_type": "after_hours",
+        "is_extended_hours": True,
+        "source": "live_quote",
+    }
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        return quote
+
+    monkeypatch.setattr(data_router, "_LIVE_QUOTE_CACHE", None)
+    monkeypatch.setattr(data_router._LIVE_QUOTE_FETCHER, "fetch_live_quote", fetch)
+
+    first = await data_router._fetch_live_quote()
+    second = await data_router._fetch_live_quote()
+
+    assert first == quote
+    assert second == quote
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_live_quote_cache_coalesces_concurrent_fetches(monkeypatch):
+    calls = 0
+    quote = {
+        "price": 684.48,
+        "timestamp": "2026-07-31T22:28:00",
+        "session_type": "after_hours",
+        "is_extended_hours": True,
+        "source": "live_quote",
+    }
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return quote
+
+    monkeypatch.setattr(data_router, "_LIVE_QUOTE_CACHE", None)
+    monkeypatch.setattr(data_router._LIVE_QUOTE_FETCHER, "fetch_live_quote", fetch)
+
+    results = await asyncio.gather(
+        data_router._fetch_live_quote(),
+        data_router._fetch_live_quote(),
+        data_router._fetch_live_quote(),
+    )
+
+    assert results == [quote, quote, quote]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_live_quote_cache_expires_and_refetches(monkeypatch):
+    calls = 0
+    quote = {
+        "price": 684.48,
+        "timestamp": "2026-07-31T22:28:00",
+        "session_type": "after_hours",
+        "is_extended_hours": True,
+        "source": "live_quote",
+    }
+    clock = 100.0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        return quote
+
+    def monotonic():
+        return clock
+
+    monkeypatch.setattr(data_router, "_LIVE_QUOTE_CACHE", None)
+    monkeypatch.setattr(data_router, "time", type("Clock", (), {"monotonic": staticmethod(monotonic)}))
+    monkeypatch.setattr(data_router._LIVE_QUOTE_FETCHER, "fetch_live_quote", fetch)
+
+    await data_router._fetch_live_quote()
+    clock += data_router._LIVE_QUOTE_CACHE_TTL_SECONDS + 0.01
+    await data_router._fetch_live_quote()
+
+    assert calls == 2
 
 
 @pytest.mark.asyncio
