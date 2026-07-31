@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PredictionCard } from './PredictionCard';
 
@@ -204,5 +204,80 @@ describe('PredictionCard – data-quality warning banner', () => {
       expect(screen.getByTestId('text-confidence-long')).toHaveTextContent('72%'),
     );
     expect(screen.queryByTestId('banner-data-quality-long')).not.toBeInTheDocument();
+  });
+});
+
+// ─── auto-refresh transition tests ──────────────────────────────────────────
+
+function makeResponse(overrides: Record<string, unknown> = {}) {
+  return new Response(
+    JSON.stringify({
+      confidence_percent: 72,
+      trend: 'UP',
+      display_signal: 'BUY BIAS',
+      ...overrides,
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+describe('PredictionCard – data-quality banner auto-refresh transitions', () => {
+  it('banner disappears after a clean refetch following a degraded response', async () => {
+    // First fetch returns degraded; second (refetch) returns clean
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(makeResponse({ data_quality_degraded: true, data_quality_reason: 'Zero volume candle filtered.' }))
+      .mockResolvedValueOnce(makeResponse({ data_quality_degraded: false }));
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <PredictionCard name="long" label="Long Trend" />
+      </QueryClientProvider>,
+    );
+
+    // Banner is present after the first (degraded) fetch
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-data-quality-long')).toBeInTheDocument(),
+    );
+
+    // Trigger a refetch manually (simulates the 60 s interval firing)
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ['predict', 'long'] });
+    });
+
+    // Banner must be gone after the clean refetch
+    await waitFor(() =>
+      expect(screen.queryByTestId('banner-data-quality-long')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('banner appears after a degraded refetch following a clean response', async () => {
+    // First fetch returns clean; second (refetch) returns degraded
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(makeResponse({ data_quality_degraded: false }))
+      .mockResolvedValueOnce(makeResponse({ data_quality_degraded: true, data_quality_reason: 'Zero volume candle filtered.' }));
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <PredictionCard name="long" label="Long Trend" />
+      </QueryClientProvider>,
+    );
+
+    // No banner after the first (clean) fetch
+    await waitFor(() =>
+      expect(screen.getByTestId('text-confidence-long')).toHaveTextContent('72%'),
+    );
+    expect(screen.queryByTestId('banner-data-quality-long')).not.toBeInTheDocument();
+
+    // Trigger a refetch manually (simulates the 60 s interval firing)
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ['predict', 'long'] });
+    });
+
+    // Banner must appear after the degraded refetch
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-data-quality-long')).toBeInTheDocument(),
+    );
   });
 });
