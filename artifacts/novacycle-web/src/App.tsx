@@ -600,8 +600,6 @@ type GitHubRelease = {
 
 const RELEASES_API_URL = 'https://api.github.com/repos/csumeisner-alt/Nova-Cycle/releases?per_page=15';
 const RELEASES_PAGE_URL = 'https://github.com/csumeisner-alt/Nova-Cycle/releases';
-const LOCAL_APK_URL = `${import.meta.env.BASE_URL}novacycle-latest.apk`;
-const LOCAL_APK_BUILD_LABEL = 'Current build · July 31, 2026';
 
 type ReleaseInfo = {
   tag_name: string;
@@ -676,18 +674,17 @@ function DownloadApkSection() {
     retry: 1,
   });
 
-  // Always download the APK bundled with this web artifact. The GitHub
-  // release lookup remains useful for release history, but its cache can lag
-  // behind the APK built from the current workspace source.
-  const apkAsset = { browser_download_url: LOCAL_APK_URL };
+  // Only offer the CI-published APK. It is signed with the same protected
+  // release key as the installed app, so Android can apply it as an update.
+  const apkAsset = release ? { browser_download_url: release.apk_url } : undefined;
   const publishedAt = release?.published_at ? new Date(release.published_at) : null;
 
   return (
     <div className="w-full flex flex-col items-center space-y-6" data-testid="section-download-apk">
       <a
         href={apkAsset?.browser_download_url ?? RELEASES_PAGE_URL}
-        download="novacycle-latest.apk"
-        data-download-url={apkAsset.browser_download_url}
+        download={apkAsset ? 'novacycle-latest.apk' : undefined}
+        data-download-url={apkAsset?.browser_download_url}
         data-testid="link-download-apk"
         className="group relative inline-flex items-center justify-center w-full sm:w-auto overflow-hidden rounded-xl bg-primary px-8 py-4 font-medium text-primary-foreground transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
       >
@@ -697,7 +694,7 @@ function DownloadApkSection() {
         <div className="flex items-center space-x-3">
           <Download className="w-5 h-5" />
           <span className="text-lg font-bold tracking-wide">
-            Download Android APK
+            {apkAsset ? 'Download Android APK' : 'Browse APK Releases'}
           </span>
         </div>
       </a>
@@ -708,13 +705,13 @@ function DownloadApkSection() {
             Checking for the newest build…
           </p>
         )}
-        {!isLoading && (
+        {!isLoading && release && (
           <>
             <p className="text-sm text-muted-foreground" data-testid="text-release-version">
-              <span className="font-mono text-primary/80">{LOCAL_APK_BUILD_LABEL}</span>
+              <span className="font-mono text-primary/80">{release.tag_name}</span>
               {publishedAt && (
                 <span>
-                  {' '}· GitHub release history: {release.tag_name}
+                  {' '}· built{' '}
                   {publishedAt.toLocaleString('en-US', {
                     month: 'short', day: 'numeric', year: 'numeric',
                     hour: 'numeric', minute: '2-digit',
