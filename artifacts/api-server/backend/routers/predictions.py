@@ -328,9 +328,30 @@ async def _load_spx_close_series(session: AsyncSession, limit: int = 300) -> pd.
         if not rows:
             return pd.Series(dtype=float)
         rows = list(reversed(rows))
+
+        # Zero-volume SPX bars are a yfinance glitch; they are removed at
+        # startup by remove_invalid_spx_candles(), but a row may survive from
+        # an older backup restore or a race before cleanup completes.  Filter
+        # here so a bad close never corrupts the overnight-return signal.
+        valid_rows = []
+        for r in rows:
+            vol = r.volume
+            if vol is None or float(vol) == 0:
+                logger.warning(
+                    "spx_prediction_zero_volume_skipped ticker=%s timeframe=%s ts=%s",
+                    r.ticker,
+                    r.timeframe,
+                    r.timestamp.isoformat() if hasattr(r.timestamp, "isoformat") else r.timestamp,
+                )
+                continue
+            valid_rows.append(r)
+
+        if not valid_rows:
+            return pd.Series(dtype=float)
+
         return pd.Series(
-            [r.close for r in rows],
-            index=pd.to_datetime([r.timestamp for r in rows]),
+            [r.close for r in valid_rows],
+            index=pd.to_datetime([r.timestamp for r in valid_rows]),
             dtype=float,
         )
     except Exception as exc:
