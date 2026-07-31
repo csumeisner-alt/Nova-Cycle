@@ -1731,3 +1731,178 @@ async def test_remove_invalid_voo_candles_keeps_positive_volume(db_session):
 
     assert removed == 0
     assert await db_session.get(VooCandle, row.id) is not None
+
+
+# ---------------------------------------------------------------------------
+# Task-211: long-trend signal stability when last daily bar has zero volume
+# ---------------------------------------------------------------------------
+
+class TestPredictLongZeroVolumeDailyBar:
+    """Confirm predict_long stays stable when the most recent daily bar has volume=0.
+
+    Task 188 filters zero-volume bars before feature computation via
+    _detect_zero_volume_bars.  The filtered daily_df is then used to pick the
+    'latest' candle (daily_df.iloc[-1]) for session_type, gap_type, etc.
+    If the most recent bar was the zero-volume glitch, the 'latest' candle
+    after filtering must be the previous valid bar — not the glitch row.
+    """
+
+    def _build_daily_df(self) -> pd.DataFrame:
+        """Three valid daily bars plus a final zero-volume glitch bar."""
+        return pd.DataFrame([
+            {
+                "timestamp": datetime(2024, 7, 28),
+                "open": 495.0, "high": 500.0, "low": 493.0, "close": 498.0,
+                "volume": 2_000_000,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+            {
+                "timestamp": datetime(2024, 7, 29),
+                "open": 498.0, "high": 503.0, "low": 496.0, "close": 501.0,
+                "volume": 1_800_000,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+            {
+                # Zero-volume glitch bar — most recent date, must be filtered out
+                "timestamp": datetime(2024, 7, 30),
+                "open": 501.0, "high": 506.0, "low": 499.0, "close": 504.0,
+                "volume": 0,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+        ])
+
+    # ------------------------------------------------------------------
+    # 1. Zero-volume detection correctly identifies the glitch bar
+    # ------------------------------------------------------------------
+
+    def test_detect_identifies_zero_volume_last_bar(self):
+        """_detect_zero_volume_bars correctly flags only the last row with volume=0."""
+        import routers.predictions as pred
+
+        df = self._build_daily_df()
+        mask, count, reason = pred._detect_zero_volume_bars(df)
+
+        assert count == 1, "Exactly one zero-volume bar should be detected"
+        assert bool(mask.iloc[-1]) is True, "Last row (volume=0) must be masked"
+        assert bool(mask.iloc[0]) is False, "First row (valid volume) must not be masked"
+        assert bool(mask.iloc[1]) is False, "Second row (valid volume) must not be masked"
+        assert "zero_volume_bars" in reason
+
+    # ------------------------------------------------------------------
+    # 2. After masking, daily_df.iloc[-1] is the previous valid bar
+    # ------------------------------------------------------------------
+
+    def test_latest_candle_after_mask_is_previous_valid_bar(self):
+        """After applying the zero-volume mask as predict_long does,
+        daily_df.iloc[-1] must be the Jul-29 bar, not the Jul-30 glitch."""
+        import routers.predictions as pred
+
+        df = self._build_daily_df()
+        mask, count, _ = pred._detect_zero_volume_bars(df)
+
+        assert count > 0
+        filtered = df[~mask].reset_index(drop=True)
+
+        latest = filtered.iloc[-1]
+        assert latest["timestamp"] == datetime(2024, 7, 29), (
+            f"Expected latest candle to be 2024-07-29 (previous valid bar), "
+            f"got {latest['timestamp']}"
+        )
+        assert latest["volume"] > 0, (
+            "Latest candle after zero-volume filtering must have non-zero volume"
+        )
+
+    # ------------------------------------------------------------------
+    # 3. dq_degraded is True when zero-volume bar is filtered
+    # ------------------------------------------------------------------
+
+    def test_dq_degraded_set_when_zero_volume_bar_filtered(self):
+        """The dq_degraded flag and reason are set when a zero-volume daily
+        bar is detected, matching the logic inside predict_long."""
+        import routers.predictions as pred
+
+        df = self._build_daily_df()
+        _, count, zv_reason = pred._detect_zero_volume_bars(df)
+
+        # Replicate predict_long's dq flag update logic
+        dq_degraded = False
+        dq_reason = ""
+        if count > 0:
+            dq_reason = zv_reason
+            dq_degraded = True
+
+        assert dq_degraded is True
+        assert "zero_volume_bars" in dq_reason
+
+    # ------------------------------------------------------------------
+    # 4. End-to-end: predict_long with mocked session returns valid response
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_predict_long_zero_volume_last_bar_no_crash(self):
+        """predict_long does not crash and returns dq_degraded=True when the
+        most recent daily bar has volume=0.
+
+        All DB loaders and ML components are patched so the test runs without
+        a real database or trained model artifact.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        daily_df = self._build_daily_df()
+        vix_df = pd.DataFrame([
+            {
+                "timestamp": datetime(2024, 7, 29),
+                "open": 15.0, "high": 16.0, "low": 14.5, "close": 15.5,
+                "ticker": "VIX",
+            }
+        ])
+
+        mock_session = AsyncMock()
+
+        with (
+            patch("routers.predictions._load_daily_candles", new=AsyncMock(return_value=daily_df)),
+            patch("routers.predictions._load_vix_candles", new=AsyncMock(return_value=vix_df)),
+            patch("routers.predictions._load_spx_close_series", new=AsyncMock(return_value=pd.Series(dtype=float))),
+            patch("routers.predictions._load_recent_confidence", new=AsyncMock(return_value=[])),
+            patch("routers.predictions._store_confidence", new=AsyncMock()),
+            patch("routers.predictions._store_signal", new=AsyncMock()),
+            patch("routers.predictions._indicators_engine") as mock_ind,
+            patch("routers.predictions._long_model") as mock_model,
+            patch("routers.predictions._long_gauge") as mock_gauge,
+            patch("routers.predictions._macro_override"),
+            patch("routers.predictions._decision_filter") as mock_filter,
+        ):
+            mock_ind.compute_all.return_value = {}
+            # Neutral-fallback path: no real model artifact needed
+            mock_model.build_latest_features.return_value = None
+            mock_model.is_neutral_fallback.return_value = True
+            mock_gauge.compute_score.return_value = {
+                "score": 0,
+                "signal": "neutral",
+                "confidence": 0.5,
+                "breakdown": {},
+            }
+            mock_filter.evaluate.return_value = {
+                "final_signal": "neutral",
+                "priority_boost": 0.0,
+                "reason": "test",
+                "cycle_quality_score": 0.5,
+                "volatility_regime": "calm",
+                "liquidity_class": "normal",
+                "confidence_momentum": 0.0,
+            }
+
+            import routers.predictions as pred
+            response = await pred.predict_long(ticker="VOO", session=mock_session)
+
+        assert isinstance(response, dict), "Response must be a dict (no crash)"
+        assert response.get("data_quality_degraded") is True, (
+            "Expected data_quality_degraded=True when zero-volume daily bar is filtered"
+        )
+        assert "signal" in response, "Response must contain a signal field"
+        assert "zero_volume_bars" in response.get("data_quality_reason", ""), (
+            "data_quality_reason must mention zero_volume_bars"
+        )
