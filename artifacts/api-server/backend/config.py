@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     # feed problem (broken source or unapplied split/adjustment).
     SPIKE_QUARANTINE_ALERT_COUNT: int = 3
 
+    # Path to a small JSON file that persists the session spike-quarantine
+    # counter across server restarts.  The file is written after every
+    # quarantine and read on startup so a mid-session restart does not reset
+    # the running total.  Set to "" to disable persistence (in-memory only).
+    SPIKE_QUARANTINE_STATE_FILE: str = "spike_quarantine_state.json"
+
     # ── Data history ──────────────────────────────────────────────────────────
     HISTORY_YEARS: int = 10
 

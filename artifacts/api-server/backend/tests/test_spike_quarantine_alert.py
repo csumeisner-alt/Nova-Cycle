@@ -12,13 +12,19 @@ Verifies that:
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import date
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
-from ingestion.ohlc_validator import _spike_tracker, filter_valid_ohlc
+from ingestion.ohlc_validator import (
+    _SpikeQuarantineTracker,
+    _spike_tracker,
+    filter_valid_ohlc,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -309,3 +315,184 @@ class TestSpikeQuarantineAlert:
             f"Expected exactly 1 warning when new day reaches threshold, got {len(warnings)}"
         )
         assert "spike_quarantine_alert" in warnings[0].message
+
+
+# ── Restart-restore tests ─────────────────────────────────────────────────────
+
+class TestSpikeQuarantineRestoreOnRestart:
+    """
+    Verify that the spike-quarantine counter survives a mid-session server
+    restart by persisting to and restoring from a small JSON file.
+
+    Each test creates its own _SpikeQuarantineTracker instance backed by a
+    temporary file so there is no shared state between tests.
+    """
+
+    def test_count_is_persisted_after_record(self, tmp_path):
+        """record() must write the current count to the state file."""
+        state_file = str(tmp_path / "sq_state.json")
+        tracker = _SpikeQuarantineTracker(state_file=state_file)
+
+        with patch("config.settings") as mock_settings:
+            mock_settings.SPIKE_CLOSE_THRESHOLD = 0.10
+            mock_settings.SPIKE_QUARANTINE_ALERT_COUNT = 999
+            tracker.record(2)
+
+        with open(state_file) as fh:
+            data = json.load(fh)
+
+        assert data["count"] == 2
+        assert data["date"] == date.today().isoformat()
+
+    def test_restored_count_matches_persisted_count(self, tmp_path):
+        """A new tracker instance must restore the count from today's file."""
+        state_file = str(tmp_path / "sq_state.json")
+
+        # First "process": accumulate some spikes
+        tracker_a = _SpikeQuarantineTracker(state_file=state_file)
+        with patch("config.settings") as mock_settings:
+            mock_settings.SPIKE_CLOSE_THRESHOLD = 0.10
+            mock_settings.SPIKE_QUARANTINE_ALERT_COUNT = 999
+            tracker_a.record(3)
+
+        assert tracker_a._count == 3
+
+        # Simulate restart: a fresh tracker reads the same file
+        tracker_b = _SpikeQuarantineTracker(state_file=state_file)
+        assert tracker_b._count == 3
+        assert tracker_b._session_date == date.today()
+
+    def test_alert_fires_across_restart_boundary(self, tmp_path, caplog):
+        """
+        If N spikes occurred before the restart and the threshold is N+1,
+        the very first spike after restart must trigger the alert.
+        """
+        state_file = str(tmp_path / "sq_state.json")
+
+        # Pre-restart: record 2 spikes, threshold=3
+        tracker_a = _SpikeQuarantineTracker(state_file=state_file)
+        with patch("config.settings") as mock_settings:
+            mock_settings.SPIKE_CLOSE_THRESHOLD = 0.10
+            mock_settings.SPIKE_QUARANTINE_ALERT_COUNT = 3
+            tracker_a.record(2)  # count → 2, threshold not reached
+
+        # Post-restart: new tracker, count restored to 2
+        tracker_b = _SpikeQuarantineTracker(state_file=state_file)
+        assert tracker_b._count == 2
+
+        with patch("config.settings") as mock_settings:
+            mock_settings.SPIKE_CLOSE_THRESHOLD = 0.10
+            mock_settings.SPIKE_QUARANTINE_ALERT_COUNT = 3
+
+            with caplog.at_level(logging.WARNING, logger="ingestion.ohlc_validator"):
+                tracker_b.record(1)  # count → 3 ← alert must fire
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1, (
+            f"Expected alert to fire after restart restored pre-restart count; "
+            f"got {len(warnings)} warnings"
+        )
+        assert "spike_quarantine_alert" in warnings[0].message
+
+    def test_stale_date_in_file_is_ignored_on_restore(self, tmp_path):
+        """A file dated yesterday must not restore into today's session."""
+        state_file = str(tmp_path / "sq_state.json")
+        yesterday = date(2025, 1, 1)
+
+        # Write a state file dated yesterday
+        with open(state_file, "w") as fh:
+            json.dump({"date": yesterday.isoformat(), "count": 99}, fh)
+
+        # Tracker should start from zero, not 99
+        tracker = _SpikeQuarantineTracker(state_file=state_file)
+        assert tracker._count == 0
+        assert tracker._session_date is None
+
+    def test_corrupt_state_file_does_not_prevent_startup(self, tmp_path, caplog):
+        """
+        A corrupt or unparseable state file must be silently skipped (with a
+        WARNING log) rather than crashing on startup.
+        """
+        state_file = str(tmp_path / "sq_state.json")
+        with open(state_file, "w") as fh:
+            fh.write("not valid json {{{{")
+
+        with caplog.at_level(logging.WARNING, logger="ingestion.ohlc_validator"):
+            tracker = _SpikeQuarantineTracker(state_file=state_file)
+
+        assert tracker._count == 0  # started from zero
+        assert tracker._session_date is None
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("spike_quarantine_state_load_error" in r.message for r in warnings), (
+            "Expected a load-error WARNING for a corrupt state file"
+        )
+
+    def test_empty_state_file_path_disables_persistence(self, tmp_path):
+        """state_file='' must disable all disk I/O without errors."""
+        tracker = _SpikeQuarantineTracker(state_file="")
+
+        with patch("config.settings") as mock_settings:
+            mock_settings.SPIKE_CLOSE_THRESHOLD = 0.10
+            mock_settings.SPIKE_QUARANTINE_ALERT_COUNT = 999
+            tracker.record(5)
+
+        # No file should have been created
+        assert not any(tmp_path.iterdir()), (
+            "No state file should be written when state_file=''"
+        )
+        assert tracker._count == 5  # in-memory count still works
+
+    def test_count_accumulates_incrementally_and_file_reflects_latest(self, tmp_path):
+        """Each record() call must overwrite the file with the running total."""
+        state_file = str(tmp_path / "sq_state.json")
+        tracker = _SpikeQuarantineTracker(state_file=state_file)
+
+        with patch("config.settings") as mock_settings:
+            mock_settings.SPIKE_CLOSE_THRESHOLD = 0.10
+            mock_settings.SPIKE_QUARANTINE_ALERT_COUNT = 999
+
+            tracker.record(1)
+            with open(state_file) as fh:
+                assert json.load(fh)["count"] == 1
+
+            tracker.record(2)
+            with open(state_file) as fh:
+                assert json.load(fh)["count"] == 3
+
+            tracker.record(1)
+            with open(state_file) as fh:
+                assert json.load(fh)["count"] == 4
+
+    def test_new_day_resets_count_and_overwrites_file(self, tmp_path):
+        """
+        When a new trading day begins, the persisted file must be overwritten
+        with count=1 (only today's spikes), not carry over yesterday's total.
+        """
+        state_file = str(tmp_path / "sq_state.json")
+        day1 = date(2025, 1, 2)
+        day2 = date(2025, 1, 3)
+
+        tracker = _SpikeQuarantineTracker(state_file=state_file)
+
+        with patch("config.settings") as mock_settings:
+            mock_settings.SPIKE_CLOSE_THRESHOLD = 0.10
+            mock_settings.SPIKE_QUARANTINE_ALERT_COUNT = 999
+
+            with patch("ingestion.ohlc_validator.date") as mock_date:
+                mock_date.today.return_value = day1
+                tracker.record(5)  # day-1 total: 5
+
+            with open(state_file) as fh:
+                data = json.load(fh)
+            assert data["count"] == 5
+            assert data["date"] == day1.isoformat()
+
+            with patch("ingestion.ohlc_validator.date") as mock_date:
+                mock_date.today.return_value = day2
+                tracker.record(1)  # new day resets → 1
+
+            with open(state_file) as fh:
+                data = json.load(fh)
+            assert data["count"] == 1
+            assert data["date"] == day2.isoformat()

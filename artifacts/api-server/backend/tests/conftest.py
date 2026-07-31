@@ -17,6 +17,24 @@ def _isolated_recovery_history(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _disable_spike_quarantine_persistence():
+    """
+    Disable the spike-quarantine state-file for the module-level singleton so
+    tests never write to the real spike_quarantine_state.json on disk and never
+    pick up state left by a previous test or a running server.
+
+    Tests that explicitly want to exercise persistence create their own
+    _SpikeQuarantineTracker(state_file=...) instance with a tmp_path file.
+    """
+    from ingestion.ohlc_validator import _spike_tracker
+
+    original = _spike_tracker._state_file
+    _spike_tracker._state_file = ""  # "" → persistence disabled
+    yield
+    _spike_tracker._state_file = original
+
+
+@pytest.fixture(autouse=True)
 def _reset_inmemory_recovery_status():
     """Reset the module-level in-memory recovery record between tests."""
     from ingestion import pipeline

@@ -24,6 +24,7 @@ own; callers decide what to do with the quarantined rows.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 from typing import Optional
@@ -37,20 +38,115 @@ logger = logging.getLogger(__name__)
 
 class _SpikeQuarantineTracker:
     """
-    In-memory counter of cross-bar spike quarantines within the current trading
-    session.  The counter resets automatically when the calendar date changes
-    (i.e. at the start of each new trading day).
+    Persistent counter of cross-bar spike quarantines within the current
+    trading session.  The counter resets automatically when the calendar date
+    changes (i.e. at the start of each new trading day).
+
+    The running count is written to a small JSON file after every quarantine
+    and restored from that file when the tracker is initialised.  This means
+    a mid-session server restart does not reset the count to zero, so the
+    operator alert threshold can still be reached even if the process crashed
+    and came back up.
 
     When the cumulative count reaches or exceeds
     ``settings.SPIKE_QUARANTINE_ALERT_COUNT`` a WARN-level structured log is
     emitted so operators can investigate a possible systematic feed problem.
     The alert is emitted on *every* quarantine once the threshold is reached,
     so a runaway feed does not produce just one warning and then go silent.
+
+    Parameters
+    ----------
+    state_file : str, optional
+        Path to the JSON persistence file.  ``None`` (default) means the path
+        is read from ``settings.SPIKE_QUARANTINE_STATE_FILE`` at runtime.
+        Pass an explicit path (including ``""``) to override config — useful
+        in tests that need an isolated temp file or want to disable persistence.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, state_file: Optional[str] = None) -> None:
         self._session_date: Optional[date] = None
         self._count: int = 0
+        # None  → use config value at runtime
+        # ""    → persistence disabled
+        # path  → explicit override (tests / custom deployments)
+        self._state_file: Optional[str] = state_file
+        self._load_from_disk()
+
+    # ── Persistence helpers ───────────────────────────────────────────────────
+
+    def _resolved_state_path(self) -> str:
+        """Return the effective state-file path (never None)."""
+        if self._state_file is not None:
+            return self._state_file
+        try:
+            from config import settings  # local import to avoid circular deps
+            return settings.SPIKE_QUARANTINE_STATE_FILE
+        except Exception:
+            return ""
+
+    def _load_from_disk(self) -> None:
+        """
+        Restore today's spike count from the persistence file, if it exists
+        and is dated today.  Called once during ``__init__``.
+
+        Silently skips when the file is absent or belongs to a past date.
+        Logs a WARNING (not an exception) on unexpected read/parse errors so
+        a corrupt file never prevents the server from starting.
+        """
+        path = self._resolved_state_path()
+        if not path:
+            return
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+            saved_date = date.fromisoformat(data["date"])
+            if saved_date == date.today():
+                self._session_date = saved_date
+                self._count = int(data["count"])
+                logger.info(
+                    "spike_quarantine_counter_restored: restored count=%d "
+                    "from %s for session_date=%s",
+                    self._count,
+                    path,
+                    self._session_date,
+                )
+        except FileNotFoundError:
+            pass  # first run or file was cleaned up — start from zero
+        except Exception as exc:
+            logger.warning(
+                "spike_quarantine_state_load_error: could not restore "
+                "spike counter from %s: %s",
+                path,
+                exc,
+            )
+
+    def _save_to_disk(self) -> None:
+        """
+        Write the current session date and count to the persistence file.
+        Called after every successful ``record()`` update.
+
+        Logs a WARNING on write errors but never raises, so a storage problem
+        does not interrupt normal data-ingestion flow.
+        """
+        path = self._resolved_state_path()
+        if not path or self._session_date is None:
+            return
+        try:
+            payload = {
+                "date": self._session_date.isoformat(),
+                "count": self._count,
+            }
+            with open(path, "w") as fh:
+                json.dump(payload, fh)
+        except Exception as exc:
+            logger.warning(
+                "spike_quarantine_state_save_error: could not persist "
+                "spike counter to %s: %s",
+                path,
+                exc,
+            )
+
+    # ── Public interface ──────────────────────────────────────────────────────
 
     # Exposed for tests only — do not use in production code.
     def _reset(self) -> None:
@@ -61,8 +157,9 @@ class _SpikeQuarantineTracker:
         """
         Register *n_spikes* new cross-bar spike quarantines.
 
-        Emits a WARNING when the running session total reaches or exceeds the
-        configured alert threshold.  Silently returns when *n_spikes* is 0.
+        Persists the updated count to disk, then emits a WARNING when the
+        running session total reaches or exceeds the configured alert threshold.
+        Silently returns when *n_spikes* is 0.
         """
         if n_spikes <= 0:
             return
@@ -74,6 +171,7 @@ class _SpikeQuarantineTracker:
             self._count = 0
 
         self._count += n_spikes
+        self._save_to_disk()
 
         from config import settings  # local import to avoid circular deps
         threshold = settings.SPIKE_QUARANTINE_ALERT_COUNT
