@@ -1328,6 +1328,16 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             "ml_fallback_total_last_reason": persisted.get("last_reason"),
         }
 
+        # Walk-forward calibration report (long-trend only): honest OOS
+        # accuracy, Brier score, and reliability bins from the last train.
+        if name == "long_trend":
+            try:
+                from ml.calibration import get_calibration_report
+                models[name]["calibration"] = get_calibration_report()
+            except Exception as exc:
+                logger.error("healthz: calibration report lookup failed: %s", exc)
+                models[name]["calibration"] = None
+
     # ── SPX futures staleness ────────────────────────────────────────────
     from ingestion.pipeline import (
         check_spx_staleness, check_vix_staleness, check_5min_staleness,

@@ -43,6 +43,22 @@ _RETRAIN_INTERVAL_DAYS = 7
 _FAILED_RETRAIN_INTERVAL_DAYS = 1
 
 
+def _sidecar_files(model_path: Path) -> list:
+    """Sidecar files that must roll back together with a model file.
+
+    The long-trend model carries a probability calibrator and its
+    walk-forward calibration report; restoring the model without them would
+    apply a flagged retrain's calibration to the last known-good model.
+    """
+    try:
+        if model_path.name == "long_trend_model.pkl":
+            from ml.calibration import CALIBRATOR_PATH, REPORT_PATH
+            return [CALIBRATOR_PATH, REPORT_PATH]
+    except Exception as exc:
+        logger.error("_sidecar_files error for %s: %s", model_path, exc)
+    return []
+
+
 def _backup_model_file(model_path: Path) -> Optional[Path]:
     """Copy the current model file aside before retraining.
 
@@ -54,6 +70,19 @@ def _backup_model_file(model_path: Path) -> Optional[Path]:
             return None
         backup_path = model_path.with_suffix(model_path.suffix + ".bak")
         shutil.copy2(model_path, backup_path)
+        # Back up sidecar files (e.g. the long-trend probability calibrator)
+        # so a rollback restores the model together with its calibration.
+        for sidecar in _sidecar_files(model_path):
+            try:
+                sidecar_backup = sidecar.with_suffix(sidecar.suffix + ".bak")
+                if sidecar.exists():
+                    shutil.copy2(sidecar, sidecar_backup)
+                elif sidecar_backup.exists():
+                    # No current sidecar: drop any stale backup so restore
+                    # correctly deletes the sidecar instead of resurrecting it.
+                    sidecar_backup.unlink()
+            except Exception as exc:
+                logger.error("sidecar backup error for %s: %s", sidecar, exc)
         logger.info(
             "ml_model_backup model_file=%s backup=%s", model_path.name, backup_path.name
         )
@@ -78,6 +107,18 @@ def _restore_model_file(model_path: Path, backup_path: Optional[Path], model_nam
         # the models' _maybe_reload() detects the change and drops the
         # regressed in-memory model in favour of the restored one.
         shutil.copy(backup_path, model_path)
+        # Restore sidecar files (e.g. calibrator) to their pre-retrain state:
+        # copy back the backup when one existed, otherwise remove the sidecar
+        # the flagged retrain just wrote.
+        for sidecar in _sidecar_files(model_path):
+            try:
+                sidecar_backup = sidecar.with_suffix(sidecar.suffix + ".bak")
+                if sidecar_backup.exists():
+                    shutil.copy(sidecar_backup, sidecar)
+                elif sidecar.exists():
+                    sidecar.unlink()
+            except Exception as exc:
+                logger.error("sidecar restore error for %s: %s", sidecar, exc)
         logger.warning(
             "ml_model_rollback model=%s restored=%s reason=flagged_retrain "
             "— predictions continue on last known-good model",

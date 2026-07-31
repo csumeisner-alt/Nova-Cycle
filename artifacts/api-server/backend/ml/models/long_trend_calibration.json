@@ -1,0 +1,117 @@
+{
+  "calibrated": true,
+  "evaluated": true,
+  "method": "purged_walk_forward",
+  "n_splits": 5,
+  "embargo_rows": 21,
+  "oos_samples": 58,
+  "oos_accuracy": 0.3620689655172414,
+  "oos_brier_score": 0.4106006824616488,
+  "reliability_bins": [
+    {
+      "bin_low": 0.0,
+      "bin_high": 0.1,
+      "count": 11,
+      "mean_predicted": 0.05204056203365326,
+      "observed_positive_rate": 0.6363636363636364
+    },
+    {
+      "bin_low": 0.1,
+      "bin_high": 0.2,
+      "count": 10,
+      "mean_predicted": 0.134750097990036,
+      "observed_positive_rate": 0.6
+    },
+    {
+      "bin_low": 0.2,
+      "bin_high": 0.3,
+      "count": 5,
+      "mean_predicted": 0.24056950211524963,
+      "observed_positive_rate": 0.6
+    },
+    {
+      "bin_low": 0.3,
+      "bin_high": 0.4,
+      "count": 8,
+      "mean_predicted": 0.331590473651886,
+      "observed_positive_rate": 0.75
+    },
+    {
+      "bin_low": 0.4,
+      "bin_high": 0.5,
+      "count": 5,
+      "mean_predicted": 0.42582759261131287,
+      "observed_positive_rate": 0.4
+    },
+    {
+      "bin_low": 0.5,
+      "bin_high": 0.6,
+      "count": 5,
+      "mean_predicted": 0.552236795425415,
+      "observed_positive_rate": 0.2
+    },
+    {
+      "bin_low": 0.6,
+      "bin_high": 0.7,
+      "count": 4,
+      "mean_predicted": 0.671916663646698,
+      "observed_positive_rate": 0.0
+    },
+    {
+      "bin_low": 0.7,
+      "bin_high": 0.8,
+      "count": 4,
+      "mean_predicted": 0.7562146186828613,
+      "observed_positive_rate": 0.5
+    },
+    {
+      "bin_low": 0.8,
+      "bin_high": 0.9,
+      "count": 6,
+      "mean_predicted": 0.8643660545349121,
+      "observed_positive_rate": 0.5
+    },
+    {
+      "bin_low": 0.9,
+      "bin_high": 1.0,
+      "count": 0,
+      "mean_predicted": null,
+      "observed_positive_rate": null
+    }
+  ],
+  "folds": [
+    {
+      "fold": 1,
+      "train_rows": 100,
+      "test_rows": 11,
+      "accuracy": 0.45454545454545453
+    },
+    {
+      "fold": 2,
+      "train_rows": 111,
+      "test_rows": 12,
+      "accuracy": 0.25
+    },
+    {
+      "fold": 3,
+      "train_rows": 123,
+      "test_rows": 11,
+      "accuracy": 0.5454545454545454
+    },
+    {
+      "fold": 4,
+      "train_rows": 134,
+      "test_rows": 12,
+      "accuracy": 0.4166666666666667
+    },
+    {
+      "fold": 5,
+      "train_rows": 146,
+      "test_rows": 12,
+      "accuracy": 0.16666666666666666
+    }
+  ],
+  "calibration_method": "sigmoid",
+  "calibrated_brier_score": 0.23595237510992292,
+  "generated_at": "2026-07-31T00:16:54.063598+00:00"
+}

@@ -34,6 +34,7 @@ import pandas as pd
 
 from config import settings
 from ml import features as ml_features
+from ml import calibration as ml_calibration
 from ml.model_health import check_model_degeneracy
 
 logger = logging.getLogger(__name__)
@@ -68,8 +69,10 @@ class LongTrendModel:
 
     def __init__(self):
         self.model = None
+        self.calibrator = None
         self._model_loaded = False
         self._loaded_mtime: Optional[float] = None
+        self._calibrator_mtime: Optional[float] = None
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     def _maybe_reload(self) -> None:
@@ -86,6 +89,22 @@ class LongTrendModel:
         if not self._model_loaded or mtime != self._loaded_mtime:
             self.load_model()
             self._loaded_mtime = mtime
+
+        # Reload the calibrator when its file appears or changes (e.g. after
+        # a retrain in the trainer component of the same process).
+        try:
+            cal_path = ml_calibration.CALIBRATOR_PATH
+            cal_mtime = cal_path.stat().st_mtime if cal_path.exists() else None
+        except OSError:
+            cal_mtime = None
+        if cal_mtime != self._calibrator_mtime:
+            calibrator = ml_calibration.load_calibrator()
+            self.calibrator = calibrator
+            # Only pin the mtime when the load succeeded (or the file is
+            # genuinely absent); a transient read failure must be retried on
+            # the next prediction rather than silently disabling calibration.
+            if calibrator is not None or cal_mtime is None:
+                self._calibrator_mtime = cal_mtime
 
     # ──────────────────────────────────────────────────────────────────────────
     # Feature engineering
@@ -324,6 +343,56 @@ class LongTrendModel:
             y_pred = model.predict(X_test)
             acc = float(accuracy_score(y_test, y_pred))
 
+            # ── Walk-forward evaluation + probability calibration ────────────
+            # Honest out-of-sample metrics (purged chronological folds with a
+            # 21-row embargo) plus a calibrator fitted on pooled OOS
+            # predictions. Never blocks training on failure.
+            calibration_summary: dict = {"calibrated": False}
+            try:
+                def _factory():
+                    return xgb.XGBClassifier(
+                        n_estimators=200,
+                        max_depth=5,
+                        learning_rate=0.05,
+                        subsample=0.8,
+                        colsample_bytree=0.8,
+                        eval_metric="logloss",
+                        use_label_encoder=False,
+                        random_state=42,
+                    )
+
+                wf_metrics, oos_probs, oos_labels = (
+                    ml_calibration.walk_forward_evaluate(
+                        X, y, weights, model_factory=_factory
+                    )
+                )
+                calibration_summary.update(wf_metrics)
+                calibrator = None
+                if wf_metrics.get("evaluated"):
+                    calibrator = ml_calibration.fit_calibrator(oos_probs, oos_labels)
+                if calibrator is not None:
+                    cal_brier = ml_calibration.calibrated_brier(
+                        calibrator, oos_probs, oos_labels
+                    )
+                    calibration_summary["calibrated"] = True
+                    calibration_summary["calibration_method"] = calibrator.method
+                    calibration_summary["calibrated_brier_score"] = cal_brier
+                    if ml_calibration.save_calibrator(calibrator):
+                        self.calibrator = calibrator
+                        self._calibrator_mtime = None  # force mtime re-read
+                else:
+                    calibration_summary.setdefault(
+                        "reason", "calibrator could not be fitted"
+                    )
+                    logger.warning(
+                        "ml_calibration_skipped model=long_trend reason=%s",
+                        calibration_summary.get("reason"),
+                    )
+                ml_calibration.save_calibration_report(calibration_summary)
+            except Exception as exc:
+                logger.error("Long-trend calibration error: %s", exc)
+                calibration_summary = {"calibrated": False, "reason": str(exc)}
+
             # Save model
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
             with open(MODEL_PATH, "wb") as f:
@@ -352,6 +421,7 @@ class LongTrendModel:
                 "feature_importances": importances,
                 "degenerate": degenerate,
                 "degeneracy_reason": degeneracy_reason,
+                "calibration": calibration_summary,
             }
 
         except Exception as exc:
@@ -385,7 +455,17 @@ class LongTrendModel:
             if features.ndim == 1:
                 features = features.reshape(1, -1)
 
-            prob = self.model.predict_proba(features)[0][1]
+            prob = float(self.model.predict_proba(features)[0][1])
+
+            # Apply the persisted probability calibrator when available so the
+            # gauge consumes an honest confidence. Raw probability is the
+            # fallback — calibration must never break prediction.
+            if self.calibrator is not None:
+                try:
+                    prob = self.calibrator.transform(prob)
+                except Exception as exc:
+                    logger.error("Long-trend calibration apply error: %s", exc)
+
             self.last_prediction_was_fallback = False
             return float(prob)
         except Exception as exc:
