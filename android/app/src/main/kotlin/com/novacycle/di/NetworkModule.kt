@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.novacycle.BuildConfig
 import com.novacycle.data.remote.ApiUrlResolver
+import com.novacycle.data.remote.ApiUrlValidator
 import com.novacycle.data.remote.NovaCycleApiService
 import com.novacycle.data.remote.RetryInterceptor
 import com.squareup.moshi.Moshi
