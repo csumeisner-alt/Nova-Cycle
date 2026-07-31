@@ -58,7 +58,8 @@ fun FilteredChartScreen(
     ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-            Text("Filtered Signals", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("Filtered Signals", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground)
             Text("VOO", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
         }
 
@@ -81,7 +82,8 @@ fun FilteredChartScreen(
             Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("▲ ${uiState.filteredSignals.count { it.isBuy }} BUY", color = NovaBuyGreen, style = MaterialTheme.typography.bodyMedium)
                 Text("▼ ${uiState.filteredSignals.count { it.isSell }} SELL", color = NovaSellRed, style = MaterialTheme.typography.bodyMedium)
-                Text("${uiState.tradeCycles.size} cycles", style = MaterialTheme.typography.bodyMedium)
+                Text("${uiState.tradeCycles.size} cycles", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground)
             }
         }
 

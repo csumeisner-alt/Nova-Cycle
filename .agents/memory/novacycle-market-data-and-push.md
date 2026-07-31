@@ -21,3 +21,10 @@ Treat `^VIX` volume as non-trading metadata: Yahoo Finance returns valid VIX OHL
 **Why:** `^VIX` is an index rather than a traded security. Applying the generic zero-volume filter emptied the VIX table, left macro predictions degraded, and prevented recovery because incremental ingestion skipped an empty table.
 
 **How to apply:** Use an explicit VIX exception in fetch normalization and storage. Still surface missing/stale VIX data when the vendor fetch is empty or fails, and preserve neutral/fallback model behavior in that case.
+
+## Visible live-price source
+The displayed VOO quote must prefer Yahoo's session-specific live quote (`preMarketPrice`, `regularMarketPrice`, or `postMarketPrice`) over persisted candles. Persisted 5-minute candles remain the fallback and the model-input prices remain separate.
+
+**Why:** Yahoo extended-hours history can lag or omit the latest quote even while `postMarketPrice` is available, causing the UI to show the regular close as “live.”
+
+**How to apply:** Keep live quote fetching bounded and failure-safe, never substitute `previousClose`, and expose the source/session so the UI can explain whether the value is live or candle-backed.

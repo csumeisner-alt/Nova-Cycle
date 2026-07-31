@@ -19,7 +19,7 @@ def _client():
 
 
 @pytest.mark.asyncio
-async def test_price_snapshot_separates_current_and_model_input_prices(tmp_path):
+async def test_price_snapshot_separates_current_and_model_input_prices(tmp_path, monkeypatch):
     """The chart contract exposes the freshest price and both model inputs."""
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'price_snapshot.db'}",
@@ -64,6 +64,10 @@ async def test_price_snapshot_separates_current_and_model_input_prices(tmp_path)
 
     app.dependency_overrides[get_db] = override_db
     try:
+        async def no_live_quote():
+            return None
+
+        monkeypatch.setattr("routers.data._fetch_live_quote", no_live_quote)
         async with _client() as client:
             response = await client.get("/api/price_snapshot", params={"ticker": "VOO"})
         assert response.status_code == 200
@@ -83,7 +87,7 @@ async def test_price_snapshot_separates_current_and_model_input_prices(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_price_snapshot_uses_extended_hours_quote_and_prior_close(tmp_path):
+async def test_price_snapshot_uses_extended_hours_quote_and_prior_close(tmp_path, monkeypatch):
     """Premarket/after-hours rows remain eligible for the visible quote."""
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'extended_price_snapshot.db'}",
@@ -117,6 +121,10 @@ async def test_price_snapshot_uses_extended_hours_quote_and_prior_close(tmp_path
 
     app.dependency_overrides[get_db] = override_db
     try:
+        async def no_live_quote():
+            return None
+
+        monkeypatch.setattr("routers.data._fetch_live_quote", no_live_quote)
         async with _client() as client:
             response = await client.get("/api/price_snapshot", params={"ticker": "VOO"})
         assert response.status_code == 200
@@ -126,6 +134,72 @@ async def test_price_snapshot_uses_extended_hours_quote_and_prior_close(tmp_path
         assert body["is_extended_hours"] is True
         assert body["reference_price"] == 102.0
         assert body["day_direction"] == "up"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_price_snapshot_prefers_fresh_post_market_quote(tmp_path, monkeypatch):
+    """The visible price uses the live post-market quote, not the close."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'live_post_market_price.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with factory() as session:
+        session.add_all([
+            VooCandle(
+                ticker="VOO", timeframe="daily",
+                timestamp=datetime(2026, 7, 31, 0, 0),
+                open=680, high=683, low=679, close=681.70, volume=1000,
+                is_extended_hours=False, session_type="regular",
+            ),
+            VooCandle(
+                ticker="VOO", timeframe="5min",
+                timestamp=datetime(2026, 7, 31, 20, 0),
+                open=681.70, high=682, low=681.5, close=681.80, volume=100,
+                is_extended_hours=True, session_type="after_hours",
+            ),
+            VooCandle(
+                ticker="VOO", timeframe="5min",
+                timestamp=datetime(2026, 7, 30, 19, 55),
+                open=680, high=682, low=679, close=681.70, volume=100,
+                is_extended_hours=False, session_type="regular",
+            ),
+        ])
+        await session.commit()
+
+    async def override_db():
+        async with factory() as session:
+            yield session
+
+    async def live_post_market_quote():
+        return {
+            "price": 684.48,
+            "timestamp": "2026-07-31T22:28:00",
+            "session_type": "after_hours",
+            "is_extended_hours": True,
+            "source": "live_quote",
+        }
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr("routers.data._fetch_live_quote", live_post_market_quote)
+    try:
+        async with _client() as client:
+            response = await client.get("/api/price_snapshot", params={"ticker": "VOO"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["current_price"] == 684.48
+        assert body["current_timestamp"] == "2026-07-31T22:28:00"
+        assert body["current_session"] == "after_hours"
+        assert body["is_extended_hours"] is True
+        assert body["current_source"] == "live_quote"
+        assert body["short_model_price"] == 681.80
     finally:
         app.dependency_overrides.pop(get_db, None)
         await engine.dispose()

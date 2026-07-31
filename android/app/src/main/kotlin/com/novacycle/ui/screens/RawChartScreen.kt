@@ -74,7 +74,8 @@ fun RawChartScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Raw Chart", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("Raw Chart", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground)
             Text("VOO", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
         }
 
@@ -321,7 +322,8 @@ private fun ChartLegend(modifier: Modifier = Modifier) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
                         Canvas(modifier = Modifier.size(10.dp)) { drawCircle(color) }
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(label, style = MaterialTheme.typography.labelSmall)
+                        Text(label, style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onBackground)
                     }
                 }
             }

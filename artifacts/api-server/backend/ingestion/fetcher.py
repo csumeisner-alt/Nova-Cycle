@@ -131,6 +131,68 @@ class DataFetcher:
 
         return {"daily": daily_df, "5min": fivemin_df}
 
+    async def fetch_live_quote(self) -> Optional[dict]:
+        """Fetch the vendor's current/pre-market/after-hours quote.
+
+        Candle history is useful for model features, but it can lag or omit
+        the latest extended-hours quote.  Yahoo exposes the quote separately
+        in ``Ticker.info``; choose the field for the session that is active
+        now and return a small, validated snapshot for the price endpoint.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            _, session_type, _ = market_calendar.classify_session(now)
+
+            def read_quote() -> dict:
+                return dict(yf.Ticker(settings.TICKER).info)
+
+            info = await self._run_sync(read_quote)
+            field_by_session = {
+                "pre_market": ("preMarketPrice", "preMarketTime"),
+                "regular": ("regularMarketPrice", "regularMarketTime"),
+                "after_hours": ("postMarketPrice", "postMarketTime"),
+            }
+            price_field, time_field = field_by_session.get(
+                session_type, ("regularMarketPrice", "regularMarketTime")
+            )
+            price = info.get(price_field)
+            quote_time = info.get(time_field)
+
+            # If the session-specific quote is unavailable, a regular-market
+            # quote is still safer than returning a malformed value.  Do not
+            # use previousClose: that is explicitly a closing price, not a
+            # live quote.
+            if price is None:
+                price = info.get("regularMarketPrice")
+                quote_time = info.get("regularMarketTime")
+
+            try:
+                price = float(price)
+            except (TypeError, ValueError):
+                return None
+            if not pd.notna(price) or price <= 0:
+                return None
+
+            timestamp = None
+            try:
+                if quote_time is not None:
+                    timestamp = datetime.fromtimestamp(
+                        float(quote_time), tz=timezone.utc
+                    ).replace(tzinfo=None).isoformat()
+            except (TypeError, ValueError, OSError, OverflowError):
+                timestamp = None
+
+            return {
+                "price": price,
+                "timestamp": timestamp,
+                "session_type": session_type,
+                "is_extended_hours": session_type != "regular",
+                "source": "live_quote",
+            }
+        except Exception as exc:
+            logger.warning("Live VOO quote fetch failed: %s", exc)
+            return None
+
     async def fetch_historical_vix(self, years: int = 10) -> pd.DataFrame:
         """
         Fetch `years` years of daily VIX data.

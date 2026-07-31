@@ -51,7 +51,8 @@ private fun PriceKey(color: Color, label: String, price: Float?) {
         Spacer(modifier = Modifier.width(3.dp))
         Text(
             text = if (price != null) "$label $${"%.2f".format(price)}" else "$label —",
-            style = MaterialTheme.typography.labelSmall
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onBackground
         )
     }
 }

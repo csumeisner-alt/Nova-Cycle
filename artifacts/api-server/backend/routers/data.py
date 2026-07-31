@@ -38,6 +38,7 @@ _INDICATORS = TechnicalIndicators()
 _INGEST_LOCK = asyncio.Lock()
 
 _MARKET_TZ = ZoneInfo("America/New_York")
+_LIVE_QUOTE_FETCHER = DataFetcher()
 
 
 def _trading_day(ts: datetime) -> date:
@@ -221,6 +222,18 @@ async def _latest_prior_daily_candle(
         ):
             return row
     return None
+
+
+async def _fetch_live_quote() -> Optional[dict]:
+    """Read a fresh vendor quote without making it a model input."""
+    try:
+        return await asyncio.wait_for(
+            _LIVE_QUOTE_FETCHER.fetch_live_quote(),
+            timeout=5.0,
+        )
+    except Exception as exc:
+        logger.warning("live_quote_endpoint_fetch_failed error=%s", exc)
+        return None
 
 
 def _vix_to_dict(r: VixCandle) -> dict:
@@ -427,12 +440,15 @@ async def get_price_snapshot(
     ticker: str = Query(default="VOO"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the current price and the exact prices used by each model.
+    """Return a fresh visible quote and the exact prices used by each model.
 
     The long model uses the latest valid daily close. The short model uses
     the latest OHLC-valid 5-minute close, including a zero-volume bar because
     the prediction endpoint keeps that bar for feature computation.
-    ``current_price`` uses the freshest positive-volume price instead.
+    ``current_price`` uses Yahoo's session-specific live quote when available
+    (including ``postMarketPrice`` after the regular session). The freshest
+    positive-volume candle remains the fallback when the quote vendor is
+    unavailable.
     """
     _validate_ticker(ticker)
     try:
@@ -441,11 +457,32 @@ async def get_price_snapshot(
             db, "5min", require_positive_volume=False
         )
         five_min_current = await _latest_usable_candle(db, "5min")
-        current = five_min_current or daily
-        reference = await _latest_prior_regular_candle(db, current)
+        current_candle = five_min_current or daily
+        live_quote = await _fetch_live_quote()
+        current = current_candle
+        reference = await _latest_prior_regular_candle(db, current_candle)
         if reference is None:
-            reference = await _latest_prior_daily_candle(db, current)
-        current_price = _price_point(current)["price"] if current else None
+            reference = await _latest_prior_daily_candle(db, current_candle)
+        current_price = (
+            live_quote["price"]
+            if live_quote is not None
+            else (_price_point(current)["price"] if current else None)
+        )
+        current_timestamp = (
+            live_quote["timestamp"]
+            if live_quote is not None and live_quote.get("timestamp")
+            else (_price_point(current)["timestamp"] if current else None)
+        )
+        current_session = (
+            live_quote["session_type"]
+            if live_quote is not None
+            else (current.session_type if current else None)
+        )
+        is_extended_hours = (
+            bool(live_quote["is_extended_hours"])
+            if live_quote is not None
+            else (bool(current.is_extended_hours) if current else False)
+        )
         reference_price = _price_point(reference)["price"] if reference else None
         day_change_percent = None
         day_direction = "flat"
@@ -460,9 +497,12 @@ async def get_price_snapshot(
         return {
             "ticker": ticker.upper(),
             "current_price": current_price,
-            "current_timestamp": _price_point(current)["timestamp"] if current else None,
-            "current_session": current.session_type if current else None,
-            "is_extended_hours": bool(current.is_extended_hours) if current else False,
+            "current_timestamp": current_timestamp,
+            "current_session": current_session,
+            "is_extended_hours": is_extended_hours,
+            "current_source": (
+                live_quote["source"] if live_quote is not None else "stored_candle"
+            ),
             "reference_price": reference_price,
             "reference_timestamp": (
                 _price_point(reference)["timestamp"] if reference else None
