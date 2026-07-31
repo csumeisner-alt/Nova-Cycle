@@ -480,7 +480,7 @@ private fun RetrainAccuracyTrendSection(
                 // Expanded per-retrain list, newest first
                 if (expanded && trend.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
-                    Divider()
+                    HorizontalDivider()
                     Spacer(Modifier.height(8.dp))
                     trend.asReversed().forEach { entry ->
                         RetrainHistoryRow(entry)
@@ -868,7 +868,7 @@ private fun CycleRow(
 
             if (isExpanded) {
                 Spacer(Modifier.height(8.dp))
-                Divider()
+                HorizontalDivider()
                 Spacer(Modifier.height(8.dp))
                 CycleDetail(cycle)
             }
