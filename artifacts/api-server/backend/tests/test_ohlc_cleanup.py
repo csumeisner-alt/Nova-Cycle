@@ -617,6 +617,77 @@ class TestCleanupEndpoint:
         )
 
     @pytest.mark.asyncio
+    async def test_endpoint_commit_failure_returns_500_and_keeps_counter(
+        self, http_client: AsyncClient, engine
+    ):
+        """session.commit() raising OperationalError must produce HTTP 500 and
+        must NOT zero the quarantine counter.
+
+        Scenario: remove_malformed_candles() completes successfully (bad rows
+        are staged for deletion) but session.commit() then raises OperationalError
+        (e.g. DB lock occurs at flush time).  The endpoint's except block must
+        catch it and return 500 with a human-readable detail.  Because the
+        counter reset lives *after* the try/commit block, the quarantine counter
+        must remain at whatever value it had before the request.
+        """
+        from config import settings
+        from unittest.mock import AsyncMock
+        from sqlalchemy.exc import OperationalError
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+        import routers.predictions as pred_mod
+
+        token = settings.ADMIN_TOKEN or settings.SESSION_SECRET
+        if not token:
+            pytest.skip("ADMIN_TOKEN / SESSION_SECRET not set")
+
+        # Pre-populate the quarantine counter so we can confirm it stays unchanged.
+        pred_mod._ohlc_quarantine_stats["count"] = 7
+        pred_mod._ohlc_quarantine_stats["last_ts"] = "2026-07-30T00:00:00"
+        pred_mod._ohlc_quarantine_stats["last_reason"] = "high_below_open"
+
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        # Override get_session to inject a session whose commit always raises.
+        async def _override_session_failing_commit():
+            async with factory() as s:
+                async def _failing_commit():
+                    raise OperationalError(
+                        "COMMIT", {}, Exception("database is locked")
+                    )
+                s.commit = _failing_commit
+                yield s
+
+        app.dependency_overrides[get_session] = _override_session_failing_commit
+        try:
+            resp = await http_client.post(
+                "/api/admin/cleanup_malformed_candles",
+                headers={"X-Admin-Token": token},
+            )
+        finally:
+            # Restore the fixture's original override so subsequent tests are clean.
+            async def _restore():
+                async with factory() as s:
+                    yield s
+            app.dependency_overrides[get_session] = _restore
+
+        assert resp.status_code == 500, (
+            f"Expected 500 on commit failure, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert "detail" in body, f"No 'detail' key in error body: {body}"
+        detail = body["detail"]
+        assert detail, "detail field must be a non-empty string"
+        assert "Cleanup failed" in detail or "locked" in detail or "OperationalError" in detail, (
+            f"detail does not describe the commit error: {detail!r}"
+        )
+
+        # The quarantine counter must NOT be zeroed — the reset only runs on success.
+        assert pred_mod._ohlc_quarantine_stats["count"] == 7, (
+            f"Quarantine counter was incorrectly zeroed on commit failure; "
+            f"got {pred_mod._ohlc_quarantine_stats['count']}"
+        )
+
+    @pytest.mark.asyncio
     async def test_endpoint_resets_quarantine_counter(
         self, http_client: AsyncClient
     ):
