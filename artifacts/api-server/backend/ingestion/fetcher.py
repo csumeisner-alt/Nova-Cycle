@@ -149,7 +149,8 @@ class DataFetcher:
                 auto_adjust=True,
                 progress=False,
             )
-            df = self._normalise_columns(df)
+            # ^VIX is an index; Yahoo reports valid index candles with volume 0.
+            df = self._normalise_columns(df, drop_zero_volume=False)
             logger.info("Fetched %d daily VIX candles", len(df))
             return df
         except Exception as exc:
@@ -206,7 +207,8 @@ class DataFetcher:
                 auto_adjust=True,
                 progress=False,
             )
-            df = self._normalise_columns(df)
+            # ^VIX is an index; Yahoo reports valid index candles with volume 0.
+            df = self._normalise_columns(df, drop_zero_volume=False)
             logger.info("Backfill fetch: %d daily VIX candles", len(df))
             return df
         except Exception as exc:
@@ -584,7 +586,11 @@ class DataFetcher:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    def _normalise_columns(
+        df: pd.DataFrame,
+        *,
+        drop_zero_volume: bool = True,
+    ) -> pd.DataFrame:
         """
         Standardise yfinance DataFrame column names to lower-case.
         yfinance returns MultiIndex columns for single tickers in newer versions;
@@ -649,7 +655,7 @@ class DataFetcher:
         # yfinance occasionally emits zero-volume daily bars for glitch days.
         # Drop them before DB storage; the startup cleanup also removes any
         # that already exist (see IngestionPipeline.remove_invalid_voo_candles).
-        if not df.empty:
+        if drop_zero_volume and not df.empty:
             try:
                 from ingestion.ohlc_validator import filter_zero_volume_bars
                 df_valid, df_zero_vol = filter_zero_volume_bars(df)

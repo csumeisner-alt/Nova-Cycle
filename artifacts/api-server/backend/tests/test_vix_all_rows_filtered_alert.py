@@ -1,8 +1,4 @@
-"""When every stored VIX row is zero-volume, _load_vix_candles returns an
-empty frame and predictions silently run without VIX data.  That condition
-must produce a distinct warning (vix_prediction_all_rows_filtered) and be
-surfaced in /api/healthz alongside the time-based VIX staleness alert.
-"""
+"""VIX index volume must not trigger a false degraded-data alert."""
 
 import logging
 from datetime import datetime, timedelta
@@ -51,7 +47,7 @@ def _recent_days(n):
 
 
 @pytest.mark.asyncio
-async def test_all_zero_volume_logs_distinct_warning(db_session, caplog):
+async def test_all_zero_volume_rows_are_loaded_without_warning(db_session, caplog):
     for ts in _recent_days(3):
         db_session.add(_vix(ts, volume=0))
     await db_session.flush()
@@ -59,11 +55,9 @@ async def test_all_zero_volume_logs_distinct_warning(db_session, caplog):
     with caplog.at_level(logging.WARNING, logger="routers.predictions"):
         df = await predictions._load_vix_candles(db_session)
 
-    assert df.empty
-    assert any("vix_prediction_all_rows_filtered" in r.message for r in caplog.records)
-    assert predictions._vix_all_filtered_stats["count"] == 1
-    assert predictions._vix_all_filtered_stats["rows_filtered"] == 3
-    assert predictions._vix_all_filtered_stats["last_at"] is not None
+    assert len(df) == 3
+    assert not any("vix_prediction_all_rows_filtered" in r.message for r in caplog.records)
+    assert predictions._vix_all_filtered_stats["count"] == 0
 
 
 @pytest.mark.asyncio
@@ -76,7 +70,7 @@ async def test_no_warning_when_some_rows_valid(db_session, caplog):
     with caplog.at_level(logging.WARNING, logger="routers.predictions"):
         df = await predictions._load_vix_candles(db_session)
 
-    assert len(df) == 1
+    assert len(df) == 2
     assert not any(
         "vix_prediction_all_rows_filtered" in r.message for r in caplog.records
     )

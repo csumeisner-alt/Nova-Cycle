@@ -256,3 +256,48 @@ class TestVixBackfillFailures:
 
         assert await count_vix(db_session) == 3
         assert any("vix_ingest_backfill_empty" in r.message for r in caplog.records)
+
+
+class TestVixIncrementalRecovery:
+    @pytest.mark.asyncio
+    async def test_empty_vix_table_is_repopulated_during_incremental_update(
+        self, db_session
+    ):
+        """An empty VIX table must not permanently skip future VIX fetches."""
+        pipeline = IngestionPipeline()
+        pipeline.fetcher.fetch_incremental_voo = AsyncMock(
+            return_value={"daily": pd.DataFrame(), "5min": pd.DataFrame()}
+        )
+        pipeline.fetcher.fetch_historical_vix = AsyncMock(
+            return_value=make_vix_df(WEEK[-2:])
+        )
+        pipeline.fetcher.fetch_historical_spx = AsyncMock(
+            return_value=pd.DataFrame()
+        )
+
+        await pipeline.run_incremental_update(db_session)
+
+        pipeline.fetcher.fetch_historical_vix.assert_awaited_once_with(years=1)
+        assert await count_vix(db_session) == 2
+
+    @pytest.mark.asyncio
+    async def test_vix_fetch_failure_preserves_degraded_data_behavior(
+        self, db_session, caplog
+    ):
+        """A VIX vendor failure is logged and does not abort the update."""
+        pipeline = IngestionPipeline()
+        pipeline.fetcher.fetch_incremental_voo = AsyncMock(
+            return_value={"daily": pd.DataFrame(), "5min": pd.DataFrame()}
+        )
+        pipeline.fetcher.fetch_historical_vix = AsyncMock(
+            side_effect=RuntimeError("VIX vendor unavailable")
+        )
+        pipeline.fetcher.fetch_historical_spx = AsyncMock(
+            return_value=pd.DataFrame()
+        )
+
+        with caplog.at_level("ERROR", logger="ingestion.pipeline"):
+            await pipeline.run_incremental_update(db_session)
+
+        assert await count_vix(db_session) == 0
+        assert any("vix_incremental_fetch_failed" in r.message for r in caplog.records)

@@ -14,3 +14,10 @@ For chart explanations, keep the freshest positive-volume VOO price separate fro
 **Why:** A user-facing “current price” and a model’s feature-input price can legitimately differ by timeframe or by data-quality handling; combining them makes a recommendation appear to use the wrong market price.
 
 **How to apply:** Any chart or recommendation explainer should label current/latest, long-model, and short-model prices independently and include their timestamps when space allows.
+
+## VIX index volume semantics
+Treat `^VIX` volume as non-trading metadata: Yahoo Finance returns valid VIX OHLC candles with volume `0` (and sometimes `NULL`). VIX ingestion and prediction reads must validate OHLC, but must not reject rows solely for non-positive volume. Keep zero-volume rejection for traded feeds such as VOO and ES futures.
+
+**Why:** `^VIX` is an index rather than a traded security. Applying the generic zero-volume filter emptied the VIX table, left macro predictions degraded, and prevented recovery because incremental ingestion skipped an empty table.
+
+**How to apply:** Use an explicit VIX exception in fetch normalization and storage. Still surface missing/stale VIX data when the vendor fetch is empty or fails, and preserve neutral/fallback model behavior in that case.

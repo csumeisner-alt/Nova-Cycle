@@ -1,11 +1,4 @@
-"""
-Tests: zero-volume VIX bars must not silently corrupt the macro signal.
-
-Task 212 removes invalid VIX rows at startup, but a zero-volume row may
-survive from an older backup restore or a race before cleanup completes.
-The VIX read path in the prediction router must filter such rows itself
-rather than letting a bad close value reach the macro-sensitivity signal.
-"""
+"""Regression tests for VIX index candles with non-trading volume."""
 
 from datetime import datetime, timedelta
 
@@ -48,11 +41,11 @@ def _vix_candle(ts: datetime, *, close: float = 20.0, volume: float | None = 1.0
 
 
 # ---------------------------------------------------------------------------
-# Unit tests for _load_vix_candles zero-volume guard
+# Unit tests for _load_vix_candles
 # ---------------------------------------------------------------------------
 
-class TestLoadVixCandlesZeroVolumeGuard:
-    """_load_vix_candles must skip zero-volume rows silently."""
+class TestLoadVixCandles:
+    """_load_vix_candles must not treat VIX index volume as trade volume."""
 
     @pytest.mark.asyncio
     async def test_normal_vix_row_is_returned(self, db_session):
@@ -68,52 +61,52 @@ class TestLoadVixCandlesZeroVolumeGuard:
         assert float(df.iloc[0]["close"]) == pytest.approx(18.5)
 
     @pytest.mark.asyncio
-    async def test_zero_volume_row_is_skipped(self, db_session):
-        """A VIX row with volume=0 is excluded from the returned DataFrame."""
+    async def test_zero_volume_row_is_returned(self, db_session):
+        """A valid VIX row with volume=0 is included in the returned frame."""
         from routers.predictions import _load_vix_candles
 
-        db_session.add(_vix_candle(datetime(2026, 7, 25), close=999.0, volume=0.0))
+        db_session.add(_vix_candle(datetime(2026, 7, 25), close=20.0, volume=0.0))
         await db_session.flush()
 
         df = await _load_vix_candles(db_session, limit=10)
-        assert df.empty, "zero-volume VIX row should have been skipped"
+        assert len(df) == 1
 
     @pytest.mark.asyncio
-    async def test_null_volume_row_is_skipped(self, db_session):
-        """A VIX row with volume=None (NULL in DB) is excluded."""
+    async def test_null_volume_row_is_returned(self, db_session):
+        """A valid VIX row with volume=NULL is still usable."""
         from routers.predictions import _load_vix_candles
 
-        db_session.add(_vix_candle(datetime(2026, 7, 25), close=999.0, volume=None))
+        db_session.add(_vix_candle(datetime(2026, 7, 25), close=20.0, volume=None))
         await db_session.flush()
 
         df = await _load_vix_candles(db_session, limit=10)
-        assert df.empty, "null-volume VIX row should have been skipped"
+        assert len(df) == 1
 
     @pytest.mark.asyncio
-    async def test_zero_volume_row_does_not_pollute_valid_rows(self, db_session):
-        """A mix of valid and zero-volume rows: only valid rows are returned."""
+    async def test_zero_volume_row_is_returned_with_valid_rows(self, db_session):
+        """A mix of valid and zero-volume rows is returned in timestamp order."""
         from routers.predictions import _load_vix_candles
 
         ts_good_1 = datetime(2026, 7, 24)
-        ts_bad    = datetime(2026, 7, 25)   # zero-volume glitch
+        ts_zero   = datetime(2026, 7, 25)   # normal index volume
         ts_good_2 = datetime(2026, 7, 28)
 
         db_session.add(_vix_candle(ts_good_1, close=17.0, volume=1.0))
-        db_session.add(_vix_candle(ts_bad,    close=999.0, volume=0.0))
+        db_session.add(_vix_candle(ts_zero,   close=18.0, volume=0.0))
         db_session.add(_vix_candle(ts_good_2, close=19.0, volume=1.0))
         await db_session.flush()
 
         df = await _load_vix_candles(db_session, limit=10)
 
-        assert len(df) == 2, f"expected 2 valid rows, got {len(df)}"
+        assert len(df) == 3, f"expected 3 VIX rows, got {len(df)}"
         closes = list(df["close"].astype(float))
-        assert 999.0 not in closes, "zero-volume close must be excluded from result"
         assert pytest.approx(17.0) in closes
+        assert pytest.approx(18.0) in closes
         assert pytest.approx(19.0) in closes
 
     @pytest.mark.asyncio
-    async def test_all_zero_volume_returns_empty_dataframe(self, db_session):
-        """When every VIX row has zero volume, an empty DataFrame is returned."""
+    async def test_all_zero_volume_returns_all_valid_rows(self, db_session):
+        """When every VIX row has zero volume, all valid rows are returned."""
         from routers.predictions import _load_vix_candles
 
         for i in range(3):
@@ -123,14 +116,12 @@ class TestLoadVixCandlesZeroVolumeGuard:
         await db_session.flush()
 
         df = await _load_vix_candles(db_session, limit=10)
-        assert df.empty
+        assert len(df) == 3
 
     @pytest.mark.asyncio
-    async def test_zero_volume_row_close_never_reaches_macro_signal(self, db_session):
+    async def test_malformed_zero_volume_row_never_reaches_macro_signal(self, db_session):
         """
-        End-to-end guard: inserting a zero-volume VIX row with an absurd close
-        value (999) alongside a valid row (close=20) must not allow the absurd
-        value to appear in the DataFrame consumed by the macro signal.
+        A malformed OHLC row must be rejected even when its volume is zero.
 
         This covers the race/restore scenario described in the task: the row
         exists in the DB but remove_invalid_vix_candles() has not run yet.
@@ -139,31 +130,35 @@ class TestLoadVixCandlesZeroVolumeGuard:
 
         # Valid row: close=20 (normal VIX level)
         db_session.add(_vix_candle(datetime(2026, 7, 28), close=20.0, volume=1.0))
-        # Glitch row: close=999 with volume=0 — would produce EXTREME VIX regime
-        db_session.add(_vix_candle(datetime(2026, 7, 29), close=999.0, volume=0.0))
+        # Malformed row: high below close, with normal index volume=0.
+        bad = _vix_candle(datetime(2026, 7, 29), close=20.0, volume=0.0)
+        bad.high = 19.0
+        db_session.add(bad)
         await db_session.flush()
 
         df = await _load_vix_candles(db_session, limit=10)
 
-        # Only the valid row should be present
+        # Only the valid row should be present.
         assert len(df) == 1
         assert float(df.iloc[0]["close"]) == pytest.approx(20.0), (
-            "absurd zero-volume VIX close must not reach the macro signal"
+            "malformed zero-volume VIX candle must not reach the macro signal"
         )
 
     @pytest.mark.asyncio
-    async def test_zero_volume_skip_is_logged(self, db_session, caplog):
-        """Skipping a zero-volume VIX bar emits a WARNING so operators can trace it."""
+    async def test_invalid_ohlc_is_logged(self, db_session, caplog):
+        """Skipping malformed VIX OHLC emits a WARNING."""
         import logging
         from routers.predictions import _load_vix_candles
 
-        db_session.add(_vix_candle(datetime(2026, 7, 25), close=30.0, volume=0.0))
+        bad = _vix_candle(datetime(2026, 7, 25), close=30.0, volume=0.0)
+        bad.high = 29.0
+        db_session.add(bad)
         await db_session.flush()
 
         with caplog.at_level(logging.WARNING):
             await _load_vix_candles(db_session, limit=10)
 
         assert any(
-            "vix_prediction_zero_volume_skipped" in record.message
+            "vix_prediction_invalid_ohlc_skipped" in record.message
             for record in caplog.records
-        ), "Expected a WARNING log entry for the skipped zero-volume VIX bar"
+        ), "Expected a WARNING log entry for malformed VIX OHLC"

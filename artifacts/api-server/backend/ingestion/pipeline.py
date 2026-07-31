@@ -220,33 +220,31 @@ class IngestionPipeline:
         return len(invalid_rows)
 
     async def remove_invalid_vix_candles(self, db_session: AsyncSession) -> int:
-        """Remove zero-volume VIX rows left by older ingestion versions.
+        """Remove malformed VIX rows left by older ingestion versions.
 
-        New fetches are gated by the zero-volume check in store_vix_candles,
-        but a glitch row may already exist in the database from a prior process
-        lifetime.  Remove it at startup so predictions never read it.
-
-        Checks removed:
-          - Zero-volume bars (volume == 0 or NULL) — yfinance glitch days
+        ``^VIX`` is an index, not a traded security. Yahoo Finance normally
+        reports valid OHLC values with volume 0, so volume is not a validity
+        gate for VIX.
         """
         result = await db_session.execute(
             select(VixCandle).where(VixCandle.ticker == settings.VIX_TICKER)
         )
 
         invalid_rows = [
-            row
+            (row, ohlc_validation_issue(row.open, row.high, row.low, row.close))
             for row in result.scalars().all()
-            if row.volume is None or float(row.volume) == 0
         ]
+        invalid_rows = [(row, issue) for row, issue in invalid_rows if issue]
         if not invalid_rows:
             return 0
 
-        for row in invalid_rows:
+        for row, issue in invalid_rows:
             logger.warning(
-                "ingest_invalid_existing_candle_removed ticker=%s timeframe=%s ts=%s issue=zero_volume",
+                "ingest_invalid_existing_candle_removed ticker=%s timeframe=%s ts=%s issue=%s",
                 settings.VIX_TICKER,
                 row.timeframe,
                 row.timestamp.isoformat(),
+                issue,
             )
             await db_session.delete(row)
         await db_session.flush()
@@ -368,20 +366,18 @@ class IngestionPipeline:
             await self.store_voo_candles(fivemin_df, db_session, timeframe="5min")
 
         # ── Incremental VIX ───────────────────────────────────────────────────
-        result = await db_session.execute(
-            select(func.max(VixCandle.timestamp)).where(
-                VixCandle.ticker == settings.VIX_TICKER
-            )
-        )
-        last_vix: Optional[datetime] = result.scalar()
-
-        if last_vix:
+        try:
             vix_df = await self.fetcher.fetch_historical_vix(years=1)
             if not vix_df.empty:
                 # Store the full fetched window (duplicates are skipped) so
                 # missing-day detection can heal downtime holes older than
                 # the last stored VIX timestamp.
                 await self.store_vix_candles(vix_df, db_session, timeframe="daily")
+        except Exception as exc:
+            # VIX is an optional macro input. A vendor failure must preserve
+            # the existing neutral/fallback prediction behavior and be surfaced
+            # by the staleness check below.
+            logger.error("vix_incremental_fetch_failed error=%s", exc)
 
         # ── Incremental SPX futures ───────────────────────────────────────────
         result = await db_session.execute(
@@ -941,11 +937,31 @@ class IngestionPipeline:
                 skipped += 1
                 continue
 
-            volume = float(row.get("volume", 0.0))
-            if volume == 0:
+            try:
+                open_price = float(row.get("open", 0.0))
+                high_price = float(row.get("high", 0.0))
+                low_price = float(row.get("low", 0.0))
+                close_price = float(row.get("close", 0.0))
+                raw_volume = row.get("volume", 0.0)
+                volume = 0.0 if pd.isna(raw_volume) else float(raw_volume)
+            except (TypeError, ValueError):
                 logger.warning(
-                    "ingest_zero_volume_bar_skipped ticker=%s timeframe=%s ts=%s",
+                    "ingest_ohlc_anomaly ticker=%s timeframe=%s ts=%s issue=non_numeric",
                     ticker, timeframe, ts_naive.isoformat(),
+                )
+                skipped += 1
+                continue
+
+            issue = ohlc_validation_issue(
+                open_price, high_price, low_price, close_price
+            )
+            if issue or volume < 0:
+                logger.warning(
+                    "ingest_ohlc_anomaly ticker=%s timeframe=%s ts=%s issue=%s",
+                    ticker,
+                    timeframe,
+                    ts_naive.isoformat(),
+                    issue or "negative_volume",
                 )
                 skipped += 1
                 continue
@@ -953,10 +969,10 @@ class IngestionPipeline:
             candle = VixCandle(
                 ticker=ticker,
                 timestamp=ts_naive,
-                open=float(row.get("open", 0.0)),
-                high=float(row.get("high", 0.0)),
-                low=float(row.get("low", 0.0)),
-                close=float(row.get("close", 0.0)),
+                open=open_price,
+                high=high_price,
+                low=low_price,
+                close=close_price,
                 volume=volume,
                 timeframe=timeframe,
             )

@@ -32,6 +32,7 @@ from signal_engine.normalization import (
     normalize_gauge_output, reconcile_display_signal, NEUTRAL_DEFAULTS,
 )
 from config import settings
+from ingestion.fetcher import ohlc_validation_issue
 
 import pandas as pd
 import numpy as np
@@ -296,12 +297,10 @@ async def _load_5min_candles(session: AsyncSession, ticker: str, limit: int = 50
 
 
 async def _load_vix_candles(session: AsyncSession, limit: int = 300) -> pd.DataFrame:
-    """Load VIX daily candles, skipping zero-volume rows.
+    """Load VIX daily candles.
 
-    Zero-volume VIX bars are a yfinance glitch and are removed at startup by
-    remove_invalid_vix_candles(), but a row may survive in the DB from an older
-    backup restore or a race before cleanup completes.  Filtering here ensures
-    the macro signal never silently uses a bad close value from such a row.
+    ``^VIX`` is an index and Yahoo Finance reports its volume as zero. VIX
+    validity is determined by its OHLC values, not by traded volume.
     """
     result = await session.execute(
         select(VixCandle)
@@ -314,24 +313,20 @@ async def _load_vix_candles(session: AsyncSession, limit: int = 300) -> pd.DataF
     rows = list(reversed(rows))
 
     valid_rows = []
-    for r in rows:
-        vol = r.volume
-        if vol is None or float(vol) == 0:
+    for row in rows:
+        issue = ohlc_validation_issue(row.open, row.high, row.low, row.close)
+        if issue:
             logger.warning(
-                "vix_prediction_zero_volume_skipped ticker=%s timeframe=%s ts=%s",
-                r.ticker,
-                r.timeframe,
-                r.timestamp.isoformat() if hasattr(r.timestamp, "isoformat") else r.timestamp,
+                "vix_prediction_invalid_ohlc_skipped ticker=%s timeframe=%s ts=%s issue=%s",
+                row.ticker,
+                row.timeframe,
+                row.timestamp.isoformat()
+                if hasattr(row.timestamp, "isoformat")
+                else row.timestamp,
+                issue,
             )
             continue
-        valid_rows.append(r)
-
-    if not valid_rows:
-        # Rows exist in the DB but every one was zero-volume: the time-based
-        # staleness check will not fire (data is recent, just unusable), so
-        # record the condition for /api/healthz visibility.
-        _record_vix_all_rows_filtered(len(rows))
-        return pd.DataFrame()
+        valid_rows.append(row)
 
     return pd.DataFrame([{
         "timestamp": r.timestamp,

@@ -2078,12 +2078,12 @@ def _make_spx_df(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(data, index=index)
 
 
-class TestStoreVixCandlesZeroVolumeGate:
-    """store_vix_candles must skip zero-volume bars and log the event."""
+class TestStoreVixCandles:
+    """VIX is an index: valid OHLC rows may legitimately have zero volume."""
 
     @pytest.mark.asyncio
-    async def test_zero_volume_vix_bar_is_skipped(self, vix_spx_db_session):
-        """A VIX bar with volume=0 must not be inserted into the DB."""
+    async def test_zero_volume_vix_bar_is_stored(self, vix_spx_db_session):
+        """A valid VIX bar with volume=0 must be inserted into the DB."""
         df = _make_vix_df([
             {"ts": datetime(2026, 7, 28), "volume": 1_000.0},
             {"ts": datetime(2026, 7, 29), "volume": 0.0},   # glitch day
@@ -2094,21 +2094,31 @@ class TestStoreVixCandlesZeroVolumeGate:
         from sqlalchemy import select as _select
         result = await vix_spx_db_session.execute(_select(VixCandle))
         rows = result.scalars().all()
-        assert len(rows) == 1, "Only the valid bar should be stored"
-        assert rows[0].timestamp == datetime(2026, 7, 28)
+        assert len(rows) == 2
+        assert {row.timestamp for row in rows} == {
+            datetime(2026, 7, 28),
+            datetime(2026, 7, 29),
+        }
 
     @pytest.mark.asyncio
-    async def test_zero_volume_vix_bar_logged(self, vix_spx_db_session, caplog):
-        """store_vix_candles logs ingest_zero_volume_bar_skipped for zero-vol bars."""
-        df = _make_vix_df([{"ts": datetime(2026, 7, 29), "volume": 0.0}])
+    async def test_invalid_vix_bar_logged(self, vix_spx_db_session, caplog):
+        """Malformed VIX OHLC rows are rejected and logged."""
+        df = _make_vix_df([{
+            "ts": datetime(2026, 7, 29),
+            "open": 20.0,
+            "high": 19.0,
+            "low": 18.0,
+            "close": 19.5,
+            "volume": 0.0,
+        }])
         pipeline = IngestionPipeline()
         import logging
         with caplog.at_level(logging.WARNING, logger="ingestion.pipeline"):
             await pipeline.store_vix_candles(df, vix_spx_db_session, timeframe="daily")
         assert any(
-            "ingest_zero_volume_bar_skipped" in r.message
+            "ingest_ohlc_anomaly" in r.message
             for r in caplog.records
-        ), "Expected ingest_zero_volume_bar_skipped log for VIX zero-volume bar"
+        ), "Expected malformed VIX OHLC log"
 
     @pytest.mark.asyncio
     async def test_valid_vix_bar_is_stored(self, vix_spx_db_session):
@@ -2123,8 +2133,8 @@ class TestStoreVixCandlesZeroVolumeGate:
         assert len(rows) == 1
 
     @pytest.mark.asyncio
-    async def test_all_zero_volume_vix_bars_skipped(self, vix_spx_db_session):
-        """When all bars have volume=0, nothing is inserted."""
+    async def test_all_zero_volume_vix_bars_are_stored(self, vix_spx_db_session):
+        """Valid VIX index rows remain usable when all volumes are zero."""
         df = _make_vix_df([
             {"ts": datetime(2026, 7, 28), "volume": 0.0},
             {"ts": datetime(2026, 7, 29), "volume": 0.0},
@@ -2135,7 +2145,7 @@ class TestStoreVixCandlesZeroVolumeGate:
         from sqlalchemy import select as _select
         result = await vix_spx_db_session.execute(_select(VixCandle))
         rows = result.scalars().all()
-        assert len(rows) == 0
+        assert len(rows) == 2
 
 
 class TestStoreSpxCandlesZeroVolumeGate:
@@ -2199,21 +2209,21 @@ class TestStoreSpxCandlesZeroVolumeGate:
 
 
 class TestRemoveInvalidVixCandles:
-    """remove_invalid_vix_candles must delete existing zero-volume rows at startup."""
+    """remove_invalid_vix_candles removes malformed OHLC, not index volume."""
 
     @pytest.mark.asyncio
-    async def test_removes_zero_volume_vix_row(self, vix_spx_db_session):
-        """A VIX row with volume=0 that already exists in the DB is removed."""
+    async def test_keeps_zero_volume_vix_row(self, vix_spx_db_session):
+        """A valid VIX index row with volume=0 remains available."""
         bad = _make_vix_candle(datetime(2026, 7, 29), volume=0.0)
         vix_spx_db_session.add(bad)
         await vix_spx_db_session.flush()
 
         removed = await IngestionPipeline().remove_invalid_vix_candles(vix_spx_db_session)
 
-        assert removed == 1
+        assert removed == 0
         from sqlalchemy import select as _select
         result = await vix_spx_db_session.execute(_select(VixCandle))
-        assert result.scalars().all() == []
+        assert len(result.scalars().all()) == 1
 
     @pytest.mark.asyncio
     async def test_keeps_valid_vix_row(self, vix_spx_db_session):
@@ -2230,10 +2240,11 @@ class TestRemoveInvalidVixCandles:
         assert len(result.scalars().all()) == 1
 
     @pytest.mark.asyncio
-    async def test_removes_only_zero_volume_vix_rows(self, vix_spx_db_session):
-        """Only zero-volume rows are removed; valid rows survive."""
+    async def test_removes_only_malformed_vix_rows(self, vix_spx_db_session):
+        """Only malformed OHLC rows are removed; valid rows survive."""
         good = _make_vix_candle(datetime(2026, 7, 28), volume=1_000.0)
         bad = _make_vix_candle(datetime(2026, 7, 29), volume=0.0)
+        bad.high = 19.0
         vix_spx_db_session.add(good)
         vix_spx_db_session.add(bad)
         await vix_spx_db_session.flush()
@@ -2254,15 +2265,15 @@ class TestRemoveInvalidVixCandles:
         assert removed == 0
 
     @pytest.mark.asyncio
-    async def test_removes_null_volume_vix_row(self, vix_spx_db_session):
-        """A VIX row with volume=NULL is also treated as zero-volume and removed."""
+    async def test_keeps_null_volume_vix_row(self, vix_spx_db_session):
+        """A valid VIX row with NULL volume remains available."""
         bad = _make_vix_candle(datetime(2026, 7, 29), volume=0.0)
         bad.volume = None
         vix_spx_db_session.add(bad)
         await vix_spx_db_session.flush()
 
         removed = await IngestionPipeline().remove_invalid_vix_candles(vix_spx_db_session)
-        assert removed == 1
+        assert removed == 0
 
 
 class TestRemoveInvalidSpxCandles:
