@@ -572,6 +572,180 @@ class TestIntradaySpikeBar:
         assert isinstance(reason, str)
 
 
+class TestDailySpikeBar:
+    """Daily candles with a cross-bar spike must be quarantined before they
+    reach the long-trend prediction engine.
+
+    A single day whose close is +12 % above its neighbours exceeds the
+    SPIKE_CLOSE_THRESHOLD (10 %) and must set degraded=True.
+
+    Normal multi-week daily volatility — e.g. a 3 % single-day earnings move
+    surrounded by typical ±1 % days — must NOT trip the check.
+    """
+
+    def _drop(self, df: pd.DataFrame) -> tuple:
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+        return pred._drop_invalid_ohlc(df, timeframe="daily")
+
+    def _make_daily_frame(self, closes: list[float], base_date=None) -> pd.DataFrame:
+        """Build a minimal daily candle DataFrame from a list of close prices.
+
+        Each bar is internally valid: open ≈ prev close, high = close + 1,
+        low = close - 1.  Only the closes vary so the cross-bar check is the
+        only discriminating factor.
+        """
+        if base_date is None:
+            base_date = datetime(2024, 1, 2)
+        rows = []
+        for i, c in enumerate(closes):
+            ts = base_date + timedelta(days=i)
+            rows.append({
+                "timestamp": ts,
+                "open": c - 0.5,
+                "high": c + 1.0,
+                "low": c - 1.0,
+                "close": c,
+            })
+        return pd.DataFrame(rows)
+
+    # ── Spike: +12 % single day ───────────────────────────────────────────────
+
+    def test_daily_spike_12pct_sets_degraded(self):
+        """A single daily candle whose close is +12 % above neighbours is
+        quarantined with degraded=True and 'cross_bar_spike' in the reason."""
+        base = 500.0
+        spike = base * 1.12  # +12 % — exceeds SPIKE_CLOSE_THRESHOLD (10 %)
+
+        # 5 rows: normal, normal, SPIKE, normal, normal
+        closes = [base, base * 1.005, spike, base * 0.998, base * 1.003]
+        df = self._make_daily_frame(closes)
+
+        clean, degraded, reason = self._drop(df)
+
+        assert degraded is True
+        assert "cross_bar_spike" in reason
+        # The 4 surrounding normal days must survive
+        assert len(clean) == 4
+
+    def test_daily_spike_sets_degraded_true_return_shape(self):
+        """_drop_invalid_ohlc always returns a 3-tuple; check types when spike found."""
+        base = 480.0
+        spike = base * 1.15  # +15 %
+
+        closes = [base, base, spike, base, base]
+        df = self._make_daily_frame(closes)
+
+        result = self._drop(df)
+        assert len(result) == 3
+        clean_df, degraded, reason = result
+        assert isinstance(clean_df, pd.DataFrame)
+        assert isinstance(degraded, bool)
+        assert isinstance(reason, str)
+        assert degraded is True
+
+    def test_daily_spike_quarantine_count_in_reason(self):
+        """The degraded reason string must mention how many candles were quarantined."""
+        base = 500.0
+        closes = [base, base, base * 1.13, base, base]
+        df = self._make_daily_frame(closes)
+
+        _, degraded, reason = self._drop(df)
+
+        assert degraded is True
+        assert "quarantined 1" in reason
+
+    def test_daily_spike_neighbours_survive(self):
+        """The candles surrounding the spike bar are valid and must not be dropped."""
+        base = 500.0
+        closes = [base, base * 1.005, base * 1.12, base * 0.998, base * 1.003]
+        df = self._make_daily_frame(closes)
+
+        clean, degraded, _ = self._drop(df)
+
+        assert degraded is True
+        # All four non-spike bars survive
+        assert len(clean) == 4
+        # None of the surviving closes should be the spike value
+        spike_val = base * 1.12
+        for c in clean["close"].tolist():
+            assert abs(c - spike_val) > 1.0, f"Spike close {spike_val} leaked into clean frame"
+
+    # ── Normal daily volatility: 3 % earnings move ───────────────────────────
+
+    def test_three_pct_earnings_move_not_flagged(self):
+        """A 3 % single-day move surrounded by typical ±1 % days stays below the
+        10 % threshold and must NOT be quarantined (degraded=False)."""
+        base = 500.0
+        # Simulate an earnings pop: base ± 1 % neighbours, +3 % on earnings day
+        closes = [
+            base,
+            base * 1.008,
+            base * 1.03,   # +3 % earnings day — well inside threshold
+            base * 1.025,
+            base * 1.020,
+        ]
+        df = self._make_daily_frame(closes)
+
+        clean, degraded, reason = self._drop(df)
+
+        assert degraded is False, (
+            f"A 3 % earnings-day move should not be flagged as a spike; "
+            f"got reason={reason!r}"
+        )
+        assert len(clean) == len(closes)
+
+    def test_gradual_multi_week_trend_not_flagged(self):
+        """Steady multi-week drift that never exceeds 10 % from the rolling median
+        in a single bar must pass through cleanly."""
+        # 10 days of ~0.5 % daily gains — cumulative +5 % but no single bar spikes
+        closes = [500.0 * (1.005 ** i) for i in range(10)]
+        df = self._make_daily_frame(closes)
+
+        clean, degraded, reason = self._drop(df)
+
+        assert degraded is False, (
+            f"Gradual daily drift should not trip the spike filter; reason={reason!r}"
+        )
+        assert len(clean) == 10
+
+    def test_below_threshold_9pct_not_flagged(self):
+        """A +9 % single-day move is just below the 10 % threshold and must not
+        be quarantined."""
+        base = 500.0
+        closes = [base, base, base * 1.09, base, base]
+        df = self._make_daily_frame(closes)
+
+        clean, degraded, reason = self._drop(df)
+
+        assert degraded is False, (
+            f"A 9 % move should not exceed the 10 % threshold; reason={reason!r}"
+        )
+
+    # ── Edge cases ────────────────────────────────────────────────────────────
+
+    def test_single_daily_candle_no_context_not_flagged(self):
+        """A single daily candle has no rolling-median context (fewer than 3
+        neighbours) and must never be quarantined by the cross-bar check."""
+        df = self._make_daily_frame([500.0])
+
+        clean, degraded, _ = self._drop(df)
+
+        # With only 1 row the rolling window has no context → not a spike
+        assert degraded is False
+        assert len(clean) == 1
+
+    def test_two_daily_candles_no_context_not_flagged(self):
+        """Two candles still lack the minimum 3 neighbours required by
+        min_periods=3 in the rolling window; neither should be flagged."""
+        df = self._make_daily_frame([500.0, 560.0])  # +12 % but no context
+
+        clean, degraded, _ = self._drop(df)
+
+        assert degraded is False
+
+
 class TestPredictShort20PctQuarantined:
     """When 20 % of the 5-min frame is quarantined, the prediction engine must:
       - return degraded=True with an informative reason string
