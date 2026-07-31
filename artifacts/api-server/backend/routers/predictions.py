@@ -214,7 +214,12 @@ def _drop_invalid_ohlc(df: pd.DataFrame, timeframe: str = "daily") -> tuple[pd.D
     try:
         if df.empty:
             return df, False, ""
-        valid_df, bad_df = filter_valid_ohlc(df)
+        spike_threshold = (
+            settings.DAILY_SPIKE_CLOSE_THRESHOLD
+            if timeframe == "daily"
+            else settings.SPIKE_CLOSE_THRESHOLD
+        )
+        valid_df, bad_df = filter_valid_ohlc(df, spike_threshold=spike_threshold)
         if bad_df.empty:
             return df, False, ""
 

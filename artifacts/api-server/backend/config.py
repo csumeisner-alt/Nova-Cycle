@@ -102,7 +102,15 @@ class Settings(BaseSettings):
     # Checked against a centered window of 5 bars (min 3 valid neighbours).
     # Normal intraday VOO 5-min moves stay well below this threshold; a 10 %
     # jump in a single bar is characteristic of a vendor data glitch.
-    SPIKE_CLOSE_THRESHOLD: float = 0.10  # 10 % deviation from rolling median
+    SPIKE_CLOSE_THRESHOLD: float = 0.10  # 10 % deviation from rolling median (intraday)
+
+    # For daily candles, real macro events (COVID March 2020, post-CPI 2022)
+    # can produce legitimate 5–9 % single-day moves, so the daily threshold is
+    # set higher than the intraday threshold to avoid quarantining real data.
+    # Historical VOO daily moves: COVID (-12 % on 2020-03-16), CPI shock
+    # (-4.3 % on 2022-09-13) — a 12 % threshold catches true data glitches
+    # while leaving room above the largest recorded real daily move.
+    DAILY_SPIKE_CLOSE_THRESHOLD: float = 0.12  # 12 % deviation from rolling median (daily)
 
     # When this many cross-bar spike quarantines accumulate within a single
     # trading session (in-memory counter, reset each trading day) a WARN-level

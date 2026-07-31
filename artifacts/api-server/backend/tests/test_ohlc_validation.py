@@ -576,11 +576,16 @@ class TestDailySpikeBar:
     """Daily candles with a cross-bar spike must be quarantined before they
     reach the long-trend prediction engine.
 
-    A single day whose close is +12 % above its neighbours exceeds the
-    SPIKE_CLOSE_THRESHOLD (10 %) and must set degraded=True.
+    Daily candles use DAILY_SPIKE_CLOSE_THRESHOLD (12 %), which is higher than
+    the intraday SPIKE_CLOSE_THRESHOLD (10 %) so that legitimate macro-event
+    moves (e.g. COVID March 2020, post-CPI 2022) are not wrongly quarantined.
+
+    A single day whose close is +13 % above its neighbours exceeds the
+    DAILY_SPIKE_CLOSE_THRESHOLD (12 %) and must set degraded=True.
 
     Normal multi-week daily volatility — e.g. a 3 % single-day earnings move
-    surrounded by typical ±1 % days — must NOT trip the check.
+    or even an 11 % COVID-style crash surrounded by typical ±1 % days — must
+    NOT trip the daily check.
     """
 
     def _drop(self, df: pd.DataFrame) -> tuple:
@@ -610,13 +615,18 @@ class TestDailySpikeBar:
             })
         return pd.DataFrame(rows)
 
-    # ── Spike: +12 % single day ───────────────────────────────────────────────
+    # ── Spike: +13 % single day ───────────────────────────────────────────────
 
-    def test_daily_spike_12pct_sets_degraded(self):
-        """A single daily candle whose close is +12 % above neighbours is
-        quarantined with degraded=True and 'cross_bar_spike' in the reason."""
+    def test_daily_spike_13pct_sets_degraded(self):
+        """A single daily candle whose close is +13 % above neighbours is
+        quarantined with degraded=True and 'cross_bar_spike' in the reason.
+
+        Uses 13 % because the daily threshold is 12 % (DAILY_SPIKE_CLOSE_THRESHOLD)
+        and the check is strict (> not >=), so a true data glitch well above the
+        threshold is the meaningful regression case.
+        """
         base = 500.0
-        spike = base * 1.12  # +12 % — exceeds SPIKE_CLOSE_THRESHOLD (10 %)
+        spike = base * 1.13  # +13 % — exceeds DAILY_SPIKE_CLOSE_THRESHOLD (12 %)
 
         # 5 rows: normal, normal, SPIKE, normal, normal
         closes = [base, base * 1.005, spike, base * 0.998, base * 1.003]
@@ -659,7 +669,7 @@ class TestDailySpikeBar:
     def test_daily_spike_neighbours_survive(self):
         """The candles surrounding the spike bar are valid and must not be dropped."""
         base = 500.0
-        closes = [base, base * 1.005, base * 1.12, base * 0.998, base * 1.003]
+        closes = [base, base * 1.005, base * 1.13, base * 0.998, base * 1.003]
         df = self._make_daily_frame(closes)
 
         clean, degraded, _ = self._drop(df)
@@ -668,15 +678,15 @@ class TestDailySpikeBar:
         # All four non-spike bars survive
         assert len(clean) == 4
         # None of the surviving closes should be the spike value
-        spike_val = base * 1.12
+        spike_val = base * 1.13
         for c in clean["close"].tolist():
             assert abs(c - spike_val) > 1.0, f"Spike close {spike_val} leaked into clean frame"
 
-    # ── Normal daily volatility: 3 % earnings move ───────────────────────────
+    # ── Normal daily volatility: 3 % earnings move, 11 % macro crash ─────────
 
     def test_three_pct_earnings_move_not_flagged(self):
         """A 3 % single-day move surrounded by typical ±1 % days stays below the
-        10 % threshold and must NOT be quarantined (degraded=False)."""
+        12 % daily threshold and must NOT be quarantined (degraded=False)."""
         base = 500.0
         # Simulate an earnings pop: base ± 1 % neighbours, +3 % on earnings day
         closes = [
@@ -696,6 +706,26 @@ class TestDailySpikeBar:
         )
         assert len(clean) == len(closes)
 
+    def test_eleven_pct_macro_crash_day_not_flagged(self):
+        """An 11 % single-day move (COVID-crash scale) is below the 12 %
+        DAILY_SPIKE_CLOSE_THRESHOLD and must NOT be quarantined.
+
+        This is the primary motivation for splitting the daily threshold from the
+        intraday one: under the old shared 10 % threshold a COVID-like day would
+        have been wrongly quarantined.
+        """
+        base = 500.0
+        closes = [base, base, base * 0.89, base, base]  # -11 % crash day
+        df = self._make_daily_frame(closes)
+
+        clean, degraded, reason = self._drop(df)
+
+        assert degraded is False, (
+            f"An 11 % macro-crash move should not exceed the 12 % daily threshold; "
+            f"got reason={reason!r}"
+        )
+        assert len(clean) == len(closes)
+
     def test_gradual_multi_week_trend_not_flagged(self):
         """Steady multi-week drift that never exceeds 10 % from the rolling median
         in a single bar must pass through cleanly."""
@@ -711,8 +741,8 @@ class TestDailySpikeBar:
         assert len(clean) == 10
 
     def test_below_threshold_9pct_not_flagged(self):
-        """A +9 % single-day move is just below the 10 % threshold and must not
-        be quarantined."""
+        """A +9 % single-day move is well below the 12 % daily threshold and
+        must not be quarantined."""
         base = 500.0
         closes = [base, base, base * 1.09, base, base]
         df = self._make_daily_frame(closes)
@@ -720,7 +750,7 @@ class TestDailySpikeBar:
         clean, degraded, reason = self._drop(df)
 
         assert degraded is False, (
-            f"A 9 % move should not exceed the 10 % threshold; reason={reason!r}"
+            f"A 9 % move should not exceed the 12 % daily threshold; reason={reason!r}"
         )
 
     # ── Edge cases ────────────────────────────────────────────────────────────
