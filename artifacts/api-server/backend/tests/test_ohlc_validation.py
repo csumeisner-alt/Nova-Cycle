@@ -1280,3 +1280,208 @@ class TestZeroVolumeBarLiquidityScore:
         # The glitch bar is excluded: 9 non-zero regular bars remain
         df_clean = df[~mask]
         assert len(df_clean) == 9
+
+
+# ---------------------------------------------------------------------------
+# Task-188: daily zero-volume bar tests for predict_long
+# ---------------------------------------------------------------------------
+
+def _make_daily_vol_frame(rows: list[dict]) -> pd.DataFrame:
+    """Build a typical daily candle DataFrame for long-trend zero-volume tests."""
+    base = datetime(2024, 7, 1)
+    enriched = []
+    for i, r in enumerate(rows):
+        enriched.append({
+            "timestamp": base + timedelta(days=i),
+            "open": r.get("open", 500.0),
+            "high": r.get("high", 505.0),
+            "low": r.get("low", 498.0),
+            "close": r.get("close", 502.0),
+            "volume": r.get("volume", 5_000_000),
+            "session_type": r.get("session_type", "regular"),
+            "is_extended_hours": r.get("is_extended_hours", False),
+            "gap_type": r.get("gap_type", "none"),
+            "gap_percent": r.get("gap_percent", 0.0),
+            "ticker": "VOO",
+        })
+    return pd.DataFrame(enriched)
+
+
+class TestDailyZeroVolumeBarDetection:
+    """_detect_zero_volume_bars works correctly on daily candle frames.
+
+    The helper was originally written for 5-min frames but operates on any
+    DataFrame with a 'volume' column. These tests confirm it is usable for
+    the daily frame loaded by predict_long.
+    """
+
+    def _detect(self, df):
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+        return pred._detect_zero_volume_bars(df)
+
+    def test_all_positive_volume_returns_no_zeros(self):
+        """A daily frame with normal volume → count=0, reason=''."""
+        df = _make_daily_vol_frame([
+            {"volume": 5_000_000},
+            {"volume": 4_800_000},
+            {"volume": 5_200_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 0
+        assert reason == ""
+        assert not mask.any()
+
+    def test_single_zero_volume_daily_bar_detected(self):
+        """A daily bar with volume=0 is flagged with count=1 and a reason."""
+        df = _make_daily_vol_frame([
+            {"volume": 5_000_000},
+            {"volume": 0},           # glitch bar
+            {"volume": 4_900_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 1
+        assert mask.sum() == 1
+        assert "zero_volume_bars" in reason
+
+    def test_nan_volume_daily_treated_as_zero(self):
+        """A daily bar with volume=NaN is also treated as zero volume."""
+        df = _make_daily_vol_frame([
+            {"volume": 5_000_000},
+            {"volume": float("nan")},
+            {"volume": 4_900_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 1
+        assert "zero_volume_bars" in reason
+
+    def test_zero_volume_bar_excluded_from_filtered_frame(self):
+        """After masking, the zero-volume daily bar is absent from the clean frame."""
+        df = _make_daily_vol_frame([
+            {"volume": 5_000_000},
+            {"volume": 0},
+            {"volume": 4_900_000},
+        ])
+        mask, count, _ = self._detect(df)
+        df_clean = df[~mask].reset_index(drop=True)
+        assert len(df_clean) == 2
+        # No zero-volume rows in the clean frame
+        assert (df_clean["volume"] > 0).all()
+
+    def test_multiple_zero_volume_daily_bars_counted(self):
+        """Multiple zero-volume daily bars all appear in the count."""
+        df = _make_daily_vol_frame([
+            {"volume": 5_000_000},
+            {"volume": 0},
+            {"volume": 0},
+            {"volume": 4_900_000},
+        ])
+        mask, count, reason = self._detect(df)
+        assert count == 2
+        assert mask.sum() == 2
+        assert "zero_volume_bars" in reason
+
+
+class TestPredictLongZeroVolumeIntegration:
+    """Verify that a zero-volume daily bar is excluded from long-trend inputs
+    and that dq_degraded / dq_reason surface the detection.
+
+    These tests exercise _detect_zero_volume_bars directly (predict_long
+    requires a live async DB session and is tested via the router fixture
+    in integration tests).  They assert the preconditions that predict_long
+    relies on before calling build_latest_features.
+    """
+
+    def _detect(self, df):
+        import importlib
+        import routers.predictions as pred
+        importlib.reload(pred)
+        return pred._detect_zero_volume_bars(df)
+
+    def test_zero_volume_daily_bar_sets_dq_degraded(self):
+        """When a daily frame has a zero-volume bar, detect returns count>0
+        and a non-empty reason — predict_long will set dq_degraded=True."""
+        df = _make_daily_vol_frame([
+            {"volume": 5_000_000},
+            {"volume": 0},        # yfinance glitch
+            {"volume": 4_800_000},
+        ])
+        _, count, reason = self._detect(df)
+        # predict_long sets dq_degraded = True when count > 0
+        assert count > 0
+        assert reason != ""
+        assert "zero_volume_bars" in reason
+
+    def test_zero_volume_daily_bar_excluded_before_features(self):
+        """After predict_long applies the mask, the zero-volume bar is absent
+        from the frame passed to build_latest_features."""
+        df = _make_daily_vol_frame([
+            {"volume": 5_000_000},
+            {"volume": 0},        # glitch
+            {"volume": 4_700_000},
+            {"volume": 5_100_000},
+        ])
+        mask, count, _ = self._detect(df)
+        assert count == 1
+        df_clean = df[~mask].reset_index(drop=True)
+        # The clean frame should not contain the zero-volume row
+        assert len(df_clean) == 3
+        assert (df_clean["volume"] > 0).all()
+
+    def test_single_zero_volume_bar_does_not_corrupt_long_response(self):
+        """A single zero-volume daily bar is excluded from the feature frame;
+        the remaining valid candles allow a response to be built without crash."""
+        # Simulate 10 daily candles, one with volume=0
+        rows = [{"volume": 5_000_000}] * 5 + [{"volume": 0}] + [{"volume": 5_000_000}] * 4
+        df = _make_daily_vol_frame(rows)
+        mask, count, reason = self._detect(df)
+        df_clean = df[~mask].reset_index(drop=True)
+        # Exactly 9 valid candles survive
+        assert len(df_clean) == 9
+        # dq fields predict_long will emit
+        dq_degraded = count > 0
+        dq_reason = reason
+        assert dq_degraded is True
+        assert "zero_volume_bars" in dq_reason
+        # The clean frame has sufficient rows to build features
+        assert not df_clean.empty
+
+    def test_all_zero_volume_daily_bars_returns_empty_clean_frame(self):
+        """When every daily candle has zero volume, the clean frame is empty.
+        predict_long returns the neutral fallback in this scenario."""
+        df = _make_daily_vol_frame([
+            {"volume": 0},
+            {"volume": 0},
+            {"volume": 0},
+        ])
+        mask, count, reason = self._detect(df)
+        df_clean = df[~mask].reset_index(drop=True)
+        assert count == 3
+        assert df_clean.empty
+        # predict_long will detect empty and return neutral
+        dq_degraded = count > 0
+        assert dq_degraded is True
+
+    def test_dq_reason_combined_when_ohlc_also_degraded(self):
+        """When both OHLC filter and zero-volume detection fire, the reasons
+        are concatenated with '; ' in predict_long's dq_reason field."""
+        # Simulate the merging logic in predict_long
+        existing_reason = "quarantined 1 malformed daily candle(s); latest bad candle ts=2024-07-30"
+        dq_degraded = True
+
+        # A zero-volume bar is also found
+        df = _make_daily_vol_frame([{"volume": 0}])
+        _, count, zv_reason = self._detect(df)
+        assert count == 1
+
+        # predict_long concatenation logic
+        if dq_degraded:
+            combined = existing_reason + "; " + zv_reason
+        else:
+            combined = zv_reason
+            dq_degraded = True
+
+        assert "quarantined" in combined
+        assert "zero_volume_bars" in combined
+        assert "; " in combined

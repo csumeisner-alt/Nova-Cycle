@@ -620,6 +620,36 @@ async def predict_long(
                 "note": "All recent daily candles failed OHLC integrity check."
             }
 
+        # Zero-volume daily bar detection: a yfinance glitch may return a daily
+        # bar with volume=0 that passes all OHLC consistency checks but would
+        # corrupt any volume-based long-trend features (e.g. OBV, volume EMA).
+        # Exclude those bars from the frame so they cannot distort predictions.
+        zero_vol_mask, zero_vol_count, zv_reason = _detect_zero_volume_bars(daily_df)
+        if zero_vol_count > 0:
+            daily_df = daily_df[~zero_vol_mask].reset_index(drop=True)
+            if dq_degraded:
+                dq_reason = dq_reason + "; " + zv_reason
+            else:
+                dq_reason = zv_reason
+                dq_degraded = True
+            logger.warning(
+                "zero_volume_bars count=%d timeframe=daily",
+                zero_vol_count,
+            )
+            if daily_df.empty:
+                return {
+                    "score": 0, "signal": "neutral", "confidence": 0.5,
+                    "indicator_breakdown": {}, "ml_confidence": 0.5,
+                    "ml_fallback": True,
+                    "liquidity_score": 1.0, "gap_type": "none",
+                    "macro_override_applied": False,
+                    **dict(NEUTRAL_DEFAULTS),
+                    "data_quality_degraded": True,
+                    "data_quality_reason": dq_reason,
+                    "timestamp": datetime.utcnow().isoformat(), "ticker": ticker,
+                    "note": "All recent daily candles had zero volume."
+                }
+
         # Compute indicators (exclude extended hours always for long-trend)
         indicators = _indicators_engine.compute_all(daily_df, vix_df, exclude_extended=True)
 
