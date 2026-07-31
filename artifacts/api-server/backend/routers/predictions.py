@@ -267,7 +267,13 @@ async def _load_5min_candles(session: AsyncSession, ticker: str, limit: int = 50
 
 
 async def _load_vix_candles(session: AsyncSession, limit: int = 300) -> pd.DataFrame:
-    """Load VIX daily candles."""
+    """Load VIX daily candles, skipping zero-volume rows.
+
+    Zero-volume VIX bars are a yfinance glitch and are removed at startup by
+    remove_invalid_vix_candles(), but a row may survive in the DB from an older
+    backup restore or a race before cleanup completes.  Filtering here ensures
+    the macro signal never silently uses a bad close value from such a row.
+    """
     result = await session.execute(
         select(VixCandle)
         .order_by(desc(VixCandle.timestamp))
@@ -277,11 +283,28 @@ async def _load_vix_candles(session: AsyncSession, limit: int = 300) -> pd.DataF
     if not rows:
         return pd.DataFrame()
     rows = list(reversed(rows))
+
+    valid_rows = []
+    for r in rows:
+        vol = r.volume
+        if vol is None or float(vol) == 0:
+            logger.warning(
+                "vix_prediction_zero_volume_skipped ticker=%s timeframe=%s ts=%s",
+                r.ticker,
+                r.timeframe,
+                r.timestamp.isoformat() if hasattr(r.timestamp, "isoformat") else r.timestamp,
+            )
+            continue
+        valid_rows.append(r)
+
+    if not valid_rows:
+        return pd.DataFrame()
+
     return pd.DataFrame([{
         "timestamp": r.timestamp,
         "open": r.open, "high": r.high, "low": r.low, "close": r.close,
         "ticker": r.ticker
-    } for r in rows])
+    } for r in valid_rows])
 
 
 async def _load_spx_close_series(session: AsyncSession, limit: int = 300) -> pd.Series:
