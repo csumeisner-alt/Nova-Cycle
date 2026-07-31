@@ -1,5 +1,6 @@
 # Runtime state files — never commit
 spike_quarantine_state.json
+novacycle.db
 
 # Python
 __pycache__/
