@@ -899,13 +899,20 @@ async def predict_short(
 
         # Compute short gauge score
         # age_in_minutes=0 = latest candle gets full weight
+        # A healthy calibrated short model uses its rare-event base rate as
+        # the ML-neutral point.  Missing/stale/error fallbacks keep 0.5 so a
+        # fallback cannot accidentally add a bullish or bearish bias.
+        ml_neutral_probability = (
+            _short_model.get_neutral_probability() if not ml_fallback else 0.5
+        )
         result = _short_gauge.compute_score(
             indicators, ml_confidence,
             is_extended=is_extended,
             liquidity_score=liquidity_score,
             gap_type=gap_type,
             age_in_minutes=0,
-            gap_momentum=gap_momentum
+            gap_momentum=gap_momentum,
+            neutral_probability=ml_neutral_probability,
         )
         _last_short_score = result["score"]
 
@@ -995,6 +1002,7 @@ async def predict_short(
             ),
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
+            "ml_neutral_probability": ml_neutral_probability,
             "ml_fallback": ml_fallback,
             "liquidity_score": liquidity_score,
             "gap_type": gap_type,

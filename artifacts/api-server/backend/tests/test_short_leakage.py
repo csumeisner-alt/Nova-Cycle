@@ -151,18 +151,49 @@ def test_train_reports_honest_oos_accuracy(isolated_model_dir):
 
 
 def test_gauge_contribution_sensible_range(isolated_model_dir):
-    """Spot-check: the ML term of the short gauge (p*80-40) stays in a sane
-    band for the trained model — no pinned −40 from a broken confidence."""
+    """Spot-check: calibrated rare-event probabilities do not pin the ML
+    contribution bearish merely because they are below 0.5."""
     df = _make_5min_df(n=900, seed=5)
     m = ShortTrendModel()
     m.train(df, indicators={})
     feats = m.build_latest_features(df, indicators={})
     assert feats is not None
     p = m.predict(feats)
-    ml_term = p * 80 - 40
+    from signal_engine.short_gauge import ShortTrendGauge
+
+    result = ShortTrendGauge().compute_score(
+        {}, p, False, 1.0, "none", neutral_probability=0.10
+    )
+    ml_term = result["ml_score"]
     assert -40.0 <= ml_term <= 40.0
-    # the probability itself must be a real number strictly inside [0,1]
+    assert abs(ml_term) < 40.0
+    # the probability itself must be a real number in [0,1]
     assert 0.0 <= p <= 1.0
+
+
+def test_short_gauge_centers_on_calibrated_base_rate():
+    """A normal 10% calibrated event probability is neutral; lower and higher
+    probabilities retain directional meaning without changing the score range."""
+    from signal_engine.short_gauge import ShortTrendGauge
+
+    gauge = ShortTrendGauge()
+    neutral = gauge.compute_score(
+        {}, 0.10, False, 1.0, "none", neutral_probability=0.10
+    )
+    typical = gauge.compute_score(
+        {}, 0.08, False, 1.0, "none", neutral_probability=0.10
+    )
+    bullish = gauge.compute_score(
+        {}, 0.25, False, 1.0, "none", neutral_probability=0.10
+    )
+    assert neutral["ml_score"] == pytest.approx(0.0)
+    assert -10.0 < typical["ml_score"] < 0.0
+    assert bullish["ml_score"] > 0.0
+    for probability in (0.0, 0.08, 0.10, 0.25, 1.0):
+        score = gauge.compute_score(
+            {}, probability, False, 1.0, "none", neutral_probability=0.10
+        )["ml_score"]
+        assert -40.0 <= score <= 40.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

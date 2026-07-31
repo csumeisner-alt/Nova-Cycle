@@ -6,7 +6,8 @@ gap analysis, liquidity, and ML output into a score in [-100, +100].
 
 Score composition:
   indicator_score  (individual caps: ±8 regular / ±4 extended)
-  ml_score         = ml_prediction × 80 − 40   → maps [0,1] to [-40,+40]
+  ml_score         = calibrated probability relative to its neutral base rate
+                     → maps [0,1] to [-40,+40]
   total_score      = (indicator_score + ml_score) × time_decay_weight
 
 BUY  threshold: total_score > +60
@@ -33,7 +34,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# ML score mapping: [0,1] → [-40, +40]
+# ML score mapping: [0,1] → [-40, +40]. The neutral probability is normally
+# the short label's calibrated OOS positive rate, not necessarily 0.5.
 _ML_WEIGHT = 80.0
 _ML_OFFSET = 40.0
 _SCORE_MIN = -100.0
@@ -54,6 +56,7 @@ class ShortTrendGauge:
         liquidity_score: float,
         gap_type: str,
         gap_momentum: float | None = None,
+        neutral_probability: float = 0.5,
     ) -> tuple[float, dict]:
         """
         Compute the raw indicator score for the short-trend gauge.
@@ -202,13 +205,15 @@ class ShortTrendGauge:
         gap_type: str,
         age_in_minutes: float = 0.0,
         gap_momentum: float | None = None,
+        neutral_probability: float = 0.5,
     ) -> dict:
         """
         Compute the final short-trend gauge score.
 
         Formula:
           indicator_score = Σ indicator contributions (with liquidity + gap)
-          ml_score        = ml_prediction × 80 − 40   → [-40, +40]
+          ml_score        = ml_prediction centered on neutral_probability,
+                          bounded to [-40, +40]
           raw_score       = indicator_score + ml_score
 
           # Time-decay
@@ -233,6 +238,8 @@ class ShortTrendGauge:
             liquidity_score: Volume_extended / Volume_regular
             gap_type:        'gap_up', 'gap_down', or 'none'
             age_in_minutes:  age of the most-recent data point in minutes
+            neutral_probability: calibrated base rate treated as ML-neutral;
+                defaults to 0.5 for legacy models and fallbacks
 
         Returns:
             {
@@ -256,9 +263,17 @@ class ShortTrendGauge:
             liquidity_adjusted = liquidity_score < settings.LIQUIDITY_SCORE_THRESHOLD
 
             # ── ML contribution ────────────────────────────────────────────────
-            # ml_score = ml_prediction × 80 − 40  → [-40, +40]
-            ml_score = float(ml_prediction) * _ML_WEIGHT - _ML_OFFSET
+            # A calibrated rare-event probability such as 0.08 is normal, not
+            # evidence of a bearish market. Center on the measured base rate
+            # while retaining the existing full range at p=0 and p=1.
+            p = min(1.0, max(0.0, float(ml_prediction)))
+            base = min(0.99, max(0.01, float(neutral_probability)))
+            if p >= base:
+                ml_score = (p - base) / (1.0 - base) * (_ML_WEIGHT / 2.0)
+            else:
+                ml_score = (p - base) / base * (_ML_WEIGHT / 2.0)
             breakdown["ml_score"] = ml_score
+            breakdown["ml_neutral_probability"] = base
 
             raw_score = indicator_score + ml_score
 
@@ -303,6 +318,7 @@ class ShortTrendGauge:
                 "liquidity_adjusted": liquidity_adjusted,
                 "gap_type": gap_type,
                 "gap_momentum": gap_momentum,
+                "neutral_probability": base,
                 "macro_override_applied": False,  # will be set by caller
             }
 

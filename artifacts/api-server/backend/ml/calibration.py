@@ -173,6 +173,10 @@ def walk_forward_evaluate(
         "n_splits": len(fold_stats),
         "embargo_rows": int(embargo),
         "oos_samples": int(len(probs)),
+        # The calibrated model's neutral point is the observed frequency of
+        # the positive label, not necessarily 50%.  This matters for rare
+        # event labels such as the short model's >0.3% one-hour move.
+        "positive_rate": float(labels.mean()),
         "oos_accuracy": accuracy,
         "oos_brier_score": brier,
         "reliability_bins": _reliability_bins(probs, labels),

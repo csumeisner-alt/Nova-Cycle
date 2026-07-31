@@ -182,6 +182,8 @@ class ShortTrendModel:
         self._model_loaded = False
         self._loaded_mtime: Optional[float] = None
         self._calibrator_mtime: Optional[float] = None
+        self.calibration_base_rate: Optional[float] = None
+        self._calibration_report_mtime: Optional[float] = None
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     def _maybe_reload(self) -> None:
@@ -214,6 +216,36 @@ class ShortTrendModel:
             # the next prediction rather than silently disabling calibration.
             if calibrator is not None or cal_mtime is None:
                 self._calibrator_mtime = cal_mtime
+
+        # The short label is a rare event, so its calibrated neutral point is
+        # the observed OOS positive rate rather than 0.5.  Keep this metadata
+        # separate from the calibrator pickle so a report can be inspected and
+        # safely reloaded without changing model persistence format.
+        try:
+            report_path = ml_calibration.calibration_report_path("short_trend")
+            report_mtime = report_path.stat().st_mtime if report_path.exists() else None
+        except OSError:
+            report_mtime = None
+        if report_mtime != self._calibration_report_mtime:
+            report = ml_calibration.get_calibration_report("short_trend")
+            rate = report.get("positive_rate") if isinstance(report, dict) else None
+            try:
+                rate = float(rate)
+                self.calibration_base_rate = (
+                    min(0.99, max(0.01, rate)) if 0.0 < rate < 1.0 else None
+                )
+            except (TypeError, ValueError):
+                self.calibration_base_rate = None
+            self._calibration_report_mtime = report_mtime
+
+    def get_neutral_probability(self) -> float:
+        """Return the calibrated probability that represents a normal outcome.
+
+        A missing or invalid calibration report deliberately returns 0.5 so
+        legacy models and neutral fallbacks retain the old behavior.
+        """
+        self._maybe_reload()
+        return self.calibration_base_rate or 0.5
 
     # ──────────────────────────────────────────────────────────────────────────
     # Feature engineering
@@ -462,6 +494,14 @@ class ShortTrendModel:
                 ml_calibration.save_calibration_report(
                     calibration_summary, "short_trend"
                 )
+                positive_rate = calibration_summary.get("positive_rate")
+                if positive_rate is not None:
+                    try:
+                        self.calibration_base_rate = min(
+                            0.99, max(0.01, float(positive_rate))
+                        )
+                    except (TypeError, ValueError):
+                        self.calibration_base_rate = None
             except Exception as exc:
                 logger.error("Short-trend calibration error: %s", exc)
                 calibration_summary = {"calibrated": False, "reason": str(exc)}
