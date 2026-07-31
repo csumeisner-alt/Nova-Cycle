@@ -188,6 +188,43 @@ def filter_valid_ohlc(
     return valid, quarantined
 
 
+# ── Zero-volume bar filter ────────────────────────────────────────────────────
+
+def filter_zero_volume_bars(
+    df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split *df* into two DataFrames: (valid, quarantined) based on volume.
+
+    Bars with ``volume == 0`` or ``NaN`` volume are quarantined with
+    ``ohlc_invalid_reason='zero_volume'``.  yfinance occasionally emits
+    zero-volume daily bars for glitch days; letting them accumulate in the
+    database forces every prediction call to filter them out.
+
+    *df* must have a ``volume`` column.  DataFrames that lack a ``volume``
+    column pass through unchanged so the function is safe for frames that
+    were produced by a path that doesn't carry volume (e.g. pure-VIX frames).
+
+    Returns:
+        valid       — rows whose volume is positive and finite
+        quarantined — rows with zero or NaN volume; each row has an extra
+                      column ``ohlc_invalid_reason`` set to ``'zero_volume'``
+    """
+    if df.empty or "volume" not in df.columns:
+        return df, pd.DataFrame(columns=list(df.columns) + ["ohlc_invalid_reason"])
+
+    vol = pd.to_numeric(df["volume"], errors="coerce")
+    zero_mask = (vol == 0) | vol.isna()
+
+    if not zero_mask.any():
+        return df, pd.DataFrame(columns=list(df.columns) + ["ohlc_invalid_reason"])
+
+    quarantined = df[zero_mask].copy()
+    quarantined["ohlc_invalid_reason"] = "zero_volume"
+    valid = df[~zero_mask]
+    return valid, quarantined
+
+
 # ── Cross-bar spike detection ─────────────────────────────────────────────────
 
 def flag_cross_bar_spikes(

@@ -175,19 +175,34 @@ class IngestionPipeline:
         exist from a prior process lifetime.  Remove it before predictions
         select their feature window; the next incremental fetch re-reads the
         boundary date and stores it only if the vendor returns a valid candle.
+
+        Checks removed:
+          - OHLC consistency violations (high < open, low > close, etc.)
+          - Zero-volume bars (volume == 0 or NULL) — yfinance glitch days
         """
         result = await db_session.execute(
             select(VooCandle).where(VooCandle.ticker == settings.TICKER)
         )
+
+        def _row_issue(row: VooCandle) -> str | None:
+            """Return a reason string if *row* is invalid, else None."""
+            ohlc_issue = ohlc_validation_issue(row.open, row.high, row.low, row.close)
+            if ohlc_issue:
+                return ohlc_issue
+            vol = row.volume
+            if vol is None or float(vol) == 0:
+                return "zero_volume"
+            return None
+
         invalid_rows = [
-            row for row in result.scalars().all()
-            if ohlc_validation_issue(row.open, row.high, row.low, row.close)
+            (row, _row_issue(row))
+            for row in result.scalars().all()
+            if _row_issue(row) is not None
         ]
         if not invalid_rows:
             return 0
 
-        for row in invalid_rows:
-            issue = ohlc_validation_issue(row.open, row.high, row.low, row.close)
+        for row, issue in invalid_rows:
             logger.warning(
                 "ingest_invalid_existing_candle_removed timeframe=%s ts=%s issue=%s",
                 row.timeframe,
@@ -599,6 +614,14 @@ class IngestionPipeline:
                 logger.warning(
                     "ingest_ohlc_anomaly issue=%s timeframe=%s ts=%s",
                     issue, timeframe, ts_naive.isoformat()
+                )
+                skipped += 1
+                continue
+
+            if volume == 0:
+                logger.warning(
+                    "ingest_zero_volume_bar_skipped timeframe=%s ts=%s",
+                    timeframe, ts_naive.isoformat(),
                 )
                 skipped += 1
                 continue

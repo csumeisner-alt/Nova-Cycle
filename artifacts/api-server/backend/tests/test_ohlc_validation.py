@@ -1485,3 +1485,219 @@ class TestPredictLongZeroVolumeIntegration:
         assert "quarantined" in combined
         assert "zero_volume_bars" in combined
         assert "; " in combined
+
+
+# ---------------------------------------------------------------------------
+# Task-189: ingest-time zero-volume gate
+# ---------------------------------------------------------------------------
+
+class TestFilterZeroVolumeBars:
+    """Unit tests for ohlc_validator.filter_zero_volume_bars."""
+
+    from ingestion.ohlc_validator import filter_zero_volume_bars  # noqa: F401
+
+    def _filter(self, df):
+        from ingestion.ohlc_validator import filter_zero_volume_bars
+        return filter_zero_volume_bars(df)
+
+    def _make_df(self, rows: list[dict]) -> pd.DataFrame:
+        base = datetime(2024, 7, 29)
+        df = pd.DataFrame(rows)
+        df.index = pd.DatetimeIndex(
+            [base + timedelta(days=i) for i in range(len(rows))]
+        )
+        return df
+
+    def test_all_positive_volume_passes_through(self):
+        """Rows with positive volume are all valid — quarantined frame is empty."""
+        df = self._make_df([
+            {"open": 500.0, "high": 505.0, "low": 498.0, "close": 502.0, "volume": 1_000_000},
+            {"open": 501.0, "high": 506.0, "low": 499.0, "close": 503.0, "volume": 900_000},
+        ])
+        valid, quarantined = self._filter(df)
+        assert len(valid) == 2
+        assert quarantined.empty
+
+    def test_zero_volume_row_is_quarantined(self):
+        """A single bar with volume=0 lands in the quarantined frame."""
+        df = self._make_df([
+            {"open": 500.0, "high": 505.0, "low": 498.0, "close": 502.0, "volume": 1_000_000},
+            {"open": 501.0, "high": 506.0, "low": 499.0, "close": 503.0, "volume": 0},
+        ])
+        valid, quarantined = self._filter(df)
+        assert len(valid) == 1
+        assert len(quarantined) == 1
+        assert quarantined.iloc[0]["ohlc_invalid_reason"] == "zero_volume"
+
+    def test_nan_volume_treated_as_zero(self):
+        """A bar whose volume is NaN is treated as zero volume and quarantined."""
+        import numpy as np
+        df = self._make_df([
+            {"open": 500.0, "high": 505.0, "low": 498.0, "close": 502.0, "volume": 1_000_000},
+            {"open": 501.0, "high": 506.0, "low": 499.0, "close": 503.0, "volume": float("nan")},
+        ])
+        valid, quarantined = self._filter(df)
+        assert len(valid) == 1
+        assert len(quarantined) == 1
+        assert quarantined.iloc[0]["ohlc_invalid_reason"] == "zero_volume"
+
+    def test_multiple_zero_volume_rows_all_quarantined(self):
+        """Every zero-volume bar is quarantined; non-zero bars survive."""
+        df = self._make_df([
+            {"open": 500.0, "high": 505.0, "low": 498.0, "close": 502.0, "volume": 0},
+            {"open": 501.0, "high": 506.0, "low": 499.0, "close": 503.0, "volume": 1_000_000},
+            {"open": 502.0, "high": 507.0, "low": 500.0, "close": 504.0, "volume": 0},
+        ])
+        valid, quarantined = self._filter(df)
+        assert len(valid) == 1
+        assert len(quarantined) == 2
+
+    def test_empty_df_returns_empty_frames(self):
+        """Empty input produces two empty frames without crashing."""
+        valid, quarantined = self._filter(pd.DataFrame())
+        assert valid.empty
+        assert quarantined.empty
+
+    def test_missing_volume_column_passes_through_unchanged(self):
+        """A DataFrame with no 'volume' column passes through as-is."""
+        df = pd.DataFrame({"open": [500.0], "close": [502.0]})
+        valid, quarantined = self._filter(df)
+        assert len(valid) == 1
+        assert quarantined.empty
+
+    def test_all_zero_volume_returns_empty_valid(self):
+        """When every bar has zero volume the valid frame is empty."""
+        df = self._make_df([
+            {"open": 500.0, "high": 505.0, "low": 498.0, "close": 502.0, "volume": 0},
+            {"open": 501.0, "high": 506.0, "low": 499.0, "close": 503.0, "volume": 0},
+        ])
+        valid, quarantined = self._filter(df)
+        assert valid.empty
+        assert len(quarantined) == 2
+
+
+class TestNormaliseColumnsDropsZeroVolume:
+    """Verify that _normalise_columns drops zero-volume bars before DB storage."""
+
+    def _run_normalise(self, df: pd.DataFrame) -> pd.DataFrame:
+        from ingestion.fetcher import DataFetcher
+        return DataFetcher._normalise_columns(df)
+
+    def test_zero_volume_daily_bar_is_dropped(self):
+        """A daily bar with volume=0 is removed by _normalise_columns."""
+        df = pd.DataFrame(
+            {
+                "Open":   [500.0, 501.0],
+                "High":   [505.0, 506.0],
+                "Low":    [498.0, 499.0],
+                "Close":  [502.0, 503.0],
+                "Volume": [1_000_000, 0],
+            },
+            index=pd.DatetimeIndex(["2024-07-29", "2024-07-30"]),
+        )
+        result = self._run_normalise(df)
+        assert len(result) == 1
+        assert float(result.iloc[0]["open"]) == pytest.approx(500.0)
+
+    def test_positive_volume_bar_passes_through(self):
+        """Bars with positive volume are not affected by the zero-volume filter."""
+        df = pd.DataFrame(
+            {
+                "Open":   [500.0, 501.0],
+                "High":   [505.0, 506.0],
+                "Low":    [498.0, 499.0],
+                "Close":  [502.0, 503.0],
+                "Volume": [1_000_000, 800_000],
+            },
+            index=pd.DatetimeIndex(["2024-07-29", "2024-07-30"]),
+        )
+        result = self._run_normalise(df)
+        assert len(result) == 2
+
+    def test_only_zero_volume_row_gives_empty_frame(self):
+        """When the only row has volume=0 the result is an empty DataFrame."""
+        df = pd.DataFrame(
+            {
+                "Open":   [500.0],
+                "High":   [505.0],
+                "Low":    [498.0],
+                "Close":  [502.0],
+                "Volume": [0],
+            },
+            index=pd.DatetimeIndex(["2024-07-30"]),
+        )
+        result = self._run_normalise(df)
+        assert result.empty
+
+
+@pytest.mark.asyncio
+async def test_remove_invalid_voo_candles_removes_zero_volume(db_session):
+    """remove_invalid_voo_candles must delete zero-volume rows from the DB."""
+    good = VooCandle(
+        ticker="VOO",
+        timestamp=datetime(2024, 7, 29),
+        open=500.0, high=505.0, low=498.0, close=502.0,
+        volume=1_000_000,
+        timeframe="daily", session_type="regular",
+    )
+    zero_vol = VooCandle(
+        ticker="VOO",
+        timestamp=datetime(2024, 7, 30),
+        open=501.0, high=506.0, low=499.0, close=503.0,
+        volume=0,
+        timeframe="daily", session_type="regular",
+    )
+    db_session.add(good)
+    db_session.add(zero_vol)
+    await db_session.flush()
+
+    removed = await IngestionPipeline().remove_invalid_voo_candles(db_session)
+
+    assert removed == 1
+    assert await db_session.get(VooCandle, good.id) is not None
+    assert await db_session.get(VooCandle, zero_vol.id) is None
+
+
+@pytest.mark.asyncio
+async def test_store_voo_candles_skips_zero_volume_row(db_session):
+    """store_voo_candles must skip rows with volume=0 and not insert them."""
+    frame = pd.DataFrame(
+        {
+            "open":  [500.0, 501.0],
+            "high":  [505.0, 506.0],
+            "low":   [498.0, 499.0],
+            "close": [502.0, 503.0],
+            "volume": [1_000_000, 0],
+            "is_extended_hours": [False, False],
+            "session_type": ["regular", "regular"],
+        },
+        index=pd.DatetimeIndex(["2024-07-29", "2024-07-30"]),
+    )
+
+    await IngestionPipeline().store_voo_candles(frame, db_session, "daily")
+
+    from sqlalchemy import select
+    from database.models import VooCandle as VC
+    result = await db_session.execute(select(VC).where(VC.ticker == "VOO"))
+    rows = result.scalars().all()
+    assert len(rows) == 1
+    assert float(rows[0].open) == pytest.approx(500.0)
+
+
+@pytest.mark.asyncio
+async def test_remove_invalid_voo_candles_keeps_positive_volume(db_session):
+    """remove_invalid_voo_candles must not delete rows with positive volume."""
+    row = VooCandle(
+        ticker="VOO",
+        timestamp=datetime(2024, 7, 29),
+        open=500.0, high=505.0, low=498.0, close=502.0,
+        volume=1_000_000,
+        timeframe="daily", session_type="regular",
+    )
+    db_session.add(row)
+    await db_session.flush()
+
+    removed = await IngestionPipeline().remove_invalid_voo_candles(db_session)
+
+    assert removed == 0
+    assert await db_session.get(VooCandle, row.id) is not None

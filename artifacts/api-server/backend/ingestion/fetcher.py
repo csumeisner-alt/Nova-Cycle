@@ -645,6 +645,29 @@ class DataFetcher:
                 # outage into an unhandled ingestion crash.
                 logger.error("ingest_ohlc_sanity_check_failed error=%s", exc)
 
+        # ── Zero-volume bar filter ─────────────────────────────────────────────
+        # yfinance occasionally emits zero-volume daily bars for glitch days.
+        # Drop them before DB storage; the startup cleanup also removes any
+        # that already exist (see IngestionPipeline.remove_invalid_voo_candles).
+        if not df.empty:
+            try:
+                from ingestion.ohlc_validator import filter_zero_volume_bars
+                df_valid, df_zero_vol = filter_zero_volume_bars(df)
+                if not df_zero_vol.empty:
+                    for ts, row in df_zero_vol.iterrows():
+                        logger.warning(
+                            "ingest_zero_volume_bar_dropped ts=%s",
+                            pd.Timestamp(ts).isoformat(),
+                        )
+                    logger.warning(
+                        "ingest_zero_volume_bars_dropped count=%d remaining=%d",
+                        len(df_zero_vol),
+                        len(df_valid),
+                    )
+                    df = df_valid
+            except Exception as exc:
+                logger.error("ingest_zero_volume_check_failed error=%s", exc)
+
         # ── Timestamp sanity checks ────────────────────────────────────────────
         # Flag and drop implausible timestamps (before 2000 or in the future)
         # with structured log entries so ingestion runs are auditable.
