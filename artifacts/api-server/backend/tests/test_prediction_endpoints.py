@@ -8,6 +8,7 @@ seeded SQLite database, uses the *committed* model pickles, and asserts that
 would silently serve the neutral 0.5 fallback after a deploy.
 """
 
+import datetime
 import numpy as np
 import pandas as pd
 import pytest
@@ -158,3 +159,100 @@ class TestPredictionEndpointsE2E:
         await client.post("/api/predict_short")
         after = {k: v["count"] for k, v in _ml_fallback_stats.items()}
         assert after == before, f"fallbacks recorded during healthy run: {after}"
+
+
+# ---------------------------------------------------------------------------
+# Spike-quarantine propagation: a spiked daily candle must surface as
+# data_quality_degraded=True in the /api/predict_long JSON response.
+# ---------------------------------------------------------------------------
+
+def _daily_candles_with_spike(n=300):
+    """300 valid daily candles followed by one with high < open (July 30 shape).
+
+    The spiked candle is stored directly in the DB via the ORM (bypassing ingest
+    validation), simulating a stored glitch that _drop_invalid_ohlc must catch at
+    prediction time.
+    """
+    valid = _daily_candles(n)
+    # Add a spiked candle one business day after the last valid candle.
+    last_ts = valid[-1].timestamp
+    spike_ts = last_ts + datetime.timedelta(days=1)
+    spiked = VooCandle(
+        ticker="VOO",
+        timestamp=spike_ts,
+        open=680.12,
+        high=676.71,   # high < open — cross-bar spike shape
+        low=675.58,
+        close=681.55,
+        volume=1_000_000.0,
+        timeframe="daily",
+        is_extended_hours=False,
+        session_type="regular",
+        gap_percent=0.0,
+        gap_type="none",
+    )
+    return valid + [spiked]
+
+
+@pytest_asyncio.fixture
+async def client_with_spike(tmp_path):
+    """FastAPI test client seeded with a spiked daily candle at the end."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'spike_test.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        session.add_all(
+            _daily_candles_with_spike() + _fivemin_candles() + _vix_candles()
+        )
+        await session.commit()
+
+    async def _override():
+        async with factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app.dependency_overrides[get_session] = _override
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        await engine.dispose()
+
+
+class TestPredictLongSpikeQuarantinePropagation:
+    """End-to-end: a quarantined daily spike must appear in the API response."""
+
+    async def test_data_quality_degraded_is_true(self, client_with_spike):
+        """predict_long returns data_quality_degraded=True when a spiked candle
+        is quarantined by _drop_invalid_ohlc at prediction time."""
+        resp = await client_with_spike.post("/api/predict_long", params={"ticker": "VOO"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body.get("data_quality_degraded") is True, (
+            f"expected data_quality_degraded=True but got: {body}"
+        )
+
+    async def test_data_quality_reason_is_non_empty(self, client_with_spike):
+        """The reason string must describe which candle was quarantined."""
+        resp = await client_with_spike.post("/api/predict_long", params={"ticker": "VOO"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        reason = body.get("data_quality_reason", "")
+        assert reason, (
+            f"expected non-empty data_quality_reason but got empty string; full body: {body}"
+        )
+        # The reason should mention the quarantine so callers know what happened.
+        assert "quarantine" in reason.lower() or "high_below" in reason.lower(), (
+            f"reason does not describe the OHLC violation: {reason!r}"
+        )
