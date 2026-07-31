@@ -144,6 +144,8 @@ class IngestionPipeline:
         logger.info("IngestionPipeline.initialize() called")
         try:
             await self.remove_invalid_voo_candles(db_session)
+            await self.remove_invalid_vix_candles(db_session)
+            await self.remove_invalid_spx_candles(db_session)
 
             # Check whether we already have daily candles
             result = await db_session.execute(
@@ -213,6 +215,82 @@ class IngestionPipeline:
         await db_session.flush()
         logger.warning(
             "ingest_invalid_existing_candles_removed count=%d",
+            len(invalid_rows),
+        )
+        return len(invalid_rows)
+
+    async def remove_invalid_vix_candles(self, db_session: AsyncSession) -> int:
+        """Remove zero-volume VIX rows left by older ingestion versions.
+
+        New fetches are gated by the zero-volume check in store_vix_candles,
+        but a glitch row may already exist in the database from a prior process
+        lifetime.  Remove it at startup so predictions never read it.
+
+        Checks removed:
+          - Zero-volume bars (volume == 0 or NULL) — yfinance glitch days
+        """
+        result = await db_session.execute(
+            select(VixCandle).where(VixCandle.ticker == settings.VIX_TICKER)
+        )
+
+        invalid_rows = [
+            row
+            for row in result.scalars().all()
+            if row.volume is None or float(row.volume) == 0
+        ]
+        if not invalid_rows:
+            return 0
+
+        for row in invalid_rows:
+            logger.warning(
+                "ingest_invalid_existing_candle_removed ticker=%s timeframe=%s ts=%s issue=zero_volume",
+                settings.VIX_TICKER,
+                row.timeframe,
+                row.timestamp.isoformat(),
+            )
+            await db_session.delete(row)
+        await db_session.flush()
+        logger.warning(
+            "ingest_invalid_existing_candles_removed ticker=%s count=%d",
+            settings.VIX_TICKER,
+            len(invalid_rows),
+        )
+        return len(invalid_rows)
+
+    async def remove_invalid_spx_candles(self, db_session: AsyncSession) -> int:
+        """Remove zero-volume SPX rows left by older ingestion versions.
+
+        New fetches are gated by the zero-volume check in store_spx_candles,
+        but a glitch row may already exist in the database from a prior process
+        lifetime.  Remove it at startup so predictions never read it.
+
+        Checks removed:
+          - Zero-volume bars (volume == 0 or NULL) — yfinance glitch days
+        """
+        result = await db_session.execute(
+            select(SpxCandle).where(SpxCandle.ticker == settings.SPX_FUTURES_TICKER)
+        )
+
+        invalid_rows = [
+            row
+            for row in result.scalars().all()
+            if row.volume is None or float(row.volume) == 0
+        ]
+        if not invalid_rows:
+            return 0
+
+        for row in invalid_rows:
+            logger.warning(
+                "ingest_invalid_existing_candle_removed ticker=%s timeframe=%s ts=%s issue=zero_volume",
+                settings.SPX_FUTURES_TICKER,
+                row.timeframe,
+                row.timestamp.isoformat(),
+            )
+            await db_session.delete(row)
+        await db_session.flush()
+        logger.warning(
+            "ingest_invalid_existing_candles_removed ticker=%s count=%d",
+            settings.SPX_FUTURES_TICKER,
             len(invalid_rows),
         )
         return len(invalid_rows)
@@ -863,6 +941,15 @@ class IngestionPipeline:
                 skipped += 1
                 continue
 
+            volume = float(row.get("volume", 0.0))
+            if volume == 0:
+                logger.warning(
+                    "ingest_zero_volume_bar_skipped ticker=%s timeframe=%s ts=%s",
+                    ticker, timeframe, ts_naive.isoformat(),
+                )
+                skipped += 1
+                continue
+
             candle = VixCandle(
                 ticker=ticker,
                 timestamp=ts_naive,
@@ -870,7 +957,7 @@ class IngestionPipeline:
                 high=float(row.get("high", 0.0)),
                 low=float(row.get("low", 0.0)),
                 close=float(row.get("close", 0.0)),
-                volume=float(row.get("volume", 0.0)),
+                volume=volume,
                 timeframe=timeframe,
             )
             db_session.add(candle)
@@ -927,6 +1014,15 @@ class IngestionPipeline:
                 skipped += 1
                 continue
 
+            volume = float(row.get("volume", 0.0))
+            if volume == 0:
+                logger.warning(
+                    "ingest_zero_volume_bar_skipped ticker=%s timeframe=%s ts=%s",
+                    ticker, timeframe, ts_naive.isoformat(),
+                )
+                skipped += 1
+                continue
+
             candle = SpxCandle(
                 ticker=ticker,
                 timestamp=ts_naive,
@@ -934,7 +1030,7 @@ class IngestionPipeline:
                 high=float(row.get("high", 0.0)),
                 low=float(row.get("low", 0.0)),
                 close=float(row.get("close", 0.0)),
-                volume=float(row.get("volume", 0.0)),
+                volume=volume,
                 timeframe=timeframe,
             )
             db_session.add(candle)

@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from database.models import Base, VooCandle
+from database.models import Base, VooCandle, VixCandle, SpxCandle
 from ingestion.fetcher import DataFetcher, ohlc_validation_issue
 from ingestion.pipeline import IngestionPipeline
 from ingestion.ohlc_validator import filter_valid_ohlc, flag_cross_bar_spikes, validate_ohlc_row
@@ -1906,3 +1906,329 @@ class TestPredictLongZeroVolumeDailyBar:
         assert "zero_volume_bars" in response.get("data_quality_reason", ""), (
             "data_quality_reason must mention zero_volume_bars"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task-212: Zero-volume VIX and SPX ingest gate + startup cleanup
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture
+async def vix_spx_db_session():
+    """In-memory DB session with all tables for VIX/SPX zero-volume tests."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        yield session
+    await engine.dispose()
+
+
+def _make_vix_candle(ts: datetime, volume: float = 1_000.0) -> VixCandle:
+    return VixCandle(
+        ticker="^VIX",
+        timestamp=ts,
+        open=20.0,
+        high=21.0,
+        low=19.0,
+        close=20.5,
+        volume=volume,
+        timeframe="daily",
+    )
+
+
+def _make_spx_candle(ts: datetime, volume: float = 500_000.0) -> SpxCandle:
+    return SpxCandle(
+        ticker="ES=F",
+        timestamp=ts,
+        open=5000.0,
+        high=5050.0,
+        low=4980.0,
+        close=5030.0,
+        volume=volume,
+        timeframe="daily",
+    )
+
+
+def _make_vix_df(rows: list[dict]) -> pd.DataFrame:
+    """Build a VIX candle DataFrame suitable for store_vix_candles."""
+    data = []
+    for r in rows:
+        data.append({
+            "open": r.get("open", 20.0),
+            "high": r.get("high", 21.0),
+            "low": r.get("low", 19.0),
+            "close": r.get("close", 20.5),
+            "volume": r.get("volume", 1_000.0),
+        })
+    index = pd.DatetimeIndex([r["ts"] for r in rows])
+    return pd.DataFrame(data, index=index)
+
+
+def _make_spx_df(rows: list[dict]) -> pd.DataFrame:
+    """Build an SPX candle DataFrame suitable for store_spx_candles."""
+    data = []
+    for r in rows:
+        data.append({
+            "open": r.get("open", 5000.0),
+            "high": r.get("high", 5050.0),
+            "low": r.get("low", 4980.0),
+            "close": r.get("close", 5030.0),
+            "volume": r.get("volume", 500_000.0),
+        })
+    index = pd.DatetimeIndex([r["ts"] for r in rows])
+    return pd.DataFrame(data, index=index)
+
+
+class TestStoreVixCandlesZeroVolumeGate:
+    """store_vix_candles must skip zero-volume bars and log the event."""
+
+    @pytest.mark.asyncio
+    async def test_zero_volume_vix_bar_is_skipped(self, vix_spx_db_session):
+        """A VIX bar with volume=0 must not be inserted into the DB."""
+        df = _make_vix_df([
+            {"ts": datetime(2026, 7, 28), "volume": 1_000.0},
+            {"ts": datetime(2026, 7, 29), "volume": 0.0},   # glitch day
+        ])
+        pipeline = IngestionPipeline()
+        await pipeline.store_vix_candles(df, vix_spx_db_session, timeframe="daily")
+
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(VixCandle))
+        rows = result.scalars().all()
+        assert len(rows) == 1, "Only the valid bar should be stored"
+        assert rows[0].timestamp == datetime(2026, 7, 28)
+
+    @pytest.mark.asyncio
+    async def test_zero_volume_vix_bar_logged(self, vix_spx_db_session, caplog):
+        """store_vix_candles logs ingest_zero_volume_bar_skipped for zero-vol bars."""
+        df = _make_vix_df([{"ts": datetime(2026, 7, 29), "volume": 0.0}])
+        pipeline = IngestionPipeline()
+        import logging
+        with caplog.at_level(logging.WARNING, logger="ingestion.pipeline"):
+            await pipeline.store_vix_candles(df, vix_spx_db_session, timeframe="daily")
+        assert any(
+            "ingest_zero_volume_bar_skipped" in r.message
+            for r in caplog.records
+        ), "Expected ingest_zero_volume_bar_skipped log for VIX zero-volume bar"
+
+    @pytest.mark.asyncio
+    async def test_valid_vix_bar_is_stored(self, vix_spx_db_session):
+        """A VIX bar with positive volume is stored normally."""
+        df = _make_vix_df([{"ts": datetime(2026, 7, 28), "volume": 1_500.0}])
+        pipeline = IngestionPipeline()
+        await pipeline.store_vix_candles(df, vix_spx_db_session, timeframe="daily")
+
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(VixCandle))
+        rows = result.scalars().all()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_all_zero_volume_vix_bars_skipped(self, vix_spx_db_session):
+        """When all bars have volume=0, nothing is inserted."""
+        df = _make_vix_df([
+            {"ts": datetime(2026, 7, 28), "volume": 0.0},
+            {"ts": datetime(2026, 7, 29), "volume": 0.0},
+        ])
+        pipeline = IngestionPipeline()
+        await pipeline.store_vix_candles(df, vix_spx_db_session, timeframe="daily")
+
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(VixCandle))
+        rows = result.scalars().all()
+        assert len(rows) == 0
+
+
+class TestStoreSpxCandlesZeroVolumeGate:
+    """store_spx_candles must skip zero-volume bars and log the event."""
+
+    @pytest.mark.asyncio
+    async def test_zero_volume_spx_bar_is_skipped(self, vix_spx_db_session):
+        """An SPX bar with volume=0 must not be inserted into the DB."""
+        df = _make_spx_df([
+            {"ts": datetime(2026, 7, 28), "volume": 500_000.0},
+            {"ts": datetime(2026, 7, 29), "volume": 0.0},   # glitch day
+        ])
+        pipeline = IngestionPipeline()
+        await pipeline.store_spx_candles(df, vix_spx_db_session, timeframe="daily")
+
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(SpxCandle))
+        rows = result.scalars().all()
+        assert len(rows) == 1, "Only the valid bar should be stored"
+        assert rows[0].timestamp == datetime(2026, 7, 28)
+
+    @pytest.mark.asyncio
+    async def test_zero_volume_spx_bar_logged(self, vix_spx_db_session, caplog):
+        """store_spx_candles logs ingest_zero_volume_bar_skipped for zero-vol bars."""
+        df = _make_spx_df([{"ts": datetime(2026, 7, 29), "volume": 0.0}])
+        pipeline = IngestionPipeline()
+        import logging
+        with caplog.at_level(logging.WARNING, logger="ingestion.pipeline"):
+            await pipeline.store_spx_candles(df, vix_spx_db_session, timeframe="daily")
+        assert any(
+            "ingest_zero_volume_bar_skipped" in r.message
+            for r in caplog.records
+        ), "Expected ingest_zero_volume_bar_skipped log for SPX zero-volume bar"
+
+    @pytest.mark.asyncio
+    async def test_valid_spx_bar_is_stored(self, vix_spx_db_session):
+        """An SPX bar with positive volume is stored normally."""
+        df = _make_spx_df([{"ts": datetime(2026, 7, 28), "volume": 750_000.0}])
+        pipeline = IngestionPipeline()
+        await pipeline.store_spx_candles(df, vix_spx_db_session, timeframe="daily")
+
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(SpxCandle))
+        rows = result.scalars().all()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_all_zero_volume_spx_bars_skipped(self, vix_spx_db_session):
+        """When all bars have volume=0, nothing is inserted."""
+        df = _make_spx_df([
+            {"ts": datetime(2026, 7, 28), "volume": 0.0},
+            {"ts": datetime(2026, 7, 29), "volume": 0.0},
+        ])
+        pipeline = IngestionPipeline()
+        await pipeline.store_spx_candles(df, vix_spx_db_session, timeframe="daily")
+
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(SpxCandle))
+        rows = result.scalars().all()
+        assert len(rows) == 0
+
+
+class TestRemoveInvalidVixCandles:
+    """remove_invalid_vix_candles must delete existing zero-volume rows at startup."""
+
+    @pytest.mark.asyncio
+    async def test_removes_zero_volume_vix_row(self, vix_spx_db_session):
+        """A VIX row with volume=0 that already exists in the DB is removed."""
+        bad = _make_vix_candle(datetime(2026, 7, 29), volume=0.0)
+        vix_spx_db_session.add(bad)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_vix_candles(vix_spx_db_session)
+
+        assert removed == 1
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(VixCandle))
+        assert result.scalars().all() == []
+
+    @pytest.mark.asyncio
+    async def test_keeps_valid_vix_row(self, vix_spx_db_session):
+        """A VIX row with positive volume is left untouched."""
+        good = _make_vix_candle(datetime(2026, 7, 28), volume=1_000.0)
+        vix_spx_db_session.add(good)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_vix_candles(vix_spx_db_session)
+
+        assert removed == 0
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(VixCandle))
+        assert len(result.scalars().all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_removes_only_zero_volume_vix_rows(self, vix_spx_db_session):
+        """Only zero-volume rows are removed; valid rows survive."""
+        good = _make_vix_candle(datetime(2026, 7, 28), volume=1_000.0)
+        bad = _make_vix_candle(datetime(2026, 7, 29), volume=0.0)
+        vix_spx_db_session.add(good)
+        vix_spx_db_session.add(bad)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_vix_candles(vix_spx_db_session)
+
+        assert removed == 1
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(VixCandle))
+        remaining = result.scalars().all()
+        assert len(remaining) == 1
+        assert remaining[0].timestamp == datetime(2026, 7, 28)
+
+    @pytest.mark.asyncio
+    async def test_empty_db_returns_zero(self, vix_spx_db_session):
+        """remove_invalid_vix_candles returns 0 and does not crash on empty table."""
+        removed = await IngestionPipeline().remove_invalid_vix_candles(vix_spx_db_session)
+        assert removed == 0
+
+    @pytest.mark.asyncio
+    async def test_removes_null_volume_vix_row(self, vix_spx_db_session):
+        """A VIX row with volume=NULL is also treated as zero-volume and removed."""
+        bad = _make_vix_candle(datetime(2026, 7, 29), volume=0.0)
+        bad.volume = None
+        vix_spx_db_session.add(bad)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_vix_candles(vix_spx_db_session)
+        assert removed == 1
+
+
+class TestRemoveInvalidSpxCandles:
+    """remove_invalid_spx_candles must delete existing zero-volume rows at startup."""
+
+    @pytest.mark.asyncio
+    async def test_removes_zero_volume_spx_row(self, vix_spx_db_session):
+        """An SPX row with volume=0 that already exists in the DB is removed."""
+        bad = _make_spx_candle(datetime(2026, 7, 29), volume=0.0)
+        vix_spx_db_session.add(bad)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_spx_candles(vix_spx_db_session)
+
+        assert removed == 1
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(SpxCandle))
+        assert result.scalars().all() == []
+
+    @pytest.mark.asyncio
+    async def test_keeps_valid_spx_row(self, vix_spx_db_session):
+        """An SPX row with positive volume is left untouched."""
+        good = _make_spx_candle(datetime(2026, 7, 28), volume=500_000.0)
+        vix_spx_db_session.add(good)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_spx_candles(vix_spx_db_session)
+
+        assert removed == 0
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(SpxCandle))
+        assert len(result.scalars().all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_removes_only_zero_volume_spx_rows(self, vix_spx_db_session):
+        """Only zero-volume SPX rows are removed; valid rows survive."""
+        good = _make_spx_candle(datetime(2026, 7, 28), volume=500_000.0)
+        bad = _make_spx_candle(datetime(2026, 7, 29), volume=0.0)
+        vix_spx_db_session.add(good)
+        vix_spx_db_session.add(bad)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_spx_candles(vix_spx_db_session)
+
+        assert removed == 1
+        from sqlalchemy import select as _select
+        result = await vix_spx_db_session.execute(_select(SpxCandle))
+        remaining = result.scalars().all()
+        assert len(remaining) == 1
+        assert remaining[0].timestamp == datetime(2026, 7, 28)
+
+    @pytest.mark.asyncio
+    async def test_empty_db_returns_zero(self, vix_spx_db_session):
+        """remove_invalid_spx_candles returns 0 and does not crash on empty table."""
+        removed = await IngestionPipeline().remove_invalid_spx_candles(vix_spx_db_session)
+        assert removed == 0
+
+    @pytest.mark.asyncio
+    async def test_removes_null_volume_spx_row(self, vix_spx_db_session):
+        """An SPX row with volume=NULL is treated as zero-volume and removed."""
+        bad = _make_spx_candle(datetime(2026, 7, 29), volume=0.0)
+        bad.volume = None
+        vix_spx_db_session.add(bad)
+        await vix_spx_db_session.flush()
+
+        removed = await IngestionPipeline().remove_invalid_spx_candles(vix_spx_db_session)
+        assert removed == 1

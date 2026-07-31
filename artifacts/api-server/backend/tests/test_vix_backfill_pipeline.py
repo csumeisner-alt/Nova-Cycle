@@ -51,7 +51,7 @@ def make_vix_df(dates: list[date]) -> pd.DataFrame:
             "high": [16.0 + i for i in range(n)],
             "low": [14.0 + i for i in range(n)],
             "close": [15.5 + i for i in range(n)],
-            "volume": [0.0] * n,
+            "volume": [1_000.0] * n,
         },
         index=idx,
     )
@@ -62,7 +62,7 @@ async def insert_vix_rows(db_session, dates: list[date]):
         db_session.add(VixCandle(
             ticker=settings.VIX_TICKER,
             timestamp=datetime(d.year, d.month, d.day),
-            open=15.0, high=16.0, low=14.0, close=15.5, volume=0.0,
+            open=15.0, high=16.0, low=14.0, close=15.5, volume=1_000.0,
             timeframe="daily",
         ))
     await db_session.flush()
