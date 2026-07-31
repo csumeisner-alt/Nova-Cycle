@@ -1348,6 +1348,16 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             "last_training_error": status.get("error"),
             "last_training_attempted_at": status.get("attempted_at"),
             "last_training_accuracy": status.get("accuracy"),
+            # Which metric the headline accuracy actually is. 'train' means
+            # the purged walk-forward OOS evaluation could not run (too few
+            # rows), so the reported accuracy is NOT an honest OOS number.
+            "last_training_accuracy_metric": status.get("accuracy_metric"),
+            "active_model_accuracy_metric": status.get(
+                "last_success_accuracy_metric"
+            ),
+            "walk_forward_evaluation_skipped": (
+                status.get("accuracy_metric") == "train"
+            ),
             "last_trained_at": last_trained_at,
             "neutral_fallback": neutral,
             "ml_fallback_count": fallback_stats.get("count", 0),
@@ -1489,6 +1499,14 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             )
         if info["neutral_fallback"]:
             alerts.append(f"{name}: model unavailable — serving neutral 0.5 predictions")
+        if info.get("walk_forward_evaluation_skipped"):
+            acc = info.get("last_training_accuracy")
+            alerts.append(
+                f"{name}: walk-forward evaluation could not run on the last "
+                "retrain (too few rows) — reported accuracy"
+                + (f" {acc:.4f}" if isinstance(acc, (int, float)) else "")
+                + " is TRAIN accuracy, not an honest out-of-sample metric"
+            )
         if info["ml_fallback_count"] > 0:
             alerts.append(
                 f"{name}: served neutral-fallback predictions {info['ml_fallback_count']} time(s) "

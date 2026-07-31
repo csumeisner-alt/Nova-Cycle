@@ -168,7 +168,11 @@ def get_training_status() -> dict:
                 "rolled_back": bool(entry.get("rolled_back")),
                 "error": entry.get("error"),
                 "accuracy": entry.get("accuracy"),
+                "accuracy_metric": entry.get("accuracy_metric"),
                 "last_success_accuracy": entry.get("last_success_accuracy"),
+                "last_success_accuracy_metric": entry.get(
+                    "last_success_accuracy_metric"
+                ),
                 "attempted_at": entry.get("attempted_at"),
                 "consecutive_failures": _safe_int(entry.get("consecutive_failures")),
             }
@@ -178,7 +182,9 @@ def get_training_status() -> dict:
                 "rolled_back": False,
                 "error": None,
                 "accuracy": None,
+                "accuracy_metric": None,
                 "last_success_accuracy": None,
+                "last_success_accuracy_metric": None,
                 "attempted_at": None,
                 "consecutive_failures": 0,
             }
