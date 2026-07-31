@@ -209,6 +209,24 @@ describe('PerformanceDashboard – empty states', () => {
     );
   });
 
+  it('still renders model accuracy history when there are no completed trades', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({
+        ...emptyResponse(),
+        accuracy_history: [
+          { model_name: 'long_trend', trained_at: '2026-07-01T00:00:00Z', accuracy: 0.61 },
+          { model_name: 'short_trend', trained_at: '2026-07-01T00:00:00Z', accuracy: 0.58 },
+          { model_name: 'long_trend', trained_at: '2026-07-15T00:00:00Z', accuracy: 0.64 },
+          { model_name: 'short_trend', trained_at: '2026-07-15T00:00:00Z', accuracy: 0.66 },
+        ],
+      }),
+    );
+    renderDashboard();
+    await waitFor(() => expect(screen.getByTestId('empty-performance')).toBeInTheDocument());
+    expect(screen.getByTestId('chart-accuracy')).toBeInTheDocument();
+    expect(screen.getByTestId('panel-accuracy')).toHaveTextContent('MODEL ACCURACY OVER TIME');
+  });
+
   it('shows the confidence-specific empty message when a filter yields zero trades', async () => {
     // Fresh Response per call — a Response body can only be consumed once.
     vi.spyOn(globalThis, 'fetch').mockImplementation(() =>

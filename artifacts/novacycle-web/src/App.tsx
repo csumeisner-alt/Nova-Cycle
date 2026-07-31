@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge } from 'lucide-react';
+import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown } from 'lucide-react';
 import { PredictionCard } from '@/components/PredictionCard';
 import { PerformanceDashboard } from '@/components/PerformanceDashboard';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
@@ -414,6 +414,76 @@ function PredictionsPanel() {
   );
 }
 
+type PriceSnapshot = {
+  current_price?: number | null;
+  current_timestamp?: string | null;
+  current_session?: string | null;
+  is_extended_hours?: boolean;
+  day_change_percent?: number | null;
+  day_direction?: 'up' | 'down' | 'flat';
+};
+
+function VooPriceStrip() {
+  const { data, isLoading, isError } = useQuery<PriceSnapshot>({
+    queryKey: ['price-snapshot', 'VOO'],
+    queryFn: async () => {
+      const res = await fetch('/api/price_snapshot?ticker=VOO');
+      if (!res.ok) throw new Error(`Price unavailable (HTTP ${res.status})`);
+      return res.json();
+    },
+    refetchInterval: 60_000,
+    retry: 1,
+  });
+
+  const price = typeof data?.current_price === 'number' && Number.isFinite(data.current_price)
+    ? data.current_price
+    : null;
+  const change = typeof data?.day_change_percent === 'number' && Number.isFinite(data.day_change_percent)
+    ? data.day_change_percent
+    : null;
+  const direction = data?.day_direction;
+  const DirectionIcon = direction === 'up' ? TrendingUp : direction === 'down' ? TrendingDown : Minus;
+  const directionClass = direction === 'up'
+    ? 'text-emerald-400'
+    : direction === 'down'
+      ? 'text-red-400'
+      : 'text-muted-foreground';
+  const session = data?.current_session?.replace('_', ' ') || 'latest feed';
+
+  return (
+    <div
+      className="mt-8 flex items-center justify-between gap-4 rounded-lg border border-primary/15 bg-primary/[0.04] px-4 py-3"
+      data-testid="voo-price-strip"
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 text-xs font-mono tracking-wide text-muted-foreground">
+          <span className="text-primary">VOO</span>
+          <span>LIVE PRICE</span>
+          {data?.is_extended_hours && (
+            <span className="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+              EXTENDED
+            </span>
+          )}
+        </div>
+        <div className="mt-1 text-[11px] font-mono capitalize text-muted-foreground">
+          {isLoading ? 'Reading market feed…' : isError ? 'Price feed unavailable' : `${session} · refreshes every minute`}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 font-mono">
+        <span className="text-xl text-foreground" data-testid="voo-current-price">
+          {price == null ? '—' : `$${price.toFixed(2)}`}
+        </span>
+        <span className={directionClass} data-testid={`voo-day-direction-${direction ?? 'flat'}`}>
+          <DirectionIcon className="h-5 w-5" aria-label={direction === 'down' ? 'Moving down today' : direction === 'up' ? 'Moving up today' : 'Flat today'} />
+        </span>
+        <span className={`text-xs ${directionClass}`} data-testid="voo-day-change">
+          {change == null ? '—' : `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function StatusDashboard() {
   const [now, setNow] = useState(new Date());
 
@@ -553,7 +623,8 @@ function StatusDashboard() {
               </div>
             </div>
             
-            <PredictionsPanel />
+             <VooPriceStrip />
+             <PredictionsPanel />
 
             {!isLoading && !isError && health && <RetrainStatusPanel health={health} />}
 

@@ -50,6 +50,11 @@ async def test_price_snapshot_separates_current_and_model_input_prices(tmp_path)
                 open=106, high=106, low=106, close=106, volume=0,
                 is_extended_hours=False, session_type="regular",
             ),
+            VooCandle(
+                ticker="VOO", timeframe="5min", timestamp=base - timedelta(days=1),
+                open=101, high=102, low=100, close=101, volume=100,
+                is_extended_hours=False, session_type="regular",
+            ),
         ])
         await session.commit()
 
@@ -67,6 +72,60 @@ async def test_price_snapshot_separates_current_and_model_input_prices(tmp_path)
         assert body["short_model_price"] == 106.0
         assert body["long_model_price"] == 102.0
         assert body["short_model_timestamp"] == "2026-07-31T17:10:00"
+        assert body["reference_price"] == 101.0
+        assert body["day_change_percent"] == pytest.approx(3.4653)
+        assert body["day_direction"] == "up"
+        assert body["current_session"] == "regular"
+        assert body["is_extended_hours"] is False
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_price_snapshot_uses_extended_hours_quote_and_prior_close(tmp_path):
+    """Premarket/after-hours rows remain eligible for the visible quote."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'extended_price_snapshot.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    base = datetime(2026, 7, 31, 12, 0)  # 08:00 ET premarket
+    async with factory() as session:
+        session.add_all([
+            VooCandle(
+                ticker="VOO", timeframe="5min", timestamp=base,
+                open=103, high=104, low=103, close=103.5, volume=50,
+                is_extended_hours=True, session_type="pre_market",
+            ),
+            VooCandle(
+                ticker="VOO", timeframe="5min",
+                timestamp=datetime(2026, 7, 30, 19, 55),
+                open=102, high=103, low=101, close=102, volume=100,
+                is_extended_hours=False, session_type="regular",
+            ),
+        ])
+        await session.commit()
+
+    async def override_db():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        async with _client() as client:
+            response = await client.get("/api/price_snapshot", params={"ticker": "VOO"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["current_price"] == 103.5
+        assert body["current_session"] == "pre_market"
+        assert body["is_extended_hours"] is True
+        assert body["reference_price"] == 102.0
+        assert body["day_direction"] == "up"
     finally:
         app.dependency_overrides.pop(get_db, None)
         await engine.dispose()

@@ -17,10 +17,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.novacycle.data.remote.models.ReliabilityMetricsResponse
@@ -385,6 +389,9 @@ private fun ModelPerformancePanel(uiState: ReliabilityUiState) {
  * Compact per-retrain accuracy trend: a sparkline of out-of-sample accuracy
  * across retrains plus a "latest vs previous" delta summary. Entries with null
  * accuracy are already skipped upstream in [ReliabilityUiState.accuracyTrend].
+ *
+ * Tapping the card expands a list of individual retrains (date + accuracy %),
+ * newest first.
  */
 @Composable
 private fun RetrainAccuracyTrendSection(
@@ -392,16 +399,37 @@ private fun RetrainAccuracyTrendSection(
     latest: Float?,
     delta: Float?
 ) {
+    var expanded by remember { mutableStateOf(false) }
+
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (latest != null) Modifier.clickable { expanded = !expanded } else Modifier
+            ),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(Modifier.padding(12.dp)) {
-            Text(
-                text = "Retrain Accuracy Trend",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold
-            )
+            // Header row: title + expand/collapse chevron
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Retrain Accuracy Trend",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (latest != null) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.ArrowDropDown,
+                        contentDescription = if (expanded) "Collapse retrain history" else "Expand retrain history",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
 
             if (latest == null) {
@@ -452,8 +480,55 @@ private fun RetrainAccuracyTrendSection(
                         )
                     }
                 }
+
+                // Expanded per-retrain list, newest first
+                if (expanded && trend.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Divider()
+                    Spacer(Modifier.height(8.dp))
+                    trend.asReversed().forEach { entry ->
+                        RetrainHistoryRow(entry)
+                        Spacer(Modifier.height(4.dp))
+                    }
+                }
             }
         }
+    }
+}
+
+/**
+ * A single row in the expanded retrain history: formatted date on the left,
+ * accuracy percentage on the right. The [entry] is guaranteed to have a
+ * non-null accuracy because [ReliabilityUiState.accuracyTrend] filters them out.
+ */
+@Composable
+private fun RetrainHistoryRow(entry: com.novacycle.data.remote.models.AccuracyHistoryEntry) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+            if (entry.modelName.isNotBlank()) {
+                Text(
+                    text = entry.modelName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                text = formatIsoTimestamp(entry.trainedAt),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            text = "${((entry.accuracy ?: 0f) * 100).format1f()}%",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 

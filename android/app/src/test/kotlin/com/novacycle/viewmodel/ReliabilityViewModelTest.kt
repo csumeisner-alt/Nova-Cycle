@@ -367,4 +367,163 @@ class ReliabilityViewModelTest {
             assertEquals(5, viewModel.uiState.value.missedRallyCount)
         }
     }
+
+    // ── Retrain history display order ───────────────────────────────────────
+
+    /**
+     * accuracyTrend preserves the chronological (oldest-first) order returned by
+     * the backend API, so the UI's `trend.asReversed()` makes the expanded list
+     * appear newest-first. This test feeds three entries in ascending date order
+     * and asserts that order is preserved, then confirms the reversed slice would
+     * start with the newest entry.
+     */
+    @Test
+    fun `accuracy trend preserves chronological order so UI reversed view is newest first`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "old",    trainedAt = "2026-05-01T00:00:00Z", accuracy = 0.55f),
+                AccuracyHistoryEntry(modelName = "middle", trainedAt = "2026-06-01T00:00:00Z", accuracy = 0.60f),
+                AccuracyHistoryEntry(modelName = "newest", trainedAt = "2026-07-01T00:00:00Z", accuracy = 0.65f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val trend = viewModel.uiState.value.accuracyTrend
+
+            // ViewModel keeps chronological (oldest-first) order — same as API order.
+            assertEquals(listOf("old", "middle", "newest"), trend.map { it.modelName })
+
+            // The UI renders `trend.asReversed()`, so the first displayed row is newest.
+            val displayOrder = trend.asReversed()
+            assertEquals("newest", displayOrder.first().modelName)
+            assertEquals("old",    displayOrder.last().modelName)
+        }
+    }
+
+    /**
+     * Entries with null accuracy must be absent from the expanded list because
+     * accuracyTrend filters them before they reach the UI. This verifies the
+     * property contract exhaustively: every entry in accuracyTrend has a
+     * non-null accuracy, even when null entries are interleaved throughout.
+     */
+    @Test
+    fun `every entry in accuracy trend has non-null accuracy`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "a", accuracy = 0.50f),
+                AccuracyHistoryEntry(modelName = "b", accuracy = null),
+                AccuracyHistoryEntry(modelName = "c", accuracy = 0.55f),
+                AccuracyHistoryEntry(modelName = "d", accuracy = null),
+                AccuracyHistoryEntry(modelName = "e", accuracy = 0.60f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val trend = viewModel.uiState.value.accuracyTrend
+            // Only entries a, c, e survive the null filter.
+            assertEquals(listOf("a", "c", "e"), trend.map { it.modelName })
+            // All surviving entries have non-null accuracy — UI never renders a null value.
+            assertTrue("Every entry must have non-null accuracy", trend.all { it.accuracy != null })
+        }
+    }
+
+    /**
+     * An entry with an unparseable trainedAt string must not be dropped from
+     * accuracyTrend — the ViewModel only filters on accuracy, not on trainedAt.
+     * The garbled date string reaches the UI's formatIsoTimestamp(), which falls
+     * back to returning the raw string rather than crashing. This test confirms
+     * the ViewModel's side of that contract: no exception, entry still present.
+     */
+    @Test
+    fun `entry with unparseable trainedAt is not dropped from accuracy trend`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "good",    trainedAt = "2026-07-01T00:00:00Z", accuracy = 0.60f),
+                AccuracyHistoryEntry(modelName = "garbled", trainedAt = "not-a-date",            accuracy = 0.65f),
+                AccuracyHistoryEntry(modelName = "nulldate", trainedAt = null,                   accuracy = 0.58f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val trend = viewModel.uiState.value.accuracyTrend
+            // All three entries have non-null accuracy so all three must appear.
+            assertEquals(3, trend.size)
+            val names = trend.map { it.modelName }
+            assertTrue("good entry must be present",    "good"     in names)
+            assertTrue("garbled date entry must be present", "garbled"  in names)
+            assertTrue("null trainedAt entry must be present", "nulldate" in names)
+            // trainedAt values are forwarded as-is to the UI; ViewModel does not parse them.
+            assertEquals("not-a-date", trend.first { it.modelName == "garbled" }.trainedAt)
+        }
+    }
+
+    // ── Flat-trend / zero-range sparkline edge cases ────────────────────────
+
+    /**
+     * When every retrain produces the exact same accuracy (flat trend), the
+     * ViewModel must still surface all entries in accuracyTrend and expose a
+     * non-null latestRetrainAccuracy. The delta will be ~0 (or null for a
+     * two-entry flat list — here we use three entries so a delta is computed).
+     *
+     * This verifies that the state passed to AccuracySparkline is valid for a
+     * flat trend: the list has >= 2 elements and all accuracy values are finite,
+     * so the composable's own zero-range guard (`takeIf { it > 1e-6f } ?: 1f`)
+     * is the only line of defence. If that guard were absent the canvas drawing
+     * loop would produce NaN y-offsets; the guard is tested separately in
+     * AccuracySparklineLogicTest.
+     */
+    @Test
+    fun `flat trend with identical accuracy values produces valid non-empty trend state`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "r1", trainedAt = "2026-07-01T00:00:00Z", accuracy = 0.70f),
+                AccuracyHistoryEntry(modelName = "r2", trainedAt = "2026-07-08T00:00:00Z", accuracy = 0.70f),
+                AccuracyHistoryEntry(modelName = "r3", trainedAt = "2026-07-15T00:00:00Z", accuracy = 0.70f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val state = viewModel.uiState.value
+            // All three entries survive (none are null-accuracy).
+            assertEquals(3, state.accuracyTrend.size)
+            // The extracted float list passed to AccuracySparkline has >= 2 elements.
+            val sparkValues = state.accuracyTrend.mapNotNull { it.accuracy }
+            assertTrue("sparkline input must have >= 2 values", sparkValues.size >= 2)
+            // All values are finite (no NaN/Inf from the source data).
+            assertTrue("all sparkline values must be finite", sparkValues.all { it.isFinite() })
+            // Latest accuracy is correct.
+            assertEquals(0.70f, state.latestRetrainAccuracy)
+            // Delta is present and should be 0 (same values).
+            assertNotNull(state.retrainAccuracyDelta)
+            assertEquals(0f, state.retrainAccuracyDelta!!, 0.001f)
+        }
+    }
+
+    /**
+     * A single usable accuracy entry means AccuracySparkline is never called
+     * (the UI only renders it when `trend.size >= 2`). The ViewModel must still
+     * expose a non-null latestRetrainAccuracy and a null delta — confirmed here
+     * so the conditional in the composable is validated end-to-end.
+     */
+    @Test
+    fun `single entry trend skips sparkline and exposes accuracy without delta`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "only", trainedAt = "2026-07-15T00:00:00Z", accuracy = 0.65f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val state = viewModel.uiState.value
+            // Exactly one entry in the trend.
+            assertEquals(1, state.accuracyTrend.size)
+            // Sparkline would be skipped by the UI (requires size >= 2).
+            val sparkValues = state.accuracyTrend.mapNotNull { it.accuracy }
+            assertTrue("only one value — sparkline must not be shown", sparkValues.size < 2)
+            // Latest accuracy is still surfaced.
+            assertEquals(0.65f, state.latestRetrainAccuracy)
+            // No previous entry, so no delta.
+            assertNull(state.retrainAccuracyDelta)
+        }
+    }
 }

@@ -160,6 +160,69 @@ async def _latest_usable_candle(
     return next((row for row in result.scalars().all() if predicate(row)), None)
 
 
+async def _latest_prior_regular_candle(
+    db: AsyncSession, current: Optional[VooCandle]
+) -> Optional[VooCandle]:
+    """Find the previous regular-session close for the current quote.
+
+    The quote itself may be pre-market, regular-session, or after-hours.  The
+    standard day-change comparison is against the last regular-session close
+    before the current US-market trading day, so the arrow remains meaningful
+    across all three sessions.
+    """
+    if current is None or current.timestamp is None:
+        return None
+    try:
+        day_start, _ = _trading_day_utc_bounds(_trading_day(current.timestamp))
+        result = await db.execute(
+            select(VooCandle)
+            .where(
+                VooCandle.ticker == settings.TICKER,
+                VooCandle.timeframe == "5min",
+                VooCandle.session_type == "regular",
+                VooCandle.timestamp < day_start,
+            )
+            .order_by(VooCandle.timestamp.desc())
+            .limit(500)
+        )
+        return next(
+            (row for row in result.scalars().all() if _usable_price_candle(row)),
+            None,
+        )
+    except Exception as exc:
+        logger.warning("Could not find prior regular-session close: %s", exc)
+        return None
+
+
+async def _latest_prior_daily_candle(
+    db: AsyncSession, current: Optional[VooCandle]
+) -> Optional[VooCandle]:
+    """Daily fallback for installations without enough intraday history."""
+    current_day = (
+        _trading_day(current.timestamp)
+        if current is not None and current.timestamp is not None
+        else None
+    )
+    result = await db.execute(
+        select(VooCandle)
+        .where(
+            VooCandle.ticker == settings.TICKER,
+            VooCandle.timeframe == "daily",
+        )
+        .order_by(VooCandle.timestamp.desc())
+        .limit(20)
+    )
+    rows = [row for row in result.scalars().all() if _usable_price_candle(row)]
+    for row in rows:
+        if (
+            current_day is None
+            or row.timestamp is None
+            or _trading_day(row.timestamp) < current_day
+        ):
+            return row
+    return None
+
+
 def _vix_to_dict(r: VixCandle) -> dict:
     return {
         "id": r.id,
@@ -379,10 +442,33 @@ async def get_price_snapshot(
         )
         five_min_current = await _latest_usable_candle(db, "5min")
         current = five_min_current or daily
+        reference = await _latest_prior_regular_candle(db, current)
+        if reference is None:
+            reference = await _latest_prior_daily_candle(db, current)
+        current_price = _price_point(current)["price"] if current else None
+        reference_price = _price_point(reference)["price"] if reference else None
+        day_change_percent = None
+        day_direction = "flat"
+        if current_price is not None and reference_price and reference_price > 0:
+            day_change_percent = round(
+                (current_price - reference_price) / reference_price * 100.0, 4
+            )
+            if day_change_percent > 0:
+                day_direction = "up"
+            elif day_change_percent < 0:
+                day_direction = "down"
         return {
             "ticker": ticker.upper(),
-            "current_price": _price_point(current)["price"] if current else None,
+            "current_price": current_price,
             "current_timestamp": _price_point(current)["timestamp"] if current else None,
+            "current_session": current.session_type if current else None,
+            "is_extended_hours": bool(current.is_extended_hours) if current else False,
+            "reference_price": reference_price,
+            "reference_timestamp": (
+                _price_point(reference)["timestamp"] if reference else None
+            ),
+            "day_change_percent": day_change_percent,
+            "day_direction": day_direction,
             "long_model_price": _price_point(daily)["price"] if daily else None,
             "long_model_timestamp": _price_point(daily)["timestamp"] if daily else None,
             "short_model_price": (

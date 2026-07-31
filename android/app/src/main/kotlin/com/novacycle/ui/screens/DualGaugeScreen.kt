@@ -128,6 +128,11 @@ fun DualGaugeScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // ── Live VOO price ─────────────────────────────────────────────
+            VooPriceCard(snapshot = uiState.priceSnapshot, isError = uiState.priceError)
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             // Error banner
             if (uiState.error != null) {
                 Card(
@@ -275,6 +280,89 @@ fun DualGaugeScreen(
 
     if (showConfidenceSheet) {
         ConfidenceInfoSheet(onDismiss = { showConfidenceSheet = false })
+    }
+}
+
+@Composable
+private fun VooPriceCard(
+    snapshot: com.novacycle.data.remote.models.PriceSnapshotResponse?,
+    isError: Boolean,
+) {
+    val price = snapshot?.currentPrice
+    val change = snapshot?.dayChangePercent
+    val direction = snapshot?.dayDirection?.lowercase()
+    val directionColor = when (direction) {
+        "up" -> NovaBuyGreen
+        "down" -> NovaSellRed
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val arrow = when (direction) {
+        "up" -> "↑"
+        "down" -> "↓"
+        else -> "→"
+    }
+    val session = snapshot?.currentSession
+        ?.replace('_', ' ')
+        ?.replaceFirstChar { it.uppercase() }
+    val sourceLabel = when {
+        snapshot?.isExtendedHours == true && session != null -> "$session · extended hours"
+        session != null -> session
+        else -> "market feed"
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .luxeRim(CardDefaults.shape),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "VOO · LIVE PRICE",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = when {
+                        isError -> "Price feed unavailable"
+                        snapshot == null -> "Reading market feed…"
+                        else -> sourceLabel
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = price?.let { "$${"%.2f".format(it)}" } ?: "—",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = arrow,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = directionColor,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = change?.let { "${if (it >= 0) "+" else ""}${"%.2f".format(it)}%" } ?: "—",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = directionColor,
+                )
+            }
+        }
     }
 }
 

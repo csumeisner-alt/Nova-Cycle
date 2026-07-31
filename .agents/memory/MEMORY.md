@@ -8,6 +8,7 @@
 - [Android API model synchronization](android-api-model-sync.md) — backend response shape changes must be mirrored in Android Moshi models or launch-time parsing crashes
 - [FastAPI middleware ordering vs CORS](fastapi-middleware-cors-ordering.md) — decorator middleware wraps outside CORSMiddleware; short-circuited responses need manual CORS headers
 - [Dashboard gauge semantics](dashboard-gauge-semantics.md) — gauge big % is directional position, small % is model confidence; never conflate them in UI copy
+- [Retrain accuracy independence](retrain-accuracy-independence.md) — model accuracy history must render even when no completed BUY→SELL cycles exist
 - [Short-trend leakage & imbalance](short-trend-leakage-fixes.md) — fold-local scalers, purged splits, metric-kind-aware regression checks, minority oversampling for rare-event labels
 - [Market data and push readiness](novacycle-market-data-and-push.md) — validate OHLC before prediction and treat FCM credentials plus device registration as separate blockers
 - [SQLite async cancellation](sqlite-async-cancellation.md) — cancelled aiosqlite queries kill the pooled connection; timeout tests need file-based DBs, not :memory:

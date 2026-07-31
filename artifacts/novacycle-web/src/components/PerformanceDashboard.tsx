@@ -208,6 +208,82 @@ function PerformanceSkeleton() {
   );
 }
 
+function AccuracyOverTimePanel({ data }: { data: AccuracyPoint[] }) {
+  const accuracyData = useMemo(() => {
+    // Retrains without an out-of-sample score are intentionally omitted.
+    const history = data.filter(
+      (h) => typeof h.accuracy === 'number' && Number.isFinite(h.accuracy),
+    );
+    const models = Array.from(new Set(history.map((h) => h.model_name)));
+    const byTs = new Map<string, Record<string, number | string>>();
+    for (const h of history) {
+      const key = h.trained_at;
+      const existing = byTs.get(key) ?? { trained_at: key };
+      existing[h.model_name] = (h.accuracy as number) * 100;
+      byTs.set(key, existing);
+    }
+    const rows = Array.from(byTs.values()).sort((a, b) =>
+      String(a.trained_at).localeCompare(String(b.trained_at)),
+    );
+    return { models, rows };
+  }, [data]);
+
+  return (
+    <Panel title="MODEL ACCURACY OVER TIME" icon={<TrendingUp className="w-4 h-4" />} testId="panel-accuracy">
+      {accuracyData.rows.length === 0 ? (
+        <EmptyState
+          testId="empty-accuracy"
+          message="No retrain accuracy history yet. This chart appears after a model retrain produces an out-of-sample score."
+        />
+      ) : (
+        <ChartContainer
+          config={Object.fromEntries(
+            accuracyData.models.map((m, i) => [m, { label: m, color: MODEL_COLORS[i % MODEL_COLORS.length] }]),
+          )}
+          className="h-64 w-full aspect-auto"
+          data-testid="chart-accuracy"
+        >
+          <LineChart data={accuracyData.rows} margin={{ top: 10, right: 12, left: 4, bottom: 24 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+            <XAxis
+              dataKey="trained_at"
+              tickFormatter={(v) => fmtDate(v)}
+              tick={{ fontSize: 10 }}
+              minTickGap={24}
+            >
+              <Label value="Trained At" position="insideBottom" offset={-12} fontSize={11} fill="currentColor" />
+            </XAxis>
+            <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 10 }} width={48}>
+              <Label value="Accuracy (%)" angle={-90} position="insideLeft" fontSize={11} fill="currentColor" />
+            </YAxis>
+            <ChartTooltip
+              content={
+                <ChartTooltipContent
+                  labelFormatter={(v) => fmtDate(v as string)}
+                  formatter={(value, name) => [`${fmtPct(value as number)}`, ` ${name}`]}
+                />
+              }
+            />
+            <ChartLegend content={<ChartLegendContent />} />
+            {accuracyData.models.map((m, i) => (
+              <Line
+                key={m}
+                type="monotone"
+                dataKey={m}
+                name={m}
+                stroke={MODEL_COLORS[i % MODEL_COLORS.length]}
+                strokeWidth={2}
+                dot={{ r: 2 }}
+                connectNulls
+              />
+            ))}
+          </LineChart>
+        </ChartContainer>
+      )}
+    </Panel>
+  );
+}
+
 // ─── summary card ───────────────────────────────────────────────────────────
 function SummaryCard({
   name,
@@ -449,27 +525,6 @@ export function PerformanceDashboard() {
   const hasTrades = (data?.summary?.total_trades ?? 0) > 0;
   const isFiltered = conf !== 'all';
 
-  // Accuracy history transformed to one line per model
-  const accuracyData = useMemo(() => {
-    // Backend may emit accuracy: null for retrains recorded without a metric —
-    // skip those points so the chart never plots bogus values.
-    const history = (data?.accuracy_history ?? []).filter(
-      (h) => typeof h.accuracy === 'number' && Number.isFinite(h.accuracy),
-    );
-    const models = Array.from(new Set(history.map((h) => h.model_name)));
-    const byTs = new Map<string, Record<string, number | string>>();
-    for (const h of history) {
-      const key = h.trained_at;
-      const existing = byTs.get(key) ?? { trained_at: key };
-      existing[h.model_name] = (h.accuracy as number) * 100;
-      byTs.set(key, existing);
-    }
-    const rows = Array.from(byTs.values()).sort((a, b) =>
-      String(a.trained_at).localeCompare(String(b.trained_at)),
-    );
-    return { models, rows };
-  }, [data?.accuracy_history]);
-
   const calibrationData = useMemo(
     () =>
       (data?.calibration_curve ?? []).map((c) => ({
@@ -555,7 +610,10 @@ export function PerformanceDashboard() {
         ) : !hasTrades && isFiltered ? (
           <EmptyState testId="empty-confidence" message={EMPTY_CONF_MSG} />
         ) : !hasTrades ? (
-          <EmptyState testId="empty-performance" message={EMPTY_MSG} />
+          <div className="space-y-6">
+            <EmptyState testId="empty-performance" message={EMPTY_MSG} />
+            <AccuracyOverTimePanel data={data?.accuracy_history ?? []} />
+          </div>
         ) : (
           <div className="space-y-6">
             {/* summary cards */}
@@ -734,56 +792,7 @@ export function PerformanceDashboard() {
                 )}
               </Panel>
 
-              {/* accuracy over time */}
-              <Panel title="MODEL ACCURACY OVER TIME" icon={<TrendingUp className="w-4 h-4" />}>
-                {accuracyData.rows.length === 0 ? (
-                  <EmptyState testId="empty-accuracy" message={EMPTY_MSG} />
-                ) : (
-                  <ChartContainer
-                    config={Object.fromEntries(
-                      accuracyData.models.map((m, i) => [m, { label: m, color: MODEL_COLORS[i % MODEL_COLORS.length] }]),
-                    )}
-                    className="h-64 w-full aspect-auto"
-                    data-testid="chart-accuracy"
-                  >
-                    <LineChart data={accuracyData.rows} margin={{ top: 10, right: 12, left: 4, bottom: 24 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                      <XAxis
-                        dataKey="trained_at"
-                        tickFormatter={(v) => fmtDate(v)}
-                        tick={{ fontSize: 10 }}
-                        minTickGap={24}
-                      >
-                        <Label value="Trained At" position="insideBottom" offset={-12} fontSize={11} fill="currentColor" />
-                      </XAxis>
-                      <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 10 }} width={48}>
-                        <Label value="Accuracy (%)" angle={-90} position="insideLeft" fontSize={11} fill="currentColor" />
-                      </YAxis>
-                      <ChartTooltip
-                        content={
-                          <ChartTooltipContent
-                            labelFormatter={(v) => fmtDate(v as string)}
-                            formatter={(value, name) => [`${fmtPct(value as number)}`, ` ${name}`]}
-                          />
-                        }
-                      />
-                      <ChartLegend content={<ChartLegendContent />} />
-                      {accuracyData.models.map((m, i) => (
-                        <Line
-                          key={m}
-                          type="monotone"
-                          dataKey={m}
-                          name={m}
-                          stroke={MODEL_COLORS[i % MODEL_COLORS.length]}
-                          strokeWidth={2}
-                          dot={{ r: 2 }}
-                          connectNulls
-                        />
-                      ))}
-                    </LineChart>
-                  </ChartContainer>
-                )}
-              </Panel>
+              <AccuracyOverTimePanel data={data?.accuracy_history ?? []} />
             </div>
 
             {/* return distribution (full width) */}

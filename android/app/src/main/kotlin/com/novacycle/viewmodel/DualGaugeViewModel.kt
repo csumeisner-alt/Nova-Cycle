@@ -7,6 +7,7 @@ import com.novacycle.data.remote.ConnectivityErrorMapper
 import com.novacycle.data.remote.models.HoldTimeResponse
 import com.novacycle.data.remote.models.IndicatorResponse
 import com.novacycle.data.remote.models.MacroSafetyResponse
+import com.novacycle.data.remote.models.PriceSnapshotResponse
 import com.novacycle.data.remote.models.PredictionResponse
 import com.novacycle.data.repository.NovaCycleRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -29,6 +30,8 @@ data class DualGaugeUiState(
     val macroSafety: MacroSafetyResponse? = null,
     /** True when the macro-safety fetch failed (chip shows a muted fallback) */
     val macroSafetyError: Boolean = false,
+    val priceSnapshot: PriceSnapshotResponse? = null,
+    val priceError: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null,
     /** Currently selected ticker — only "VOO" supported, placeholder for multi-ticker */
@@ -55,6 +58,7 @@ class DualGaugeViewModel @Inject constructor(
         probeBackendReachability()
         loadPredictions()
         startAutoRefresh()
+        startPriceRefresh()
         // NOTE: health polling now lives in the app-level HealthViewModel
         // (one shared /healthz poll for all screens) — do not poll here.
     }
@@ -94,16 +98,18 @@ class DualGaugeViewModel @Inject constructor(
             val holdDeferred = async { repository.getHoldTime(ticker) }
             val indicatorsDeferred = async { repository.getIndicators(ticker) }
             val macroSafetyDeferred = async { repository.getMacroSafety(ticker) }
+            val priceDeferred = async { repository.getPriceSnapshot(ticker) }
 
             val longResult = longDeferred.await()
             val shortResult = shortDeferred.await()
             val holdResult = holdDeferred.await()
             val indicatorsResult = indicatorsDeferred.await()
             val macroSafetyResult = macroSafetyDeferred.await()
+            val priceResult = priceDeferred.await()
 
             // Data freshness is recorded centrally by the repository on remote success;
             // here we only track this screen's own "Updated X ago" header label.
-            val anySuccess = listOf(longResult, shortResult, holdResult, indicatorsResult)
+            val anySuccess = listOf(longResult, shortResult, holdResult, indicatorsResult, priceResult)
                 .any { it.isSuccess }
 
             _uiState.update { state ->
@@ -120,6 +126,8 @@ class DualGaugeViewModel @Inject constructor(
                     indicators = indicatorsResult.getOrNull() ?: state.indicators,
                     macroSafety = macroSafetyResult.getOrNull() ?: state.macroSafety,
                     macroSafetyError = macroSafetyResult.isFailure && state.macroSafety == null,
+                    priceSnapshot = priceResult.getOrNull() ?: state.priceSnapshot,
+                    priceError = priceResult.isFailure && state.priceSnapshot == null,
                     lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()
                                           else state.lastUpdatedAtMillis,
                     isLoading = false,
@@ -177,6 +185,22 @@ class DualGaugeViewModel @Inject constructor(
             while (isActive) {
                 delay(5 * 60 * 1000L) // 5 minutes
                 loadPredictions()
+            }
+        }
+    }
+
+    /** Keep the quote strip fresher than the model refresh cadence. */
+    private fun startPriceRefresh() {
+        viewModelScope.launch {
+            while (isActive) {
+                delay(60_000L)
+                val result = repository.getPriceSnapshot(_uiState.value.selectedTicker)
+                _uiState.update { state ->
+                    state.copy(
+                        priceSnapshot = result.getOrNull() ?: state.priceSnapshot,
+                        priceError = result.isFailure && state.priceSnapshot == null,
+                    )
+                }
             }
         }
     }
