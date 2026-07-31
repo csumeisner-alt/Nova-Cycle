@@ -457,6 +457,59 @@ class ReliabilityViewModelTest {
         }
     }
 
+    /**
+     * An entry with an empty-string trainedAt must not be dropped from
+     * accuracyTrend — the ViewModel only filters on accuracy, not on trainedAt.
+     * The empty string reaches the UI's formatIsoTimestamp(), which falls back
+     * to returning the raw string rather than crashing. This test confirms the
+     * ViewModel's side of that contract: no exception, entry still present, and
+     * trainedAt is forwarded exactly as-is (empty string, not null, not "--").
+     */
+    @Test
+    fun `entry with empty string trainedAt is not dropped from accuracy trend`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "good",  trainedAt = "2026-07-01T00:00:00Z", accuracy = 0.60f),
+                AccuracyHistoryEntry(modelName = "empty", trainedAt = "",                      accuracy = 0.65f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val trend = viewModel.uiState.value.accuracyTrend
+            // Both entries have non-null accuracy so both must survive the filter.
+            assertEquals(2, trend.size)
+            val emptyEntry = trend.first { it.modelName == "empty" }
+            // trainedAt is forwarded unchanged — ViewModel must not touch it.
+            assertEquals("", emptyEntry.trainedAt)
+        }
+    }
+
+    /**
+     * An entry with a null trainedAt must not be dropped from accuracyTrend —
+     * the ViewModel only filters on accuracy, not on trainedAt. The null reaches
+     * the UI's formatIsoTimestamp(), which returns "--" rather than crashing.
+     * This test confirms the ViewModel's side of that contract: no exception,
+     * entry still present, and trainedAt is forwarded as null.
+     */
+    @Test
+    fun `entry with null trainedAt is not dropped from accuracy trend`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "good", trainedAt = "2026-07-01T00:00:00Z", accuracy = 0.60f),
+                AccuracyHistoryEntry(modelName = "nodate", trainedAt = null,                 accuracy = 0.55f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val trend = viewModel.uiState.value.accuracyTrend
+            // Both entries have non-null accuracy so both must survive the filter.
+            assertEquals(2, trend.size)
+            val nodateEntry = trend.first { it.modelName == "nodate" }
+            // trainedAt is forwarded unchanged — ViewModel must not convert null.
+            assertNull(nodateEntry.trainedAt)
+        }
+    }
+
     // ── Flat-trend / zero-range sparkline edge cases ────────────────────────
 
     /**
