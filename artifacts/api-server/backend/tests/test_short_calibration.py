@@ -262,6 +262,40 @@ def test_get_neutral_probability_does_not_use_stale_rate(tmp_model_dir_full):
     assert m.get_neutral_probability() == pytest.approx(0.30)
 
 
+def test_get_neutral_probability_resets_to_half_when_report_deleted(tmp_model_dir_full):
+    """When the calibration report file is deleted after an initial successful
+    load (e.g. a failed retrain that removes the old report before writing the
+    new one), get_neutral_probability() must return the safe 0.5 fallback rather
+    than silently retaining the previously loaded rate.
+
+    Also confirms that _calibration_report_mtime is cleared (set to None) so
+    that any subsequent file write is detected as a change on the next call.
+    """
+    report_path = cal.calibration_report_path("short_trend")
+
+    # Write a valid report and confirm the rate is loaded.
+    cal.save_calibration_report({"positive_rate": 0.12}, "short_trend")
+    m = ShortTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.12)
+    assert m._calibration_report_mtime is not None, (
+        "mtime should be set after a successful load"
+    )
+
+    # Delete the report file to simulate a failed retrain that removed it.
+    report_path.unlink()
+
+    # Must fall back to 0.5, not retain the stale 0.12.
+    assert m.get_neutral_probability() == pytest.approx(0.5), (
+        "Expected 0.5 fallback after calibration report was deleted"
+    )
+
+    # _calibration_report_mtime must be cleared so any future file write
+    # (mtime != None) triggers a fresh reload.
+    assert m._calibration_report_mtime is None, (
+        "_calibration_report_mtime should be None after the file disappears"
+    )
+
+
 def test_get_neutral_probability_cycles_across_multiple_reports(tmp_model_dir_full):
     """Simulate three consecutive retrains with materially different positive
     rates; each call after a file change returns the current rate."""
