@@ -565,6 +565,58 @@ class TestCleanupEndpoint:
         assert "cleanup_at" in body
 
     @pytest.mark.asyncio
+    async def test_endpoint_db_locked_returns_500(
+        self, http_client: AsyncClient
+    ):
+        """If the DB raises OperationalError during the DELETE phase, the endpoint
+        must return HTTP 500 with a human-readable error body, and the session
+        teardown must complete without raising a secondary exception.
+
+        The patch targets remove_malformed_candles (called inside the endpoint)
+        to simulate the OperationalError that would arise when SQLite (or any DB)
+        raises 'database is locked' mid-delete.  The session is never committed,
+        so the get_session dependency's finally/rollback path runs on teardown.
+        """
+        from config import settings
+        from unittest.mock import patch, AsyncMock
+        from sqlalchemy.exc import OperationalError
+
+        token = settings.ADMIN_TOKEN or settings.SESSION_SECRET
+        if not token:
+            pytest.skip("ADMIN_TOKEN / SESSION_SECRET not set")
+
+        with patch(
+            "database.ohlc_cleanup.remove_malformed_candles",
+            new=AsyncMock(
+                side_effect=OperationalError(
+                    "DELETE FROM voo_candles WHERE id IN (?)",
+                    {},
+                    Exception("database is locked"),
+                )
+            ),
+        ):
+            # The ASGITransport runs the full request/response cycle including
+            # dependency teardown, so any secondary exception in get_session's
+            # finally block would surface here.
+            resp = await http_client.post(
+                "/api/admin/cleanup_malformed_candles",
+                headers={"X-Admin-Token": token},
+            )
+
+        assert resp.status_code == 500, (
+            f"Expected 500 on DB lock, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        # Response body must contain a human-readable error description.
+        assert "detail" in body, f"No 'detail' key in error body: {body}"
+        detail = body["detail"]
+        assert detail, "detail field must be a non-empty string"
+        # The message should reference the failure so operators know what happened.
+        assert "Cleanup failed" in detail or "locked" in detail or "OperationalError" in detail, (
+            f"detail does not describe the DB error: {detail!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_endpoint_resets_quarantine_counter(
         self, http_client: AsyncClient
     ):
