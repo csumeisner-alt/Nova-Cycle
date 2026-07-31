@@ -1570,16 +1570,26 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         )
 
     from database.cleanup_state import is_cleanup_pending
-    from database.startup_state import get_startup_status, get_startup_error
+    from database.startup_state import (
+        get_startup_status, get_startup_error, get_retrain_skipped_at_startup,
+    )
     cleanup_pending = is_cleanup_pending()
     startup_status = get_startup_status()
     startup_error = get_startup_error()
+    retrain_skipped_at_startup = get_retrain_skipped_at_startup()
 
     if startup_status == "degraded":
         degraded = True
         alerts.append(
             "startup: pipeline initialization failed — jobs unblocked in a degraded state"
             + (f" ({startup_error})" if startup_error else "")
+        )
+
+    if retrain_skipped_at_startup:
+        degraded = True
+        alerts.append(
+            "startup: retrain was skipped because pipeline initialization did not complete "
+            "cleanly — models may be stale; retrain will run on the next weekly schedule"
         )
 
     return {
@@ -1589,6 +1599,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "service": "NovaCycle API",
         "startup_status": startup_status,
         "startup_error": startup_error,
+        "retrain_skipped_at_startup": retrain_skipped_at_startup,
         "cleanup_pending": cleanup_pending,
         "models": models,
         "spx_futures": spx_data,

@@ -20,7 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from database.cleanup_state import mark_cleanup_finished, mark_cleanup_started
-from database.startup_state import mark_startup_ok, mark_startup_degraded
+from database.startup_state import mark_startup_ok, mark_startup_degraded, mark_retrain_skipped
 from database.db import create_tables, get_session_factory
 from database.maintenance import reclassify_session_labels
 from database.ohlc_cleanup import remove_malformed_candles
@@ -91,6 +91,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(
                     "Startup retrain skipped: initialization did not complete cleanly."
                 )
+                mark_retrain_skipped()
         finally:
             # Guarantee: release the initialized guard even if an unhandled
             # exception escapes the inner try blocks above (e.g. the session

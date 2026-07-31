@@ -140,3 +140,73 @@ class TestHealthzStartupStatus:
             degraded = True
 
         assert not degraded
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# retrain_skipped_at_startup flag
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRetrainSkippedAtStartup:
+    def setup_method(self):
+        ss.reset_for_testing()
+
+    def test_initial_value_is_false(self):
+        assert ss.get_retrain_skipped_at_startup() is False
+
+    def test_mark_retrain_skipped_sets_flag(self):
+        ss.mark_retrain_skipped()
+        assert ss.get_retrain_skipped_at_startup() is True
+
+    def test_reset_clears_flag(self):
+        ss.mark_retrain_skipped()
+        ss.reset_for_testing()
+        assert ss.get_retrain_skipped_at_startup() is False
+
+    def test_mark_startup_ok_does_not_set_flag(self):
+        """A clean startup should leave retrain_skipped_at_startup False."""
+        ss.mark_startup_ok()
+        assert ss.get_retrain_skipped_at_startup() is False
+
+    def test_mark_retrain_skipped_is_idempotent(self):
+        """Calling mark_retrain_skipped() twice should not raise and stays True."""
+        ss.mark_retrain_skipped()
+        ss.mark_retrain_skipped()
+        assert ss.get_retrain_skipped_at_startup() is True
+
+    def test_skipped_flag_independent_of_startup_status(self):
+        """retrain_skipped is orthogonal to startup_status — both can be read together."""
+        ss.mark_startup_degraded("db locked")
+        ss.mark_retrain_skipped()
+        assert ss.get_startup_status() == "degraded"
+        assert ss.get_retrain_skipped_at_startup() is True
+
+    def test_healthz_alert_added_when_retrain_skipped(self):
+        """Replicate the logic healthz uses to build alerts for skipped retrain."""
+        ss.mark_retrain_skipped()
+
+        degraded = False
+        alerts = []
+        if ss.get_retrain_skipped_at_startup():
+            degraded = True
+            alerts.append(
+                "startup: retrain was skipped because pipeline initialization did not complete "
+                "cleanly — models may be stale; retrain will run on the next weekly schedule"
+            )
+
+        assert degraded
+        assert len(alerts) == 1
+        assert "retrain was skipped" in alerts[0]
+        assert "models may be stale" in alerts[0]
+
+    def test_healthz_no_alert_when_retrain_ran(self):
+        """No alert when retrain was not skipped."""
+        ss.mark_startup_ok()
+
+        degraded = False
+        alerts = []
+        if ss.get_retrain_skipped_at_startup():
+            degraded = True
+            alerts.append("startup: retrain was skipped")
+
+        assert not degraded
+        assert alerts == []
