@@ -207,6 +207,134 @@ describe('PredictionCard – data-quality warning banner', () => {
   });
 });
 
+// ─── cross_bar_spike quarantine banner ──────────────────────────────────────
+
+describe('PredictionCard – cross_bar_spike quarantine banner', () => {
+  const SPIKE_REASON = 'quarantined 1 malformed daily candle(s); latest bad candle ts=2024-07-30T00:00:00 reason=cross_bar_spike (close=421.0500); using last valid candle instead';
+
+  it('shows the spike-specific summary message for a cross_bar_spike reason (long-trend card)', async () => {
+    mockPredictResponse({
+      data_quality_degraded: true,
+      data_quality_reason: SPIKE_REASON,
+    });
+    renderCard('long', 'Long Trend');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-data-quality-long')).toBeInTheDocument(),
+    );
+
+    const banner = screen.getByTestId('banner-data-quality-long');
+    expect(banner).toHaveTextContent('Glitch bar quarantined');
+    expect(banner).toHaveTextContent('price spike was detected and excluded');
+  });
+
+  it('shows the spike-specific summary message for a cross_bar_spike reason (short-trend card)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          confidence_percent: 58,
+          trend: 'DOWN',
+          display_signal: 'SELL BIAS',
+          data_quality_degraded: true,
+          data_quality_reason: SPIKE_REASON,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    renderCard('short', 'Short Trend');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-data-quality-short')).toBeInTheDocument(),
+    );
+
+    const banner = screen.getByTestId('banner-data-quality-short');
+    expect(banner).toHaveTextContent('Glitch bar quarantined');
+    expect(banner).toHaveTextContent('price spike was detected and excluded');
+  });
+
+  it('does NOT show spike-specific message for a generic (non-spike) quarantine reason', async () => {
+    mockPredictResponse({
+      data_quality_degraded: true,
+      data_quality_reason: 'quarantined 1 malformed daily candle(s); reason=high_below_open',
+    });
+    renderCard('long', 'Long Trend');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-data-quality-long')).toBeInTheDocument(),
+    );
+
+    const banner = screen.getByTestId('banner-data-quality-long');
+    expect(banner).not.toHaveTextContent('Glitch bar quarantined');
+    expect(banner).toHaveTextContent('one or more candles were filtered');
+  });
+
+  it('expands to reveal the raw cross_bar_spike reason string', async () => {
+    mockPredictResponse({
+      data_quality_degraded: true,
+      data_quality_reason: SPIKE_REASON,
+    });
+    renderCard('long', 'Long Trend');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-data-quality-long')).toBeInTheDocument(),
+    );
+
+    // Reason text hidden before expanding
+    expect(screen.queryByTestId('text-data-quality-reason-long')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /toggle data quality detail/i }));
+
+    expect(screen.getByTestId('text-data-quality-reason-long')).toHaveTextContent(SPIKE_REASON);
+  });
+
+  it('spike-quarantine banner appears on short-trend card after auto-refresh that coincides with a spike', async () => {
+    // First fetch clean; second (simulated refetch) returns spike quarantine
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ confidence_percent: 58, trend: 'NEUTRAL', display_signal: 'NEUTRAL / HOLD' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            confidence_percent: 58,
+            trend: 'NEUTRAL',
+            display_signal: 'NEUTRAL / HOLD',
+            data_quality_degraded: true,
+            data_quality_reason: SPIKE_REASON,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <PredictionCard name="short" label="Short Trend" />
+      </QueryClientProvider>,
+    );
+
+    // First fetch – no banner
+    await waitFor(() =>
+      expect(screen.getByTestId('text-confidence-short')).toHaveTextContent('58%'),
+    );
+    expect(screen.queryByTestId('banner-data-quality-short')).not.toBeInTheDocument();
+
+    // Simulate the auto-refresh interval firing
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ['predict', 'short'] });
+    });
+
+    // Banner must appear after the spike-quarantine refetch
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-data-quality-short')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('banner-data-quality-short')).toHaveTextContent('Glitch bar quarantined');
+  });
+});
+
 // ─── auto-refresh transition tests ──────────────────────────────────────────
 
 function makeResponse(overrides: Record<string, unknown> = {}) {

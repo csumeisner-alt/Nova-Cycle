@@ -80,6 +80,11 @@ export function PredictionCard({ name, label }: { name: string; label: string })
   const zone = confidenceZone(pct);
   const degraded = data?.data_quality_degraded === true;
   const degradedReason = data?.data_quality_reason ?? '';
+  const isSpikeQuarantine = degradedReason.includes('cross_bar_spike');
+
+  const bannerSummary = isSpikeQuarantine
+    ? '⚠ Glitch bar quarantined: a price spike was detected and excluded. Signal may be less reliable.'
+    : '⚠ Data quality issue: one or more candles were filtered. Signal may be less reliable.';
 
   return (
     <div className="p-4 bg-black/30 rounded-lg border border-white/5 space-y-3" data-testid={`prediction-card-${name}`}>
@@ -123,7 +128,7 @@ export function PredictionCard({ name, label }: { name: string; label: string })
           >
             <span className="flex items-center gap-1.5 text-xs font-mono font-medium">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-              ⚠ Data quality issue: one or more candles were filtered. Signal may be less reliable.
+              {bannerSummary}
             </span>
             {showReason ? (
               <ChevronUp className="w-3.5 h-3.5 shrink-0" />
