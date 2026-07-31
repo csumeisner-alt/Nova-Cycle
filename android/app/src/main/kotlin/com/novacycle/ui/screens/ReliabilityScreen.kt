@@ -532,11 +532,22 @@ private fun RetrainHistoryRow(entry: com.novacycle.data.remote.models.AccuracyHi
  * Minimal line sparkline of accuracy values (0–1), scaled to the local
  * min/max range with a small pad so a flat trend renders mid-height.
  *
- * When all values are identical the raw range is 0. Rather than defaulting
- * range to 1f and leaving min at the actual value (which places every point
- * at the bottom edge: pad + 1 * usable = height - pad), we also shift
- * effectiveMin down by 0.5 so that the normalised position is 0.5 and the
- * line lands exactly at the vertical centre (pad + 0.5 * usable = height / 2).
+ * **Flat trend (rawRange ≤ 1e-6f)**
+ * When all values are identical (or differ by < 1e-6f) the raw range would
+ * cause division by zero. The guard substitutes range = 1f and shifts
+ * effectiveMin down by 0.5 so the normalised position is 0.5 and the line
+ * lands exactly at the vertical centre (pad + 0.5 * usable = height / 2),
+ * not at the bottom edge.
+ *
+ * **Near-flat trend (rawRange just above 1e-6f)**
+ * When the guard does NOT activate the real range is used for normalisation:
+ *   yFor(v) = pad + (1 − (v − min) / rawRange) * usable
+ * Because the formula divides by the actual spread, the minimum value always
+ * maps to the bottom of the usable area (pad + usable) and the maximum always
+ * maps to the top (pad), regardless of how small rawRange is.  The visual span
+ * therefore equals the full usable height even when two retrains differ by only
+ * a fraction of a percent — the sparkline is always visible and never a sliver.
+ * No additional minimum-span clamp is needed.
  */
 @Composable
 private fun AccuracySparkline(values: List<Float>, modifier: Modifier = Modifier) {

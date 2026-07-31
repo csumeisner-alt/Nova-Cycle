@@ -23,6 +23,9 @@ import org.junit.Test
  *   3. A normal trend with spread produces finite, bounded y-values.
  *   4. A two-value flat list (minimum list that reaches the drawing loop) is safe.
  *   5. A single-value list never reaches the drawing loop (size < 2 short-circuits).
+ *   6. A near-flat trend (rawRange just above 1e-6f) uses the real range and maps
+ *      the min–max spread to the FULL usable height (normalization is always full-span),
+ *      so the sparkline is always visible regardless of how small the absolute spread is.
  */
 class AccuracySparklineLogicTest {
 
@@ -182,6 +185,120 @@ class AccuracySparklineLogicTest {
         val ys = yPositions(values)
         assertFalse("y-values must differ for a non-flat trend",
             kotlin.math.abs(ys[0] - ys[1]) < 1e-5f)
+    }
+
+    // ── Near-flat edge-case tests ─────────────────────────────────────────────
+    //
+    // When rawRange is just above 1e-6f (e.g. a tiny 0.00001 pt difference
+    // between two retrains), the flat-trend guard does NOT activate and the real
+    // range is used for normalisation.  Because the composable normalises v via
+    //   (v - min) / range
+    // the min point maps to 0 and the max point maps to 1 in normalised space,
+    // so their y-positions are pad (top) and pad + usable (bottom) respectively —
+    // i.e. the line always spans the FULL usable height regardless of how small
+    // the absolute spread is.  This makes the sparkline inherently visible.
+    //
+    // The tests below verify that property for a variety of near-flat spreads
+    // and confirm every y-position remains within the padded canvas area.
+
+    @Test
+    fun `near-flat spread of 1e-5 maps min and max to the full usable height`() {
+        // rawRange = 1e-5f is just above the 1e-6f flat-trend threshold.
+        // The guard must NOT activate, and the visual span (|yFor(min) - yFor(max)|)
+        // must equal the full usable height so the line is not a sliver.
+        val height = 36f
+        val values = listOf(0.70000f, 0.70001f)  // diff ≈ 1e-5f in float32
+        val rawRange = values.max() - values.min()
+        assertTrue("rawRange must be above 1e-6f for this test to be meaningful",
+            rawRange > 1e-6f)
+
+        val range = safeRange(values)
+        // Guard must NOT have activated — real range is used.
+        assertEquals("near-flat: real range must be used (guard must not substitute 1f)",
+            rawRange, range, 1e-9f)
+
+        val ys = yPositions(values, height)
+        val pad    = height * 0.1f
+        val usable = height - 2f * pad
+
+        // Both y-values must be finite and within the padded canvas bounds.
+        assertTrue("all y-values must be finite", ys.all { it.isFinite() })
+        assertTrue("all y-values must be >= pad",
+            ys.all { it >= pad - 1e-4f })
+        assertTrue("all y-values must be <= pad + usable",
+            ys.all { it <= pad + usable + 1e-4f })
+
+        // The visual span between the two points must equal the full usable height
+        // because normalisation maps min→bottom and max→top.
+        val visualSpan = kotlin.math.abs(ys[0] - ys[1])
+        assertEquals(
+            "near-flat: visual span must equal full usable height (normalisation gives full span)",
+            usable, visualSpan, 1e-3f
+        )
+    }
+
+    @Test
+    fun `near-flat spread of 1e-4 maps min and max to the full usable height`() {
+        val height = 36f
+        val values = listOf(0.7000f, 0.7001f)  // diff = 1e-4f
+        val range = safeRange(values)
+        val rawRange = values.max() - values.min()
+        assertTrue("rawRange must be above 1e-6f", rawRange > 1e-6f)
+        assertEquals("real range must be used", rawRange, range, 1e-9f)
+
+        val ys = yPositions(values, height)
+        val usable = height - 2f * (height * 0.1f)
+
+        assertTrue("y-values must be finite", ys.all { it.isFinite() })
+        val visualSpan = kotlin.math.abs(ys[0] - ys[1])
+        assertEquals(
+            "near-flat 1e-4: visual span must equal full usable height",
+            usable, visualSpan, 1e-3f
+        )
+    }
+
+    @Test
+    fun `near-flat multi-point trend stays bounded and has distinct y-positions at extremes`() {
+        // Five points clustered very tightly — the min and max must still map to
+        // the top and bottom of the usable area respectively.
+        val height = 36f
+        val values = listOf(0.70000f, 0.70002f, 0.70001f, 0.70003f, 0.70001f)
+        val rawRange = values.max() - values.min()
+        assertTrue("rawRange must be above 1e-6f", rawRange > 1e-6f)
+
+        val ys = yPositions(values, height)
+        val pad    = height * 0.1f
+        val usable = height - 2f * pad
+
+        assertTrue("all y-values must be finite", ys.all { it.isFinite() })
+        assertTrue("all y-values must be within [pad, pad+usable]",
+            ys.all { it >= pad - 1e-4f && it <= pad + usable + 1e-4f })
+
+        // The extreme points (min/max values) must be at the edges of the usable area.
+        val minIdx = values.indexOfFirst { it == values.min() }
+        val maxIdx = values.indexOfFirst { it == values.max() }
+        assertEquals("min-value point must be at bottom (pad + usable)",
+            pad + usable, ys[minIdx], 1e-3f)
+        assertEquals("max-value point must be at top (pad)",
+            pad, ys[maxIdx], 1e-3f)
+    }
+
+    @Test
+    fun `near-flat y-positions are all within the padded canvas area`() {
+        // Confirm no y-value escapes the [pad, pad+usable] band for a near-flat trend.
+        val height = 36f
+        val values = listOf(0.700000f, 0.700005f, 0.700003f)
+        val rawRange = values.max() - values.min()
+        assertTrue("rawRange must be above 1e-6f", rawRange > 1e-6f)
+
+        val ys = yPositions(values, height)
+        val pad    = height * 0.1f
+        val usable = height - 2f * pad
+
+        ys.forEachIndexed { i, y ->
+            assertTrue("y[$i]=$y must be >= pad ($pad)", y >= pad - 1e-4f)
+            assertTrue("y[$i]=$y must be <= pad+usable (${pad + usable})", y <= pad + usable + 1e-4f)
+        }
     }
 
     @Test
