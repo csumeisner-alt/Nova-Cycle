@@ -14,6 +14,32 @@ import org.junit.Test
  */
 class ApiUrlValidatorTest {
 
+    // ── persisted URL migration ────────────────────────────────────────────
+
+    @Test
+    fun `obsolete Replit development URL migrates to production`() {
+        val production = "https://nova-cycle.replit.app/api/"
+        assertTrue(
+            ApiUrlResolver.resolve(
+                "https://85621466-d083-4137-8a68-8de9779ab36a-00-lvz8z9d2rcc1.riker.replit.dev/api/",
+                production
+            ) == production
+        )
+    }
+
+    @Test
+    fun `custom server URL is preserved during migration`() {
+        val custom = "https://api.example.com/api/"
+        assertTrue(ApiUrlResolver.resolve(custom, "https://nova-cycle.replit.app/api/") == custom)
+    }
+
+    @Test
+    fun `missing URL uses production default`() {
+        val production = "https://nova-cycle.replit.app/api/"
+        assertTrue(ApiUrlResolver.resolve(null, production) == production)
+        assertTrue(ApiUrlResolver.resolve("   ", production) == production)
+    }
+
     // ── https accepted anywhere ───────────────────────────────────────────
 
     @Test

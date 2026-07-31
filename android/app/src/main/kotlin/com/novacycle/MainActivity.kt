@@ -31,6 +31,7 @@ import com.novacycle.ui.components.BrandIntroOverlay
 import com.novacycle.ui.components.ThemeUnlockEffectHost
 import com.novacycle.viewmodel.ThemeViewModel
 import com.novacycle.data.repository.NovaCycleRepository
+import com.novacycle.data.remote.ApiUrlResolver
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.WeightingMode
 import com.novacycle.domain.model.SmoothingMode
@@ -280,7 +281,10 @@ class MainActivity : ComponentActivity() {
                         prefs[SettingsViewModel.KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
                     ),
                     extendedHoursNotifications = prefs[SettingsViewModel.KEY_EXTENDED_NOTIF] ?: true,
-                    apiBaseUrl = prefs[SettingsViewModel.KEY_API_BASE_URL] ?: com.novacycle.BuildConfig.API_BASE_URL
+                    apiBaseUrl = ApiUrlResolver.resolve(
+                        prefs[SettingsViewModel.KEY_API_BASE_URL],
+                        com.novacycle.BuildConfig.API_BASE_URL
+                    )
                 )
             }
             .first()

@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.novacycle.BuildConfig
+import com.novacycle.data.remote.ApiUrlResolver
 import com.novacycle.data.remote.NovaCycleApiService
 import com.novacycle.data.remote.RetryInterceptor
 import com.squareup.moshi.Moshi
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import androidx.datastore.preferences.core.edit
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -103,7 +105,17 @@ object NetworkModule {
                 .map { prefs -> prefs[KEY_API_BASE_URL]?.takeIf { it.isNotBlank() } }
                 .firstOrNull()
         }
-        val validated = stored?.takeIf { com.novacycle.data.remote.ApiUrlValidator.validate(it) == null }
+        val resolved = ApiUrlResolver.resolve(stored, BuildConfig.API_BASE_URL)
+        if (stored != null && resolved != stored) {
+            runBlocking {
+                dataStore.edit { prefs -> prefs[KEY_API_BASE_URL] = resolved }
+            }
+            android.util.Log.i(
+                "NetworkModule",
+                "Migrated obsolete API base URL to the current production backend"
+            )
+        }
+        val validated = resolved.takeIf { ApiUrlValidator.validate(it) == null }
         if (stored != null && validated == null) {
             android.util.Log.w(
                 "NetworkModule",

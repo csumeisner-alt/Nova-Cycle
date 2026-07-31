@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novacycle.data.remote.ApiUrlValidator
+import com.novacycle.data.remote.ApiUrlResolver
 import com.novacycle.data.remote.ConnectivityErrorMapper
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.*
@@ -80,7 +81,10 @@ class SettingsViewModel @Inject constructor(
                     prefs[KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
                 ),
                 extendedHoursNotifications = prefs[KEY_EXTENDED_NOTIF] ?: true,
-                apiBaseUrl = prefs[KEY_API_BASE_URL] ?: com.novacycle.BuildConfig.API_BASE_URL
+                apiBaseUrl = ApiUrlResolver.resolve(
+                    prefs[KEY_API_BASE_URL],
+                    com.novacycle.BuildConfig.API_BASE_URL
+                )
             )
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, SensitivitySettings())
