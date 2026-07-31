@@ -39,10 +39,6 @@ import com.novacycle.viewmodel.PeriodFilter
 import com.novacycle.viewmodel.ReliabilityUiState
 import com.novacycle.viewmodel.ReliabilityViewModel
 import com.novacycle.viewmodel.WinLossFilter
-import java.time.Instant
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
@@ -913,20 +909,5 @@ private fun DetailLine(label: String, value: String) {
 private fun Float.format1f(): String = String.format(Locale.US, "%.1f", this)
 private fun Float.format2f(): String = String.format(Locale.US, "%.2f", this)
 
-private val displayFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-
-private fun formatIsoTimestamp(iso: String?): String {
-    if (iso == null) return "--"
-    return try {
-        // Try offset/zoned ISO first (e.g. 2026-07-14T01:06:47Z)
-        val instant = Instant.parse(iso)
-        LocalDateTime.ofInstant(instant, ZoneId.systemDefault()).format(displayFormatter)
-    } catch (e: Exception) {
-        try {
-            // Fall back to naive local ISO (e.g. 2026-07-14T01:06:47.323043)
-            LocalDateTime.parse(iso, DateTimeFormatter.ISO_DATE_TIME).format(displayFormatter)
-        } catch (e2: Exception) {
-            iso
-        }
-    }
-}
+// displayFormatter and formatIsoTimestamp live in ReliabilityScreenFormatters.kt
+// so they can be called from unit tests with a pinned ZoneId.
