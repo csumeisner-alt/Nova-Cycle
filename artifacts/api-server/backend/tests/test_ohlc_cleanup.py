@@ -11,7 +11,7 @@ Covers:
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -414,6 +414,99 @@ class TestRemoveMalformedCandles:
         assert len(remaining) >= 2, (
             f"Expected ≥2 valid rows in {table_name} after concurrent cleanup, "
             f"got {len(remaining)}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model_cls,good_fn,bad_fn,good_open,bad_open,table_name", [
+        (VixCandle, _good_vix, _bad_vix, 20.0, 30.0, "vix_candles"),
+        (SpxCandle, _good_spx, _bad_spx, 5000.0, 5200.0, "spx_candles"),
+    ])
+    async def test_stress_concurrent_cleanup_upsert_multi_batch(
+        self, engine, model_cls, good_fn, bad_fn, good_open, bad_open, table_name,
+    ):
+        """Stress test: >2,000 rows forces at least one full batch iteration.
+
+        Seeds 2,100 rows (mix of good and bad) so the cleanup loop must complete
+        a full BATCH=2_000 pass and then a partial second pass.  A concurrent
+        upsert races against the multi-batch cleanup; every valid row must survive
+        and the bad-row count must exactly match expectations.
+        """
+        TOTAL_ROWS = 2_100   # exceeds BATCH=2_000 → triggers second batch iteration
+        BAD_EVERY = 7        # every 7th row (0-indexed) is bad → 300 bad, 1800 good
+
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        base_ts = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+        expected_bad = 0
+        expected_good = 0
+
+        # Insert in chunks to avoid a single enormous transaction
+        CHUNK = 500
+        for chunk_start in range(0, TOTAL_ROWS, CHUNK):
+            async with factory() as s:
+                for i in range(chunk_start, min(chunk_start + CHUNK, TOTAL_ROWS)):
+                    ts = base_ts + timedelta(minutes=i)
+                    if i % BAD_EVERY == 0:
+                        s.add(bad_fn(ts))
+                        expected_bad += 1
+                    else:
+                        s.add(good_fn(ts))
+                        expected_good += 1
+                await s.commit()
+
+        # Concurrent upsert timestamp is safely beyond the seeded range
+        ts_new = base_ts + timedelta(minutes=TOTAL_ROWS)
+
+        async def run_cleanup() -> dict:
+            async with factory() as s:
+                summary = await remove_malformed_candles(s)
+                await s.commit()
+                return summary
+
+        async def run_upsert() -> None:
+            async with factory() as s:
+                s.add(good_fn(ts_new))
+                await s.commit()
+
+        results = await asyncio.gather(run_cleanup(), run_upsert(), return_exceptions=True)
+
+        for r in results:
+            assert not isinstance(r, Exception), f"Concurrent task raised: {r}"
+
+        summary = results[0]
+
+        # Cleanup must have found and removed exactly the expected bad rows
+        assert summary["rows_found"] == expected_bad, (
+            f"{table_name}: expected {expected_bad} bad rows found, "
+            f"got {summary['rows_found']}"
+        )
+        assert summary["rows_removed"] == expected_bad, (
+            f"{table_name}: expected {expected_bad} rows removed, "
+            f"got {summary['rows_removed']}"
+        )
+        assert table_name in summary["tables_affected"]
+
+        # Verify the DB directly: no malformed rows should remain
+        async with factory() as s:
+            result = await s.execute(select(model_cls))
+            remaining = result.scalars().all()
+
+        opens = {r.open for r in remaining}
+
+        assert bad_open not in opens, (
+            f"Malformed row (open={bad_open}) survived in {table_name}"
+        )
+
+        for r in remaining:
+            assert r.open == pytest.approx(good_open), (
+                f"Unexpected open={r.open} in {table_name}; "
+                f"malformed row may have survived or valid row mutated"
+            )
+
+        # All pre-seeded good rows must survive; the concurrent upsert row is a bonus
+        assert len(remaining) >= expected_good, (
+            f"Expected ≥{expected_good} valid rows in {table_name} after "
+            f"multi-batch concurrent cleanup, got {len(remaining)}"
         )
 
 
