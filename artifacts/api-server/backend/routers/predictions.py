@@ -75,6 +75,35 @@ _ohlc_quarantine_stats: dict = {
     "last_reason": None,
 }
 
+# ---------------------------------------------------------------------------
+# VIX all-rows-filtered tracking: records when _load_vix_candles found stored
+# VIX rows but every one of them was dropped by the zero-volume filter, so the
+# prediction router ran with no VIX data at all.  The time-based VIX staleness
+# check cannot see this condition (the rows are recent, just unusable), so
+# /api/healthz surfaces it separately.
+# ---------------------------------------------------------------------------
+_vix_all_filtered_stats: dict = {
+    "count": 0,        # times all stored VIX rows were filtered, since startup
+    "last_at": None,   # ISO timestamp of the most recent occurrence
+    "rows_filtered": None,  # how many stored rows were dropped last time
+}
+
+
+def _record_vix_all_rows_filtered(rows_filtered: int) -> None:
+    """Record that every stored VIX row was dropped by the zero-volume filter
+    (never raises)."""
+    try:
+        _vix_all_filtered_stats["count"] += 1
+        _vix_all_filtered_stats["last_at"] = datetime.utcnow().isoformat()
+        _vix_all_filtered_stats["rows_filtered"] = int(rows_filtered)
+        logger.warning(
+            "vix_prediction_all_rows_filtered rows_filtered=%d count=%d — "
+            "prediction is running without VIX data; macro signal degraded",
+            rows_filtered, _vix_all_filtered_stats["count"],
+        )
+    except Exception as exc:
+        logger.error("_record_vix_all_rows_filtered error: %s", exc)
+
 
 def _record_ml_fallback(model_name: str, reason: str) -> None:
     """Record that a prediction served the neutral fallback (never raises).
@@ -298,6 +327,10 @@ async def _load_vix_candles(session: AsyncSession, limit: int = 300) -> pd.DataF
         valid_rows.append(r)
 
     if not valid_rows:
+        # Rows exist in the DB but every one was zero-volume: the time-based
+        # staleness check will not fire (data is recent, just unusable), so
+        # record the condition for /api/healthz visibility.
+        _record_vix_all_rows_filtered(len(rows))
         return pd.DataFrame()
 
     return pd.DataFrame([{
@@ -1579,6 +1612,18 @@ async def healthz(session: AsyncSession = Depends(get_session)):
                 f"since startup (last: {info['ml_fallback_last_reason']} at {info['ml_fallback_last_at']})"
             )
 
+    # ── VIX all-rows-filtered summary (zero-volume wipe) ─────────────────
+    vix_zero_volume_filter = dict(_vix_all_filtered_stats)
+    if _vix_all_filtered_stats["count"] > 0:
+        degraded = True
+        alerts.append(
+            "vix_prediction_all_rows_filtered: predictions ran without VIX data "
+            f"{_vix_all_filtered_stats['count']} time(s) since startup — every stored "
+            f"VIX row was dropped by the zero-volume filter "
+            f"(last: {_vix_all_filtered_stats['rows_filtered']} row(s) filtered "
+            f"at {_vix_all_filtered_stats['last_at']})"
+        )
+
     # ── OHLC data-quality quarantine summary ─────────────────────────────
     ohlc_quarantine = dict(_ohlc_quarantine_stats)
     if _ohlc_quarantine_stats["count"] > 0:
@@ -1629,6 +1674,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "voo_5min_recovery": fivemin_recovery,
         "notifications": notification_readiness,
         "ohlc_quarantine": ohlc_quarantine,
+        "vix_zero_volume_filter": vix_zero_volume_filter,
         "alerts": alerts,
         "fallback_stats_last_reset_at": fallback_last_reset_at,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
