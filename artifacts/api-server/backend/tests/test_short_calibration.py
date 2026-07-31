@@ -296,6 +296,33 @@ def test_get_neutral_probability_resets_to_half_when_report_deleted(tmp_model_di
     )
 
 
+def test_get_neutral_probability_recovers_after_delete_then_rewrite(tmp_model_dir_full):
+    """After a deletion resets the base rate to 0.5, writing a replacement
+    report (e.g. a successful retrain) must be picked up on the next call —
+    the model must not stay stuck at 0.5 due to stale mtime bookkeeping."""
+    report_path = cal.calibration_report_path("short_trend")
+
+    # Initial report → rate loaded.
+    cal.save_calibration_report({"positive_rate": 0.12}, "short_trend")
+    m = ShortTrendModel()
+    assert m.get_neutral_probability() == pytest.approx(0.12)
+
+    # Delete the report → safe 0.5 fallback.
+    report_path.unlink()
+    assert m.get_neutral_probability() == pytest.approx(0.5)
+
+    # Write a replacement report with a different rate. Sleep briefly so the
+    # OS records a distinct mtime from the original file.
+    time.sleep(0.05)
+    report_path.write_text(json.dumps({"positive_rate": 0.27}))
+
+    # The replacement must be re-read, not skipped.
+    assert m.get_neutral_probability() == pytest.approx(0.27), (
+        "Expected the replacement report's positive_rate after delete+rewrite, "
+        "not the stuck 0.5 fallback"
+    )
+
+
 def test_get_neutral_probability_cycles_across_multiple_reports(tmp_model_dir_full):
     """Simulate three consecutive retrains with materially different positive
     rates; each call after a file change returns the current rate."""
