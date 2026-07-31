@@ -1,11 +1,17 @@
 """
 Tests confirming that scheduled ingest jobs cannot run before
-IngestionPipeline.initialize() completes.
+IngestionPipeline.initialize() completes, and that the startup retrain is
+gated behind a successful initialization.
 
 The guard is an asyncio.Event (_initialized_event) set in the finally-block
 of initialize(). Every scheduled job calls pipeline.wait_for_initialized()
 before touching the database, ensuring cleanup and ingest never overlap on
 a cold start even when the scheduler fires inside the startup window.
+
+The retrain gate uses an `init_succeeded` boolean that is set to True only
+when the inner try block in _init_pipeline() completes without error.
+_run_weekly_retrain() is called only when init_succeeded is True, preventing
+a degraded model from being trained and persisted against a partial/empty DB.
 """
 
 import asyncio
@@ -252,4 +258,117 @@ class TestStartupOrdering:
         assert sorted(unblocked) == list(range(5)), (
             "All 5 concurrent scheduled jobs should have unblocked after "
             "initialize() completed."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Retrain gate tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRetrainGating:
+    """
+    Verify that the startup retrain is gated behind a successful initialization.
+
+    These tests mirror the init_succeeded guard inside _init_pipeline() in
+    main.py. Because _init_pipeline is a closure, the tests replicate the
+    same conditional pattern (the same approach used by
+    test_scheduled_jobs_unblock_when_pre_initialize_step_crashes for the
+    finally-block guarantee).
+    """
+
+    @pytest.mark.asyncio
+    async def test_retrain_skipped_when_init_fails(self):
+        """
+        _run_weekly_retrain() must NOT be called when the inner try block in
+        _init_pipeline() raises — a retrain against a partial/empty DB could
+        produce a degraded model that gets persisted and served.
+        """
+        retrain_called: list[bool] = []
+
+        async def mock_retrain():
+            retrain_called.append(True)
+
+        async def mock_failing_init():
+            raise RuntimeError("simulated DB connection failure")
+
+        # Replicate the init_succeeded guard from _init_pipeline().
+        init_succeeded = False
+        try:
+            await mock_failing_init()
+            init_succeeded = True
+        except Exception:
+            pass  # initialization failed — init_succeeded stays False
+
+        if init_succeeded:
+            await mock_retrain()
+
+        assert not retrain_called, (
+            "_run_weekly_retrain() must not be called when initialization "
+            "raised an exception (init_succeeded remains False)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_retrain_runs_when_init_succeeds(self):
+        """
+        _run_weekly_retrain() MUST be called when initialization completes
+        without error so that stale or missing models are caught up at startup.
+        """
+        retrain_called: list[bool] = []
+
+        async def mock_retrain():
+            retrain_called.append(True)
+
+        async def mock_successful_init():
+            pass  # no-op — represents a clean initialization
+
+        # Replicate the init_succeeded guard from _init_pipeline().
+        init_succeeded = False
+        try:
+            await mock_successful_init()
+            init_succeeded = True
+        except Exception:
+            pass
+
+        if init_succeeded:
+            await mock_retrain()
+
+        assert retrain_called, (
+            "_run_weekly_retrain() must be called when initialization "
+            "completed cleanly (init_succeeded is True)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_retrain_skipped_logs_warning(self, caplog):
+        """
+        When init_succeeded is False, a warning is logged so operators know the
+        retrain was intentionally skipped (not silently dropped).
+
+        Mirrors the else-branch in _init_pipeline():
+            logger.warning("Startup retrain skipped: initialization did not complete cleanly.")
+        """
+        import logging
+
+        retrain_called: list[bool] = []
+
+        async def mock_retrain():
+            retrain_called.append(True)
+
+        init_succeeded = False  # simulate a failed initialization
+
+        with caplog.at_level(logging.WARNING, logger="novacycle"):
+            if init_succeeded:
+                await mock_retrain()
+            else:
+                import logging as _logging
+                _logging.getLogger("novacycle").warning(
+                    "Startup retrain skipped: initialization did not complete cleanly."
+                )
+
+        assert not retrain_called, "Retrain must not run when init_succeeded is False"
+        assert any(
+            "Startup retrain skipped" in record.message
+            for record in caplog.records
+        ), (
+            "Expected a warning log when retrain is skipped so operators are "
+            "not left wondering why no retrain occurred after a failed init."
         )

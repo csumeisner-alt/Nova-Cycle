@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI):
         # call raises (e.g. get_session_factory, reclassify_session_labels)
         # the except below would swallow the error and return — leaving
         # every scheduled job blocked forever on wait_for_initialized().
+        init_succeeded = False
         try:
             try:
                 session_factory = get_session_factory()
@@ -76,12 +77,20 @@ async def lifespan(app: FastAPI):
                     await session.commit()
                 logger.info("Data ingestion pipeline initialized.")
                 mark_startup_ok()
+                init_succeeded = True
             except Exception as e:
                 logger.warning(f"Data initialization warning (will retry on schedule): {e}")
                 mark_startup_degraded(str(e))
 
             # Startup retrain check: catch up if models are stale (>7 days) or missing.
-            await _run_weekly_retrain()
+            # Skipped when initialization failed — retraining on a partially-ingested
+            # or empty DB could produce a degraded model that gets persisted and served.
+            if init_succeeded:
+                await _run_weekly_retrain()
+            else:
+                logger.warning(
+                    "Startup retrain skipped: initialization did not complete cleanly."
+                )
         finally:
             # Guarantee: release the initialized guard even if an unhandled
             # exception escapes the inner try blocks above (e.g. the session
