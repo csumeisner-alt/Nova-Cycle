@@ -530,7 +530,13 @@ private fun RetrainHistoryRow(entry: com.novacycle.data.remote.models.AccuracyHi
 
 /**
  * Minimal line sparkline of accuracy values (0–1), scaled to the local
- * min/max range with a small pad so a flat trend still renders mid-height.
+ * min/max range with a small pad so a flat trend renders mid-height.
+ *
+ * When all values are identical the raw range is 0. Rather than defaulting
+ * range to 1f and leaving min at the actual value (which places every point
+ * at the bottom edge: pad + 1 * usable = height - pad), we also shift
+ * effectiveMin down by 0.5 so that the normalised position is 0.5 and the
+ * line lands exactly at the vertical centre (pad + 0.5 * usable = height / 2).
  */
 @Composable
 private fun AccuracySparkline(values: List<Float>, modifier: Modifier = Modifier) {
@@ -539,11 +545,15 @@ private fun AccuracySparkline(values: List<Float>, modifier: Modifier = Modifier
         if (values.size < 2) return@Canvas
         val min = values.min()
         val max = values.max()
-        val range = (max - min).takeIf { it > 1e-6f } ?: 1f
+        val rawRange = max - min
+        val range = rawRange.takeIf { it > 1e-6f } ?: 1f
+        // When the trend is flat, shift effectiveMin so normalised position = 0.5
+        // and the line lands at mid-height instead of the bottom edge.
+        val effectiveMin = if (rawRange > 1e-6f) min else min - 0.5f
         val stepX = size.width / (values.size - 1)
         val pad = size.height * 0.1f
         val usable = size.height - 2 * pad
-        fun yFor(v: Float) = pad + (1f - (v - min) / range) * usable
+        fun yFor(v: Float) = pad + (1f - (v - effectiveMin) / range) * usable
         for (i in 0 until values.size - 1) {
             drawLine(
                 color = lineColor,

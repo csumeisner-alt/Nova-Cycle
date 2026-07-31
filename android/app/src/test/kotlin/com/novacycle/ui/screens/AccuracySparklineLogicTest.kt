@@ -10,13 +10,16 @@ import org.junit.Test
  *
  * AccuracySparkline (ReliabilityScreen.kt) computes y-positions with:
  *
- *   val range = (max - min).takeIf { it > 1e-6f } ?: 1f
- *   fun yFor(v: Float) = pad + (1f - (v - min) / range) * usable
+ *   val rawRange = max - min
+ *   val range = rawRange.takeIf { it > 1e-6f } ?: 1f
+ *   // When flat, shift effectiveMin so the line lands at mid-height (not bottom edge).
+ *   val effectiveMin = if (rawRange > 1e-6f) min else min - 0.5f
+ *   fun yFor(v: Float) = pad + (1f - (v - effectiveMin) / range) * usable
  *
  * When all values are identical the raw range is 0f, which would produce
  * NaN offsets (division by zero) without the guard. These tests verify:
  *   1. The guard substitutes 1f for a zero range so yFor() stays finite.
- *   2. A flat trend places all points at the same y (mid-height after padding).
+ *   2. A flat trend places all points at mid-height (pad + 0.5 * usable = height / 2).
  *   3. A normal trend with spread produces finite, bounded y-values.
  *   4. A two-value flat list (minimum list that reaches the drawing loop) is safe.
  *   5. A single-value list never reaches the drawing loop (size < 2 short-circuits).
@@ -36,17 +39,30 @@ class AccuracySparklineLogicTest {
      * Replicates the `yFor` lambda from the composable given explicit layout
      * dimensions. Uses the same pad = height * 0.1 and usable = height - 2*pad
      * so the computed offsets are comparable to what the canvas would draw.
+     * [effectiveMin] is the (possibly shifted) minimum used for normalisation.
      */
-    private fun yFor(v: Float, min: Float, range: Float, height: Float): Float {
+    private fun yFor(v: Float, effectiveMin: Float, range: Float, height: Float): Float {
         val pad = height * 0.1f
         val usable = height - 2f * pad
-        return pad + (1f - (v - min) / range) * usable
+        return pad + (1f - (v - effectiveMin) / range) * usable
+    }
+
+    /**
+     * Replicates the effectiveMin selection from the composable:
+     * when the trend is flat, min is shifted down by 0.5 so the normalised
+     * position is 0.5 and the line lands at mid-height instead of the bottom.
+     */
+    private fun effectiveMin(values: List<Float>): Float {
+        val min = values.min()
+        val max = values.max()
+        val rawRange = max - min
+        return if (rawRange > 1e-6f) min else min - 0.5f
     }
 
     private fun yPositions(values: List<Float>, height: Float = 36f): List<Float> {
-        val min = values.min()
+        val effMin = effectiveMin(values)
         val range = safeRange(values)
-        return values.map { yFor(it, min, range, height) }
+        return values.map { yFor(it, effMin, range, height) }
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
@@ -72,6 +88,53 @@ class AccuracySparklineLogicTest {
     }
 
     @Test
+    fun `flat trend y-position lands at mid-height not at the bottom edge`() {
+        // With range = 0, the composable shifts effectiveMin by -0.5 so that
+        // the normalised position of every point is 0.5. The expected y is:
+        //   pad + (1 - 0.5) * usable  =  pad + usable/2  =  height/2
+        val height = 36f
+        val values = listOf(0.70f, 0.70f, 0.70f)
+        val ys = yPositions(values, height)
+        val midHeight = height / 2f
+        ys.forEach { y ->
+            assertEquals(
+                "flat trend must land at mid-height (height/2), not at the bottom edge (height - pad)",
+                midHeight, y, 1e-4f
+            )
+        }
+        // Guard: bottom edge would be height - height*0.1 = height*0.9; confirm we are NOT there.
+        val bottomEdge = height - height * 0.1f
+        ys.forEach { y ->
+            assertTrue(
+                "flat trend must not render at the bottom edge ($bottomEdge); got $y",
+                kotlin.math.abs(y - bottomEdge) > 1f
+            )
+        }
+    }
+
+    @Test
+    fun `flat trend at 0 percent accuracy also lands at mid-height`() {
+        val height = 36f
+        val values = listOf(0f, 0f, 0f)
+        val ys = yPositions(values, height)
+        val midHeight = height / 2f
+        ys.forEach { y ->
+            assertEquals("0% flat trend must land at mid-height", midHeight, y, 1e-4f)
+        }
+    }
+
+    @Test
+    fun `flat trend at 100 percent accuracy also lands at mid-height`() {
+        val height = 36f
+        val values = listOf(1f, 1f, 1f)
+        val ys = yPositions(values, height)
+        val midHeight = height / 2f
+        ys.forEach { y ->
+            assertEquals("100% flat trend must land at mid-height", midHeight, y, 1e-4f)
+        }
+    }
+
+    @Test
     fun `two-value flat list is safe and produces two identical y-positions`() {
         // Minimum list size that reaches the drawing loop (size >= 2).
         val values = listOf(0.60f, 0.60f)
@@ -92,7 +155,8 @@ class AccuracySparklineLogicTest {
         val range = safeRange(values)
         assertEquals("range guard must produce 1f for a single-value list", 1f, range, 1e-7f)
         // Verify yFor is also finite, even though the composable never calls it here.
-        val y = yFor(values[0], values.min(), range, 36f)
+        val effMin = effectiveMin(values)
+        val y = yFor(values[0], effMin, range, 36f)
         assertTrue("yFor must be finite for a single-value list", y.isFinite())
     }
 
