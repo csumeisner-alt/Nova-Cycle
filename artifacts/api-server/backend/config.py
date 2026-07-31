@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # jump in a single bar is characteristic of a vendor data glitch.
     SPIKE_CLOSE_THRESHOLD: float = 0.10  # 10 % deviation from rolling median
 
+    # When this many cross-bar spike quarantines accumulate within a single
+    # trading session (in-memory counter, reset each trading day) a WARN-level
+    # structured log is emitted so operators know about a possible systematic
+    # feed problem (broken source or unapplied split/adjustment).
+    SPIKE_QUARANTINE_ALERT_COUNT: int = 3
+
     # ── Data history ──────────────────────────────────────────────────────────
     HISTORY_YEARS: int = 10
 

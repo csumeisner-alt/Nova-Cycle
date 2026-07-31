@@ -24,9 +24,77 @@ own; callers decide what to do with the quarantined rows.
 
 from __future__ import annotations
 
+import logging
+from datetime import date
 from typing import Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+
+# ── Per-session spike-quarantine counter ──────────────────────────────────────
+
+class _SpikeQuarantineTracker:
+    """
+    In-memory counter of cross-bar spike quarantines within the current trading
+    session.  The counter resets automatically when the calendar date changes
+    (i.e. at the start of each new trading day).
+
+    When the cumulative count reaches or exceeds
+    ``settings.SPIKE_QUARANTINE_ALERT_COUNT`` a WARN-level structured log is
+    emitted so operators can investigate a possible systematic feed problem.
+    The alert is emitted on *every* quarantine once the threshold is reached,
+    so a runaway feed does not produce just one warning and then go silent.
+    """
+
+    def __init__(self) -> None:
+        self._session_date: Optional[date] = None
+        self._count: int = 0
+
+    # Exposed for tests only — do not use in production code.
+    def _reset(self) -> None:
+        self._session_date = None
+        self._count = 0
+
+    def record(self, n_spikes: int) -> None:
+        """
+        Register *n_spikes* new cross-bar spike quarantines.
+
+        Emits a WARNING when the running session total reaches or exceeds the
+        configured alert threshold.  Silently returns when *n_spikes* is 0.
+        """
+        if n_spikes <= 0:
+            return
+
+        today = date.today()
+        if self._session_date != today:
+            # New trading day — start fresh.
+            self._session_date = today
+            self._count = 0
+
+        self._count += n_spikes
+
+        from config import settings  # local import to avoid circular deps
+        threshold = settings.SPIKE_QUARANTINE_ALERT_COUNT
+
+        if self._count >= threshold:
+            logger.warning(
+                "spike_quarantine_alert: %d cross-bar spike quarantines in "
+                "the current trading session (threshold=%d). "
+                "Possible systematic feed problem — check data source.",
+                self._count,
+                threshold,
+                extra={
+                    "event": "spike_quarantine_alert",
+                    "session_spike_quarantine_count": self._count,
+                    "alert_threshold": threshold,
+                },
+            )
+
+
+# Module-level singleton — reset at process startup; lives for the process lifetime.
+_spike_tracker = _SpikeQuarantineTracker()
 
 
 # ── Single-row check ─────────────────────────────────────────────────────────
@@ -234,11 +302,17 @@ def filter_valid_ohlc(
     # Run on the full frame so the rolling window sees all neighbours, then
     # merge results with the intra-bar mask.
     spike_flags = flag_cross_bar_spikes(df, threshold=spike_threshold)
+    n_new_spikes = 0
     for i, (already_bad, is_spike) in enumerate(zip(bad_mask, spike_flags)):
         if is_spike and not already_bad:
             bad_mask[i] = True
             close_val = float(df.iloc[i]["close"])
             reasons[i] = f"cross_bar_spike (close={close_val:.4f})"
+            n_new_spikes += 1
+
+    # Notify the session tracker so operators are alerted when quarantines
+    # accumulate within a single trading day (possible systematic feed issue).
+    _spike_tracker.record(n_new_spikes)
 
     if not any(bad_mask):
         return df, pd.DataFrame(columns=list(df.columns) + ["ohlc_invalid_reason"])
