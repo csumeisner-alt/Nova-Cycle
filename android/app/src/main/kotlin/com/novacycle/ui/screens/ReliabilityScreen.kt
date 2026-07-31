@@ -365,6 +365,121 @@ private fun ModelPerformancePanel(uiState: ReliabilityUiState) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            Spacer(Modifier.height(12.dp))
+
+            RetrainAccuracyTrendSection(
+                trend = uiState.accuracyTrend,
+                latest = uiState.latestRetrainAccuracy,
+                delta = uiState.retrainAccuracyDelta
+            )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Retrain accuracy trend
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compact per-retrain accuracy trend: a sparkline of out-of-sample accuracy
+ * across retrains plus a "latest vs previous" delta summary. Entries with null
+ * accuracy are already skipped upstream in [ReliabilityUiState.accuracyTrend].
+ */
+@Composable
+private fun RetrainAccuracyTrendSection(
+    trend: List<com.novacycle.data.remote.models.AccuracyHistoryEntry>,
+    latest: Float?,
+    delta: Float?
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                text = "Retrain Accuracy Trend",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(8.dp))
+
+            if (latest == null) {
+                Text(
+                    text = "No retrain accuracy history yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "${(latest * 100).format1f()}%",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Latest retrain",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (delta != null) {
+                        val deltaColor = when {
+                            delta > 0f -> NovaBuyGreen
+                            delta < 0f -> NovaSellRed
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                        val prefix = if (delta >= 0f) "+" else "−"
+                        Text(
+                            text = "$prefix${(kotlin.math.abs(delta) * 100).format1f()} pts vs previous",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = deltaColor,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (trend.size >= 2) {
+                        AccuracySparkline(
+                            values = trend.mapNotNull { it.accuracy },
+                            modifier = Modifier
+                                .width(120.dp)
+                                .height(36.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Minimal line sparkline of accuracy values (0–1), scaled to the local
+ * min/max range with a small pad so a flat trend still renders mid-height.
+ */
+@Composable
+private fun AccuracySparkline(values: List<Float>, modifier: Modifier = Modifier) {
+    val lineColor = MaterialTheme.colorScheme.primary
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        if (values.size < 2) return@Canvas
+        val min = values.min()
+        val max = values.max()
+        val range = (max - min).takeIf { it > 1e-6f } ?: 1f
+        val stepX = size.width / (values.size - 1)
+        val pad = size.height * 0.1f
+        val usable = size.height - 2 * pad
+        fun yFor(v: Float) = pad + (1f - (v - min) / range) * usable
+        for (i in 0 until values.size - 1) {
+            drawLine(
+                color = lineColor,
+                start = androidx.compose.ui.geometry.Offset(i * stepX, yFor(values[i])),
+                end = androidx.compose.ui.geometry.Offset((i + 1) * stepX, yFor(values[i + 1])),
+                strokeWidth = 2.dp.toPx()
+            )
         }
     }
 }

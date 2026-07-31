@@ -1,6 +1,7 @@
 package com.novacycle.viewmodel
 
 import androidx.lifecycle.viewModelScope
+import com.novacycle.data.remote.models.AccuracyHistoryEntry
 import com.novacycle.data.remote.models.CalibrationPoint
 import com.novacycle.data.remote.models.ConfidenceBucket
 import com.novacycle.data.remote.models.ModelPerformanceResponse
@@ -298,6 +299,61 @@ class ReliabilityViewModelTest {
         vmTest(repo) { viewModel ->
             // avg of 0.75 and 0.85 == 0.80
             assertEquals(0.80f, viewModel.uiState.value.highConfidenceClaim, 0.0001f)
+        }
+    }
+
+    // ── Retrain accuracy trend ──────────────────────────────────────────────
+
+    @Test
+    fun `accuracy trend skips null-accuracy entries`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "m1", trainedAt = "2026-07-01T00:00:00", accuracy = 0.55f),
+                AccuracyHistoryEntry(modelName = "m2", trainedAt = "2026-07-08T00:00:00", accuracy = null),
+                AccuracyHistoryEntry(modelName = "m3", trainedAt = "2026-07-15T00:00:00", accuracy = 0.62f),
+                AccuracyHistoryEntry(modelName = "m4", trainedAt = null, accuracy = null)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val state = viewModel.uiState.value
+            assertEquals(listOf("m1", "m3"), state.accuracyTrend.map { it.modelName })
+            assertEquals(0.62f, state.latestRetrainAccuracy)
+            // delta computed across non-null entries only: 0.62 - 0.55
+            assertEquals(0.07f, state.retrainAccuracyDelta!!, 0.0001f)
+        }
+    }
+
+    @Test
+    fun `all-null accuracy history yields empty trend and no delta`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "m1", accuracy = null),
+                AccuracyHistoryEntry(modelName = "m2", accuracy = null)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val state = viewModel.uiState.value
+            assertTrue(state.accuracyTrend.isEmpty())
+            assertNull(state.latestRetrainAccuracy)
+            assertNull(state.retrainAccuracyDelta)
+        }
+    }
+
+    @Test
+    fun `single usable retrain has latest accuracy but no delta`() {
+        val perf = ModelPerformanceResponse(
+            accuracyHistory = listOf(
+                AccuracyHistoryEntry(modelName = "m1", accuracy = null),
+                AccuracyHistoryEntry(modelName = "m2", accuracy = 0.58f)
+            )
+        )
+        val repo = FakeRepo(history(emptyList()), perf)
+        vmTest(repo) { viewModel ->
+            val state = viewModel.uiState.value
+            assertEquals(0.58f, state.latestRetrainAccuracy)
+            assertNull(state.retrainAccuracyDelta)
         }
     }
 

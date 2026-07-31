@@ -2,6 +2,7 @@ package com.novacycle.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novacycle.data.remote.models.AccuracyHistoryEntry
 import com.novacycle.data.remote.models.ModelPerformanceResponse
 import com.novacycle.data.remote.models.ReliabilityMetricsResponse
 import com.novacycle.data.remote.models.TradeCycleResponse
@@ -107,6 +108,31 @@ data class ReliabilityUiState(
             } else {
                 0.85f
             }
+        }
+
+    // ── Retrain accuracy trend ──
+
+    /**
+     * Per-retrain out-of-sample accuracy entries in chronological order,
+     * with entries missing an accuracy value skipped (retrains that failed
+     * or never produced an OOS score report null accuracy).
+     */
+    val accuracyTrend: List<AccuracyHistoryEntry>
+        get() = performance?.accuracyHistory.orEmpty().filter { it.accuracy != null }
+
+    /** Accuracy of the most recent retrain (0–1), or null if none available. */
+    val latestRetrainAccuracy: Float?
+        get() = accuracyTrend.lastOrNull()?.accuracy
+
+    /**
+     * Change vs the previous retrain (latest − previous), or null when fewer
+     * than two retrains have a usable accuracy.
+     */
+    val retrainAccuracyDelta: Float?
+        get() {
+            val values = accuracyTrend.mapNotNull { it.accuracy }
+            if (values.size < 2) return null
+            return values[values.size - 1] - values[values.size - 2]
         }
 }
 
