@@ -68,3 +68,7 @@ pyproject.toml
 # Unused lock / config files
 package-lock.json
 attached_assets
+
+# Transient ML runtime state (model reports/calibration written at train time)
+artifacts/api-server/backend/ml/models/*.json
+artifacts/api-server/backend/ml/models/*.json.bak
