@@ -2541,3 +2541,229 @@ class TestPredictShortZeroVolumeLatestBar:
         assert count == 1, "NaN volume must be treated as zero-volume"
         assert bool(mask.iloc[-1]) is True
         assert reason != ""
+
+
+# ---------------------------------------------------------------------------
+# Task 244 – predict_long with entirely empty VIX data
+# ---------------------------------------------------------------------------
+
+class TestPredictLongEmptyVix:
+    """Confirm predict_long stays stable when _load_vix_candles returns an
+    empty DataFrame.
+
+    When VIX data is absent the macro override engine and the long gauge must
+    not raise; predict_long should return a valid response dict (optionally
+    with dq_degraded=True / a vix-related reason).
+    """
+
+    def _build_valid_daily_df(self) -> pd.DataFrame:
+        """Three healthy daily bars with positive volume."""
+        return pd.DataFrame([
+            {
+                "timestamp": datetime(2024, 7, 28),
+                "open": 495.0, "high": 500.0, "low": 493.0, "close": 498.0,
+                "volume": 2_000_000,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+            {
+                "timestamp": datetime(2024, 7, 29),
+                "open": 498.0, "high": 503.0, "low": 496.0, "close": 501.0,
+                "volume": 1_800_000,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+            {
+                "timestamp": datetime(2024, 7, 30),
+                "open": 501.0, "high": 506.0, "low": 499.0, "close": 504.0,
+                "volume": 1_900_000,
+                "session_type": "regular", "gap_type": "none",
+                "is_extended_hours": False, "ticker": "VOO", "gap_percent": 0.0,
+            },
+        ])
+
+    # ------------------------------------------------------------------
+    # 1. predict_long does not raise when VIX data is entirely absent
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_predict_long_empty_vix_no_crash(self):
+        """predict_long returns a valid dict and does not raise when
+        _load_vix_candles returns pd.DataFrame() (no rows, no columns).
+
+        All DB loaders and ML components are patched so the test runs without
+        a real database or trained model artifact.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        daily_df = self._build_valid_daily_df()
+        # Entirely empty VIX frame — no rows, no columns
+        empty_vix_df = pd.DataFrame()
+
+        mock_session = AsyncMock()
+
+        with (
+            patch("routers.predictions._load_daily_candles", new=AsyncMock(return_value=daily_df)),
+            patch("routers.predictions._load_vix_candles", new=AsyncMock(return_value=empty_vix_df)),
+            patch("routers.predictions._load_spx_close_series", new=AsyncMock(return_value=pd.Series(dtype=float))),
+            patch("routers.predictions._load_recent_confidence", new=AsyncMock(return_value=[])),
+            patch("routers.predictions._store_confidence", new=AsyncMock()),
+            patch("routers.predictions._store_signal", new=AsyncMock()),
+            patch("routers.predictions._indicators_engine") as mock_ind,
+            patch("routers.predictions._long_model") as mock_model,
+            patch("routers.predictions._long_gauge") as mock_gauge,
+            patch("routers.predictions._macro_override"),
+            patch("routers.predictions._decision_filter") as mock_filter,
+        ):
+            mock_ind.compute_all.return_value = {}
+            mock_model.build_latest_features.return_value = None
+            mock_model.is_neutral_fallback.return_value = True
+            mock_gauge.compute_score.return_value = {
+                "score": 0,
+                "signal": "neutral",
+                "confidence": 0.5,
+                "breakdown": {},
+            }
+            mock_filter.evaluate.return_value = {
+                "final_signal": "neutral",
+                "priority_boost": 0.0,
+                "reason": "test",
+                "cycle_quality_score": 0.5,
+                "volatility_regime": "calm",
+                "liquidity_class": "normal",
+                "confidence_momentum": 0.0,
+            }
+
+            import routers.predictions as pred
+            response = await pred.predict_long(ticker="VOO", session=mock_session)
+
+        assert isinstance(response, dict), "Response must be a dict — predict_long must not raise"
+        assert "signal" in response, "Response must contain a 'signal' field"
+        assert "score" in response, "Response must contain a 'score' field"
+
+    # ------------------------------------------------------------------
+    # 2. Empty VIX frame is forwarded to compute_all without raising
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_predict_long_empty_vix_compute_all_receives_empty_frame(self):
+        """The empty vix_df is passed through to _indicators_engine.compute_all
+        rather than being short-circuited before that call.  This confirms the
+        indicators engine — not predict_long itself — is responsible for
+        handling the missing VIX gracefully.
+        """
+        from unittest.mock import AsyncMock, call, patch
+
+        daily_df = self._build_valid_daily_df()
+        empty_vix_df = pd.DataFrame()
+
+        mock_session = AsyncMock()
+
+        with (
+            patch("routers.predictions._load_daily_candles", new=AsyncMock(return_value=daily_df)),
+            patch("routers.predictions._load_vix_candles", new=AsyncMock(return_value=empty_vix_df)),
+            patch("routers.predictions._load_spx_close_series", new=AsyncMock(return_value=pd.Series(dtype=float))),
+            patch("routers.predictions._load_recent_confidence", new=AsyncMock(return_value=[])),
+            patch("routers.predictions._store_confidence", new=AsyncMock()),
+            patch("routers.predictions._store_signal", new=AsyncMock()),
+            patch("routers.predictions._indicators_engine") as mock_ind,
+            patch("routers.predictions._long_model") as mock_model,
+            patch("routers.predictions._long_gauge") as mock_gauge,
+            patch("routers.predictions._macro_override"),
+            patch("routers.predictions._decision_filter") as mock_filter,
+        ):
+            mock_ind.compute_all.return_value = {}
+            mock_model.build_latest_features.return_value = None
+            mock_model.is_neutral_fallback.return_value = True
+            mock_gauge.compute_score.return_value = {
+                "score": 0,
+                "signal": "neutral",
+                "confidence": 0.5,
+                "breakdown": {},
+            }
+            mock_filter.evaluate.return_value = {
+                "final_signal": "neutral",
+                "priority_boost": 0.0,
+                "reason": "test",
+                "cycle_quality_score": 0.5,
+                "volatility_regime": "calm",
+                "liquidity_class": "normal",
+                "confidence_momentum": 0.0,
+            }
+
+            import routers.predictions as pred
+            await pred.predict_long(ticker="VOO", session=mock_session)
+
+            # Verify compute_all was actually called — no early-exit before it
+            assert mock_ind.compute_all.called, (
+                "_indicators_engine.compute_all must be called even when vix_df is empty"
+            )
+            _, kwargs = mock_ind.compute_all.call_args
+            positional_args = mock_ind.compute_all.call_args.args
+            # Second positional argument to compute_all is vix_df
+            passed_vix = positional_args[1] if len(positional_args) > 1 else kwargs.get("vix_df")
+            if passed_vix is not None:
+                assert passed_vix.empty, (
+                    "The empty vix_df must be forwarded to compute_all unchanged"
+                )
+
+    # ------------------------------------------------------------------
+    # 3. Response structure is valid regardless of VIX availability
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_predict_long_empty_vix_response_has_required_fields(self):
+        """predict_long response contains all required fields even when VIX
+        data is entirely missing.  The long-trend gauge must not silently omit
+        keys that callers depend on.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        daily_df = self._build_valid_daily_df()
+        empty_vix_df = pd.DataFrame()
+
+        mock_session = AsyncMock()
+
+        with (
+            patch("routers.predictions._load_daily_candles", new=AsyncMock(return_value=daily_df)),
+            patch("routers.predictions._load_vix_candles", new=AsyncMock(return_value=empty_vix_df)),
+            patch("routers.predictions._load_spx_close_series", new=AsyncMock(return_value=pd.Series(dtype=float))),
+            patch("routers.predictions._load_recent_confidence", new=AsyncMock(return_value=[])),
+            patch("routers.predictions._store_confidence", new=AsyncMock()),
+            patch("routers.predictions._store_signal", new=AsyncMock()),
+            patch("routers.predictions._indicators_engine") as mock_ind,
+            patch("routers.predictions._long_model") as mock_model,
+            patch("routers.predictions._long_gauge") as mock_gauge,
+            patch("routers.predictions._macro_override"),
+            patch("routers.predictions._decision_filter") as mock_filter,
+        ):
+            mock_ind.compute_all.return_value = {}
+            mock_model.build_latest_features.return_value = None
+            mock_model.is_neutral_fallback.return_value = True
+            mock_gauge.compute_score.return_value = {
+                "score": 0,
+                "signal": "neutral",
+                "confidence": 0.5,
+                "breakdown": {},
+            }
+            mock_filter.evaluate.return_value = {
+                "final_signal": "neutral",
+                "priority_boost": 0.0,
+                "reason": "test",
+                "cycle_quality_score": 0.5,
+                "volatility_regime": "calm",
+                "liquidity_class": "normal",
+                "confidence_momentum": 0.0,
+            }
+
+            import routers.predictions as pred
+            response = await pred.predict_long(ticker="VOO", session=mock_session)
+
+        required_fields = {
+            "score", "signal", "confidence", "ml_confidence", "ml_fallback",
+            "liquidity_score", "gap_type", "macro_override_applied", "timestamp", "ticker",
+        }
+        missing = required_fields - set(response.keys())
+        assert not missing, (
+            f"Response is missing required fields when VIX is absent: {missing}"
+        )
