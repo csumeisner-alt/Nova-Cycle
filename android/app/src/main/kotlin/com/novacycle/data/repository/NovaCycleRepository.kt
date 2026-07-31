@@ -185,6 +185,11 @@ open class NovaCycleRepository @Inject constructor(
         }
     }
 
+    suspend fun getPriceSnapshot(
+        ticker: String = "VOO"
+    ): Result<PriceSnapshotResponse> =
+        runCatching { apiService.getPriceSnapshot(ticker).recordDataFreshness() }
+
     suspend fun getIndicators(ticker: String = "VOO"): Result<IndicatorResponse> =
         runCatching { apiService.getIndicators(ticker).recordDataFreshness() }
 

@@ -7,6 +7,7 @@ GET /api/voo_candles?ticker=VOO&window=30d&timeframe=daily
 GET /api/vix_candles?ticker=VOO&window=30d
 GET /api/indicators?ticker=VOO
 GET /api/gap_status?ticker=VOO
+GET /api/price_snapshot?ticker=VOO
 """
 
 import logging
@@ -110,6 +111,53 @@ def _candle_to_dict(r: VooCandle) -> dict:
         "gap_percent": r.gap_percent,
         "gap_type": r.gap_type,
     }
+
+
+def _valid_ohlc_candle(row: VooCandle) -> bool:
+    """Return whether a stored candle has internally consistent OHLC values.
+
+    Ingestion normally removes these rows already, but keeping the endpoint
+    defensive prevents a malformed tail row from being shown as a price.
+    """
+    values = (row.open, row.high, row.low, row.close)
+    if any(value is None or float(value) <= 0 for value in values):
+        return False
+    if row.high < max(row.open, row.close) or row.low > min(row.open, row.close):
+        return False
+    return True
+
+
+def _usable_price_candle(row: VooCandle) -> bool:
+    """Return whether a candle is a reliable current market-price source."""
+    return _valid_ohlc_candle(row) and (
+        row.volume is None or float(row.volume) > 0
+    )
+
+
+def _price_point(row: Optional[VooCandle]) -> Optional[dict]:
+    if row is None:
+        return None
+    return {
+        "price": float(row.close),
+        "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+    }
+
+
+async def _latest_usable_candle(
+    db: AsyncSession, timeframe: str, *, require_positive_volume: bool = True
+) -> Optional[VooCandle]:
+    """Find the newest candle matching the requested input-price rules."""
+    result = await db.execute(
+        select(VooCandle)
+        .where(
+            VooCandle.ticker == settings.TICKER,
+            VooCandle.timeframe == timeframe,
+        )
+        .order_by(VooCandle.timestamp.desc())
+        .limit(500)
+    )
+    predicate = _usable_price_candle if require_positive_volume else _valid_ohlc_candle
+    return next((row for row in result.scalars().all() if predicate(row)), None)
 
 
 def _vix_to_dict(r: VixCandle) -> dict:
@@ -308,6 +356,44 @@ async def get_voo_candles(
         raise
     except Exception as exc:
         logger.error("get_voo_candles error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/price_snapshot")
+async def get_price_snapshot(
+    ticker: str = Query(default="VOO"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the current price and the exact prices used by each model.
+
+    The long model uses the latest valid daily close. The short model uses
+    the latest OHLC-valid 5-minute close, including a zero-volume bar because
+    the prediction endpoint keeps that bar for feature computation.
+    ``current_price`` uses the freshest positive-volume price instead.
+    """
+    _validate_ticker(ticker)
+    try:
+        daily = await _latest_usable_candle(db, "daily")
+        five_min_model = await _latest_usable_candle(
+            db, "5min", require_positive_volume=False
+        )
+        five_min_current = await _latest_usable_candle(db, "5min")
+        current = five_min_current or daily
+        return {
+            "ticker": ticker.upper(),
+            "current_price": _price_point(current)["price"] if current else None,
+            "current_timestamp": _price_point(current)["timestamp"] if current else None,
+            "long_model_price": _price_point(daily)["price"] if daily else None,
+            "long_model_timestamp": _price_point(daily)["timestamp"] if daily else None,
+            "short_model_price": (
+                _price_point(five_min_model)["price"] if five_min_model else None
+            ),
+            "short_model_timestamp": (
+                _price_point(five_min_model)["timestamp"] if five_min_model else None
+            ),
+        }
+    except Exception as exc:
+        logger.error("get_price_snapshot error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

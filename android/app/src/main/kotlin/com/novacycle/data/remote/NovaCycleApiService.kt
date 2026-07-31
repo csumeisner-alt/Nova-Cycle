@@ -57,6 +57,12 @@ interface NovaCycleApiService {
         @Query("timeframe") timeframe: String = "daily"
     ): List<CandleResponse>
 
+    /** Current VOO price plus the daily and 5-minute model input prices. */
+    @GET("price_snapshot")
+    suspend fun getPriceSnapshot(
+        @Query("ticker") ticker: String = "VOO"
+    ): PriceSnapshotResponse
+
     /** Retrieve current technical indicator snapshot */
     @GET("indicators")
     suspend fun getIndicators(

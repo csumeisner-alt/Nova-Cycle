@@ -21,9 +21,13 @@ import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.domain.model.SignalData
 import com.novacycle.domain.usecase.ApplyFilteredSignalsUseCase
 import com.novacycle.ui.components.ConfidenceRibbon
+import com.novacycle.ui.components.ChartPriceSummary
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
 import com.novacycle.ui.components.UpdatedAgoLabel
+import com.novacycle.ui.components.chartPriceBounds
+import com.novacycle.ui.components.chartPriceToY
+import com.novacycle.ui.components.drawPriceReferenceLines
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.FilteredChartViewModel
 import com.novacycle.viewmodel.SettingsViewModel
@@ -68,6 +72,11 @@ fun FilteredChartScreen(
         if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (uiState.error != null) Text("⚠️ ${uiState.error}", color = NovaSellRed, modifier = Modifier.padding(12.dp))
 
+        ChartPriceSummary(
+            snapshot = uiState.priceSnapshot,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        )
+
         if (uiState.filteredSignals.isNotEmpty()) {
             Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("▲ ${uiState.filteredSignals.count { it.isBuy }} BUY", color = NovaBuyGreen, style = MaterialTheme.typography.bodyMedium)
@@ -79,6 +88,7 @@ fun FilteredChartScreen(
         if (uiState.candles.isNotEmpty()) {
             FilteredCandlestickChart(
                 candles = uiState.candles, signals = uiState.filteredSignals, cycles = uiState.tradeCycles,
+                priceSnapshot = uiState.priceSnapshot,
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 onSignalTapped = { selectedSignal = it }
             )
@@ -103,6 +113,7 @@ private fun FilteredCandlestickChart(
     candles: List<CandleResponse>,
     signals: List<SignalData>,
     cycles: List<ApplyFilteredSignalsUseCase.TradeCycle>,
+    priceSnapshot: com.novacycle.data.remote.models.PriceSnapshotResponse? = null,
     modifier: Modifier = Modifier,
     onSignalTapped: (SignalData) -> Unit = {}
 ) {
@@ -113,8 +124,12 @@ private fun FilteredCandlestickChart(
         offsetX = (offsetX + pan.x).coerceIn(-8000f, 0f)
     }
 
-    val priceMin   = candles.minOf { it.low }
-    val priceMax   = candles.maxOf { it.high }
+    val (priceMin, boundedPriceMax) = chartPriceBounds(
+        candles.minOf { it.low },
+        candles.maxOf { it.high },
+        priceSnapshot
+    )
+    val priceMax   = boundedPriceMax
     val priceRange = (priceMax - priceMin).coerceAtLeast(0.01f)
     val tsToIdx    = candles.mapIndexed { i, c -> c.timestamp to i }.toMap()
     val sigByTs    = signals.associateBy { it.timestamp }
@@ -127,6 +142,9 @@ private fun FilteredCandlestickChart(
 
             // Vertical session separators (shared with RawChartScreen)
             drawSessionSeparators(candles, barWidth, offsetX, padding)
+            priceSnapshot?.let {
+                drawPriceReferenceLines(it, priceMin, priceRange, size.height, padding)
+            }
 
             // Index ranges covered by completed BUY→SELL cycles, so candles
             // inside a cycle can carry a subtle trend tint.
@@ -191,4 +209,4 @@ private fun DrawScope.drawFilledTriangle(isBuy: Boolean, cx: Float, cy: Float, s
 }
 
 private fun priceToY(price: Float, priceMin: Float, priceRange: Float, h: Float, padding: Float): Float =
-    h - padding - ((price - priceMin) / priceRange) * (h - padding * 2)
+    chartPriceToY(price, priceMin, priceRange, h, padding)

@@ -24,6 +24,10 @@ import com.novacycle.domain.model.SignalData
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
 import com.novacycle.ui.components.UpdatedAgoLabel
+import com.novacycle.ui.components.ChartPriceSummary
+import com.novacycle.ui.components.chartPriceBounds
+import com.novacycle.ui.components.chartPriceToY
+import com.novacycle.ui.components.drawPriceReferenceLines
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.RawChartViewModel
 import com.novacycle.viewmodel.SettingsViewModel
@@ -98,11 +102,17 @@ fun RawChartScreen(
                 style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp))
         }
 
+        ChartPriceSummary(
+            snapshot = uiState.priceSnapshot,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        )
+
         // Chart
         if (uiState.candles.isNotEmpty()) {
             CandlestickChart(
                 candles = uiState.candles,
                 signals = uiState.signals,
+                priceSnapshot = uiState.priceSnapshot,
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 onSignalTapped = { selectedSignal = it }
             )
@@ -135,6 +145,7 @@ fun RawChartScreen(
 fun CandlestickChart(
     candles: List<CandleResponse>,
     signals: List<SignalData>,
+    priceSnapshot: com.novacycle.data.remote.models.PriceSnapshotResponse? = null,
     modifier: Modifier = Modifier,
     onSignalTapped: (SignalData) -> Unit = {}
 ) {
@@ -148,8 +159,12 @@ fun CandlestickChart(
         offsetX = (offsetX + panChange.x).coerceIn(-8000f, 0f)
     }
 
-    val priceMin   = candles.minOf { it.low }
-    val priceMax   = candles.maxOf { it.high }
+    val (priceMin, boundedPriceMax) = chartPriceBounds(
+        candles.minOf { it.low },
+        candles.maxOf { it.high },
+        priceSnapshot
+    )
+    val priceMax   = boundedPriceMax
     val priceRange = (priceMax - priceMin).coerceAtLeast(0.01f)
 
     Box(modifier = modifier.transformable(state = transformableState)) {
@@ -164,6 +179,9 @@ fun CandlestickChart(
             // Vertical session separators at every session-type transition
             // (pre-market → regular → after-hours), drawn behind the candles.
             drawSessionSeparators(candles, barWidth, offsetX, padding)
+            priceSnapshot?.let {
+                drawPriceReferenceLines(it, priceMin, priceRange, size.height, padding)
+            }
 
             candles.forEachIndexed { index, candle ->
                 val x = index * barWidth + offsetX + padding
@@ -280,10 +298,8 @@ private fun DrawScope.drawDiamond(center: Offset, size: Float, color: Color) {
     drawPath(path, color)
 }
 
-private fun priceToY(price: Float, priceMin: Float, priceRange: Float, chartHeight: Float, padding: Float): Float {
-    val usableH = chartHeight - padding * 2
-    return chartHeight - padding - ((price - priceMin) / priceRange) * usableH
-}
+private fun priceToY(price: Float, priceMin: Float, priceRange: Float, chartHeight: Float, padding: Float): Float =
+    chartPriceToY(price, priceMin, priceRange, chartHeight, padding)
 
 @Composable
 private fun ChartLegend(modifier: Modifier = Modifier) {

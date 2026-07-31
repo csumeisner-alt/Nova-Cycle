@@ -3,8 +3,12 @@ GET /api/extended_hours) and the notification reliability gate."""
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from datetime import datetime, timedelta
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from main import app
+from database.db import get_db
+from database.models import Base, VooCandle
 
 
 def _client():
@@ -12,6 +16,60 @@ def _client():
         transport=ASGITransport(app=app, raise_app_exceptions=False),
         base_url="http://test",
     )
+
+
+@pytest.mark.asyncio
+async def test_price_snapshot_separates_current_and_model_input_prices(tmp_path):
+    """The chart contract exposes the freshest price and both model inputs."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'price_snapshot.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    base = datetime(2026, 7, 31, 17, 0)
+    async with factory() as session:
+        session.add_all([
+            VooCandle(
+                ticker="VOO", timeframe="daily", timestamp=base,
+                open=100, high=103, low=99, close=102, volume=1000,
+                is_extended_hours=False, session_type="regular",
+            ),
+            VooCandle(
+                ticker="VOO", timeframe="5min", timestamp=base + timedelta(minutes=5),
+                open=104, high=105, low=103, close=104.5, volume=100,
+                is_extended_hours=False, session_type="regular",
+            ),
+        # The current price ignores a zero-volume glitch, but the short model
+        # input must match predict_short, which keeps that bar for features.
+            VooCandle(
+                ticker="VOO", timeframe="5min", timestamp=base + timedelta(minutes=10),
+                open=106, high=106, low=106, close=106, volume=0,
+                is_extended_hours=False, session_type="regular",
+            ),
+        ])
+        await session.commit()
+
+    async def override_db():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        async with _client() as client:
+            response = await client.get("/api/price_snapshot", params={"ticker": "VOO"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["current_price"] == 104.5
+        assert body["short_model_price"] == 106.0
+        assert body["long_model_price"] == 102.0
+        assert body["short_model_timestamp"] == "2026-07-31T17:10:00"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        await engine.dispose()
 
 
 # ── /api/macro_safety ────────────────────────────────────────────────────────

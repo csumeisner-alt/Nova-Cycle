@@ -3,6 +3,7 @@ package com.novacycle.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novacycle.data.remote.models.CandleResponse
+import com.novacycle.data.remote.models.PriceSnapshotResponse
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.SignalData
@@ -19,6 +20,7 @@ import javax.inject.Inject
 data class RawChartUiState(
     val candles: List<CandleResponse> = emptyList(),
     val signals: List<SignalData> = emptyList(),
+    val priceSnapshot: PriceSnapshotResponse? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
     val selectedWindow: String = "30d",
@@ -56,18 +58,20 @@ class RawChartViewModel @Inject constructor(
             val signalsDeferred = async {
                 getSignalsUseCase(ticker, window, currentSettings)
             }
+            val priceSnapshotDeferred = async { repository.getPriceSnapshot(ticker) }
 
             val candlesResult = candlesDeferred.await()
             val signalsResult = signalsDeferred.await()
+            val priceSnapshotResult = priceSnapshotDeferred.await()
 
-            // Freshness is reported to the shared DataFreshnessTracker by the
-            // repository on remote success; here we only track this screen's label.
-            val anySuccess = candlesResult.isSuccess || signalsResult.isSuccess
+            val anySuccess = candlesResult.isSuccess || signalsResult.isSuccess ||
+                priceSnapshotResult.isSuccess
 
             _uiState.update { state ->
                 state.copy(
                     candles = candlesResult.getOrDefault(state.candles),
                     signals = signalsResult.getOrDefault(state.signals),
+                    priceSnapshot = priceSnapshotResult.getOrNull() ?: state.priceSnapshot,
                     lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()
                                           else state.lastUpdatedAtMillis,
                     isLoading = false,
