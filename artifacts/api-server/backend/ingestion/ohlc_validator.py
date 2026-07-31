@@ -236,56 +236,6 @@ def validate_ohlc_row(
     return True, ""
 
 
-# ── DataFrame filter ─────────────────────────────────────────────────────────
-
-def filter_valid_ohlc(
-    df: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Split *df* into two DataFrames: (valid, quarantined).
-
-    *df* must have lower-cased columns: open, high, low, close.
-    Rows missing any of those columns are treated as valid (no-op) so the
-    function gracefully handles DataFrames that lack OHLC (e.g. pure-VIX
-    frames that were erroneously passed in).
-
-    Returns:
-        valid       — rows that pass all OHLC consistency checks
-        quarantined — rows that failed at least one check; each row has an
-                      extra column ``ohlc_invalid_reason`` explaining why
-
-    Neither frame is a copy when the input is all-valid or all-invalid; a
-    copy is only made for the quarantined slice (to add the reason column
-    without SettingWithCopyWarning).
-    """
-    required = {"open", "high", "low", "close"}
-    if df.empty or not required.issubset(df.columns):
-        return df, pd.DataFrame(columns=list(df.columns) + ["ohlc_invalid_reason"])
-
-    bad_mask: list[bool] = []
-    reasons: list[str] = []
-
-    for _, row in df.iterrows():
-        ok, reason = validate_ohlc_row(
-            float(row["open"]),
-            float(row["high"]),
-            float(row["low"]),
-            float(row["close"]),
-        )
-        bad_mask.append(not ok)
-        reasons.append(reason)
-
-    if not any(bad_mask):
-        return df, pd.DataFrame(columns=list(df.columns) + ["ohlc_invalid_reason"])
-
-    bad_series = pd.Series(bad_mask, index=df.index)
-
-    quarantined = df[bad_series].copy()
-    quarantined["ohlc_invalid_reason"] = [r for r, b in zip(reasons, bad_mask) if b]
-    valid = df[~bad_series]
-    return valid, quarantined
-
-
 # ── Zero-volume bar filter ────────────────────────────────────────────────────
 
 def filter_zero_volume_bars(

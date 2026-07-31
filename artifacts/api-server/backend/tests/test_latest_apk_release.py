@@ -34,9 +34,16 @@ def _apk(name="app-release.apk", url="https://example.com/app-release.apk"):
 
 @pytest.fixture(autouse=True)
 def reset_cache():
+    import asyncio
     releases._cache.update(
         {"release": None, "etag": None, "fetched_at": 0.0, "fetched_at_iso": None}
     )
+    # Replace the module-level lock so a previous test that held it cannot
+    # bleed into the next test (asyncio.Lock is event-loop-bound and is not
+    # reset between tests otherwise).
+    new_lock = asyncio.Lock()
+    releases._refresh_lock = new_lock
+    releases._cache_lock = new_lock
     yield
 
 
