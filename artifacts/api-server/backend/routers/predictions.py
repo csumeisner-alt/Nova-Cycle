@@ -1338,6 +1338,16 @@ async def healthz(session: AsyncSession = Depends(get_session)):
                 logger.error("healthz: calibration report lookup failed: %s", exc)
                 models[name]["calibration"] = None
 
+        # Purged walk-forward evaluation report (short-trend): honest OOS
+        # accuracy replaces the leakage-inflated train accuracy.
+        if name == "short_trend":
+            try:
+                from ml.calibration import get_walkforward_report
+                models[name]["walk_forward"] = get_walkforward_report("short_trend")
+            except Exception as exc:
+                logger.error("healthz: walk-forward report lookup failed: %s", exc)
+                models[name]["walk_forward"] = None
+
     # ── SPX futures staleness ────────────────────────────────────────────
     from ingestion.pipeline import (
         check_spx_staleness, check_vix_staleness, check_5min_staleness,

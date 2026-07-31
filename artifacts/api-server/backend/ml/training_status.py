@@ -44,6 +44,7 @@ def record_training_result(
     error: Optional[str] = None,
     accuracy: Optional[float] = None,
     rolled_back: bool = False,
+    accuracy_metric: Optional[str] = None,
 ) -> None:
     """Persist the outcome of a training attempt for one model.
 
@@ -54,7 +55,9 @@ def record_training_result(
         prev = data.get(model_name) if isinstance(data.get(model_name), dict) else {}
         if success and accuracy is not None:
             last_success_accuracy = float(accuracy)
+            last_success_accuracy_metric = accuracy_metric
         else:
+            last_success_accuracy_metric = prev.get("last_success_accuracy_metric")
             # Carry the last known good accuracy forward through failures so
             # a later retrain can still be compared against it.
             last_success_accuracy = prev.get("last_success_accuracy")
@@ -77,7 +80,9 @@ def record_training_result(
             "rolled_back": bool(rolled_back) and not success,
             "error": (str(error)[:500] if error else None),
             "accuracy": (float(accuracy) if accuracy is not None else None),
+            "accuracy_metric": accuracy_metric,
             "last_success_accuracy": last_success_accuracy,
+            "last_success_accuracy_metric": last_success_accuracy_metric,
             "consecutive_failures": consecutive_failures,
             "stuck_alert_sent": stuck_alert_sent,
             "attempted_at": datetime.now(timezone.utc).isoformat(),
@@ -215,4 +220,21 @@ def get_last_successful_accuracy(model_name: str) -> Optional[float]:
             return float(entry["last_success_accuracy"])
     except Exception as exc:
         logger.error("training_status get_last_successful_accuracy error: %s", exc)
+    return None
+
+
+def get_last_successful_accuracy_metric(model_name: str) -> Optional[str]:
+    """Return the metric kind ("train", "purged_walk_forward_oos", …) of the
+    most recent successful run's recorded accuracy, or None for runs recorded
+    before metric tracking existed. Never raises.
+    """
+    try:
+        entry = _load_raw().get(model_name)
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("success") and entry.get("accuracy") is not None:
+            return entry.get("accuracy_metric")
+        return entry.get("last_success_accuracy_metric")
+    except Exception as exc:
+        logger.error("training_status get_last_successful_accuracy_metric error: %s", exc)
     return None

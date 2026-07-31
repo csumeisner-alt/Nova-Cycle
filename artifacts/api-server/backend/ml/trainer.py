@@ -28,6 +28,7 @@ from ml.training_status import (
     any_model_failed_last_attempt,
     get_consecutive_failures,
     get_last_successful_accuracy,
+    get_last_successful_accuracy_metric,
     get_training_status,
     mark_stuck_alert_sent,
     record_training_result,
@@ -54,9 +55,23 @@ def _sidecar_files(model_path: Path) -> list:
         if model_path.name == "long_trend_model.pkl":
             from ml.calibration import CALIBRATOR_PATH, REPORT_PATH
             return [CALIBRATOR_PATH, REPORT_PATH]
+        if model_path.name == "short_trend_model.pkl":
+            from ml.calibration import _walkforward_report_path
+            return [_walkforward_report_path("short_trend")]
     except Exception as exc:
         logger.error("_sidecar_files error for %s: %s", model_path, exc)
     return []
+
+
+def _is_metric_upgrade_transition(prev_metric, new_metric) -> bool:
+    """True only for the one-time accuracy-semantics upgrade from the legacy
+    leakage-inflated train accuracy (or pre-tracking runs, prev_metric=None)
+    to honest purged walk-forward OOS accuracy. Any other metric mismatch —
+    notably a retrain falling back from "purged_walk_forward_oos" to "train"
+    because walk-forward could not be evaluated — must NOT be exempted from
+    the accuracy-regression check.
+    """
+    return new_metric == "purged_walk_forward_oos" and prev_metric in (None, "train")
 
 
 def _backup_model_file(model_path: Path) -> Optional[Path]:
@@ -319,8 +334,35 @@ class ModelTrainer:
                 )
             else:
                 new_acc = short_result.get("accuracy", 0.0)
+                new_metric = short_result.get("accuracy_metric")
                 prev_acc = get_last_successful_accuracy("short_trend")
-                regressed, reason = check_accuracy_regression(new_acc, prev_acc)
+                prev_metric = get_last_successful_accuracy_metric("short_trend")
+                # Skip the regression comparison ONLY for the one-time
+                # semantics upgrade from the legacy leakage-inflated train
+                # accuracy (or pre-tracking runs) to honest purged
+                # walk-forward OOS accuracy — the honest number is expected
+                # to be far lower and is not a regression. Any other metric
+                # mismatch (e.g. a retrain falling back to "train" because
+                # walk-forward could not be evaluated) still goes through the
+                # regression check so a degraded retrain is not silently
+                # exempted.
+                upgrade_transition = _is_metric_upgrade_transition(prev_metric, new_metric)
+                if upgrade_transition:
+                    if prev_acc is not None:
+                        logger.info(
+                            "short_trend accuracy metric upgraded (%s → %s); "
+                            "skipping regression comparison against %.4f",
+                            prev_metric, new_metric, prev_acc,
+                        )
+                    regressed, reason = False, None
+                else:
+                    if prev_metric != new_metric:
+                        logger.warning(
+                            "short_trend accuracy metric mismatch (%s → %s); "
+                            "regression check still applies",
+                            prev_metric, new_metric,
+                        )
+                    regressed, reason = check_accuracy_regression(new_acc, prev_acc)
                 if regressed:
                     logger.error("Short-trend %s", reason)
                     restored = _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
@@ -333,7 +375,8 @@ class ModelTrainer:
                     )
                 else:
                     record_training_result(
-                        "short_trend", success=True, accuracy=new_acc
+                        "short_trend", success=True, accuracy=new_acc,
+                        accuracy_metric=new_metric,
                     )
                     short_flagged = False
             if short_flagged:

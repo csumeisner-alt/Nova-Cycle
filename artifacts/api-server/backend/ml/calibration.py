@@ -269,6 +269,40 @@ def save_calibration_report(metrics: dict) -> None:
         logger.error("save_calibration_report error: %s", exc)
 
 
+def _walkforward_report_path(model_name: str) -> Path:
+    return MODEL_DIR / f"{model_name}_walkforward.json"
+
+
+def save_walkforward_report(model_name: str, metrics: dict) -> None:
+    """Persist a model's walk-forward evaluation report (never raises)."""
+    try:
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        payload = dict(metrics)
+        payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+
+        def _write(f):
+            json.dump(payload, f, indent=2)
+        _write.__mode__ = "w"
+        _atomic_write(_walkforward_report_path(model_name), _write)
+    except Exception as exc:
+        logger.error("save_walkforward_report error: %s", exc)
+
+
+def get_walkforward_report(model_name: str) -> Optional[dict]:
+    """Load a model's persisted walk-forward report (never raises)."""
+    try:
+        path = _walkforward_report_path(model_name)
+        if path.exists():
+            with open(path, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        return None
+    except Exception as exc:
+        logger.error("get_walkforward_report error: %s", exc)
+        return None
+
+
 def get_calibration_report() -> Optional[dict]:
     """Load the persisted walk-forward calibration report (never raises)."""
     try:

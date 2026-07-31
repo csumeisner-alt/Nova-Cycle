@@ -42,6 +42,7 @@ from sklearn.preprocessing import StandardScaler
 
 from config import settings
 from ml import features as ml_features
+from ml import calibration as ml_calibration
 from ml.model_health import check_model_degeneracy
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,97 @@ FEATURE_NAMES = [
 ]
 
 N_FEATURES = len(FEATURE_NAMES)
+
+# Label horizon in 5-min bars: the target is the return over the NEXT 12 bars
+# (1 hour). Walk-forward evaluation must purge at least this many rows between
+# each training window and its test window, or training labels leak test-window
+# prices.
+LABEL_HORIZON_BARS = 12
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Leakage audit (enforced by tests/test_short_leakage.py)
+# ─────────────────────────────────────────────────────────────────────────────
+# Every feature must be computable from data at or before bar t (causal),
+# because the label covers bars (t, t+12]:
+#   - rsi / stoch* / bollinger / atr*        → rolling windows ENDING at t
+#   - return_1h/2h/4h/1d                     → close[t] vs close[t-n] (backward)
+#   - return_overnight                        → open[t] vs close[t-1]
+#   - volume_ratio                            → volume[t] vs 20-bar avg ending t
+#   - is_extended / gap_percent / liquidity_score → known at bar t
+#   - additive features (volatility regime, macro sensitivity/override,
+#     gap momentum, liquidity compression)    → rolling/backward only
+# Historical bug this guards against: the 85/15 validation split was cut at a
+# single boundary with no purge gap, and the feature scaler was fitted on ALL
+# rows (train + validation), so reported validation accuracy (~98%) was
+# leakage-inflated while live confidence collapsed to ~0.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ScaledMLP:
+    """StandardScaler + MLPClassifier pipeline used for walk-forward folds
+    and the final fit.
+
+    Fitting the scaler INSIDE each training window (instead of on the full
+    dataset) removes the scaler-statistics leakage of the previous
+    implementation. sample_weight is approximated by oversampling the
+    highest-weight (most recent) quartile, since MLPClassifier.fit does not
+    support sample weights.
+    """
+
+    def __init__(self):
+        self.scaler = StandardScaler()
+        self.mlp = MLPClassifier(
+            hidden_layer_sizes=(128, 64, 32),
+            activation="relu",
+            solver="adam",
+            max_iter=200,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=10,
+            verbose=False,
+        )
+
+    def fit(self, X, y, sample_weight=None, verbose=False):
+        Xs = self.scaler.fit_transform(X)
+        X_fit, y_fit = Xs, y
+        try:
+            if sample_weight is not None and len(sample_weight) == len(Xs):
+                threshold = np.percentile(sample_weight, 75) if len(sample_weight) else 0.0
+                recent_mask = sample_weight >= threshold
+                if 0 < recent_mask.sum() < len(Xs):
+                    X_fit = np.vstack([Xs, Xs[recent_mask]])
+                    y_fit = np.concatenate([y, y[recent_mask]])
+        except Exception:
+            X_fit, y_fit = Xs, y
+        # Class balancing: the ">0.3% move in 1h" label is rare (~5-10% base
+        # rate), and the unbalanced MLP collapsed its probabilities to ~1e-6
+        # for every live bar (a pinned −40 gauge contribution). Oversample the
+        # minority class up to parity so the network learns a discriminative
+        # boundary instead of the majority prior.
+        try:
+            X_fit, y_fit = self._balance_classes(X_fit, y_fit)
+        except Exception:
+            pass
+        self.mlp.fit(X_fit, y_fit)
+        return self
+
+    @staticmethod
+    def _balance_classes(X, y):
+        classes, counts = np.unique(y, return_counts=True)
+        if len(classes) != 2:
+            return X, y
+        minority = classes[np.argmin(counts)]
+        n_min, n_maj = counts.min(), counts.max()
+        if n_min == 0 or n_min == n_maj:
+            return X, y
+        rng = np.random.default_rng(42)
+        idx_min = np.where(y == minority)[0]
+        extra = rng.choice(idx_min, size=int(n_maj - n_min), replace=True)
+        return np.vstack([X, X[extra]]), np.concatenate([y, y[extra]])
+
+    def predict_proba(self, X):
+        return self.mlp.predict_proba(self.scaler.transform(X))
 
 
 class ShortTrendModel:
@@ -291,7 +383,7 @@ class ShortTrendModel:
             {"accuracy": float, "val_accuracy": float}
         """
         try:
-            BARS_1H = 12
+            BARS_1H = LABEL_HORIZON_BARS
             df = df.copy()
             df["future_close"] = df["close"].shift(-BARS_1H)
             df.dropna(subset=["future_close"], inplace=True)
@@ -306,44 +398,29 @@ class ShortTrendModel:
                 )
                 return {"accuracy": 0.0, "val_accuracy": 0.0}
 
-            # Scale features
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-
-            # Split 85/15 for validation
-            split = int(len(X_scaled) * 0.85)
-            X_train, X_val = X_scaled[:split], X_scaled[split:]
-            y_train, y_val = y[:split], y[split:]
-            w_train = sample_weights[:split]
-
-            model = MLPClassifier(
-                hidden_layer_sizes=(128, 64, 32),
-                activation="relu",
-                solver="adam",
-                max_iter=200,
-                random_state=42,
-                early_stopping=True,
-                validation_fraction=0.15,
-                n_iter_no_change=10,
-                verbose=False,
+            # ── Purged walk-forward evaluation (honest OOS metrics) ──────────
+            # Chronological folds with an embargo gap >= the 12-bar label
+            # horizon so no training label overlaps test-window prices; the
+            # scaler is re-fitted inside each fold's training window.
+            wf_metrics, _, _ = ml_calibration.walk_forward_evaluate(
+                X, y, sample_weights,
+                model_factory=ScaledMLP,
+                embargo=LABEL_HORIZON_BARS,
             )
-            # MLPClassifier does not support sample_weight — approximate the
-            # recency weighting by oversampling the most recent (highest-
-            # weight) rows instead of passing weights to fit().
-            try:
-                threshold = np.percentile(w_train, 75) if len(w_train) else 0.0
-                recent_mask = w_train >= threshold
-                if 0 < recent_mask.sum() < len(X_train):
-                    X_fit = np.vstack([X_train, X_train[recent_mask]])
-                    y_fit = np.concatenate([y_train, y_train[recent_mask]])
-                else:
-                    X_fit, y_fit = X_train, y_train
-            except Exception:
-                X_fit, y_fit = X_train, y_train
-            model.fit(X_fit, y_fit)
+            ml_calibration.save_walkforward_report("short_trend", wf_metrics)
+            oos_acc = wf_metrics.get("oos_accuracy") if wf_metrics.get("evaluated") else None
 
-            train_acc = float(model.score(X_train, y_train))
-            val_acc = float(model.score(X_val, y_val)) if len(X_val) > 0 else 0.0
+            # ── Final fit on ALL data (scaler fitted here, on training data
+            # only — there is no held-out set for the deployed model) ─────────
+            pipeline = ScaledMLP()
+            pipeline.fit(X, y, sample_weight=sample_weights)
+            model, scaler = pipeline.mlp, pipeline.scaler
+            X_scaled = scaler.transform(X)
+
+            train_acc = float(model.score(X_scaled, y))
+            # Honest reported accuracy: purged walk-forward OOS when available.
+            val_acc = float(oos_acc) if oos_acc is not None else 0.0
+            reported_acc = float(oos_acc) if oos_acc is not None else train_acc
 
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
             with open(MODEL_PATH, "wb") as f:
@@ -364,11 +441,21 @@ class ShortTrendModel:
                 )
 
             logger.info(
-                "Short-trend MLP trained: acc=%.4f  val_acc=%.4f", train_acc, val_acc
+                "Short-trend MLP trained: train_acc=%.4f  oos_acc=%s",
+                train_acc,
+                f"{oos_acc:.4f}" if oos_acc is not None else "n/a",
             )
             return {
-                "accuracy": train_acc,
+                # Honest headline accuracy: purged walk-forward OOS when the
+                # evaluation ran (train accuracy on an MLP is near-memorized
+                # and was the source of the misleading 98.6% number).
+                "accuracy": reported_acc,
+                "accuracy_metric": (
+                    "purged_walk_forward_oos" if oos_acc is not None else "train"
+                ),
+                "train_accuracy": train_acc,
                 "val_accuracy": val_acc,
+                "walk_forward": wf_metrics,
                 "degenerate": degenerate,
                 "degeneracy_reason": degeneracy_reason,
             }

@@ -1,14 +1,26 @@
 {
   "long_trend": {
     "success": true,
+    "rolled_back": false,
     "error": null,
-    "accuracy": 0.56312625250501,
-    "attempted_at": "2026-07-25T19:10:47.246919+00:00"
+    "accuracy": 0.56,
+    "accuracy_metric": null,
+    "last_success_accuracy": 0.56,
+    "last_success_accuracy_metric": null,
+    "consecutive_failures": 0,
+    "stuck_alert_sent": false,
+    "attempted_at": "2026-07-31T00:24:19.381703+00:00"
   },
   "short_trend": {
     "success": true,
+    "rolled_back": false,
     "error": null,
-    "accuracy": 0.9863952643057431,
-    "attempted_at": "2026-07-25T19:10:51.766086+00:00"
+    "accuracy": 0.8935009095419216,
+    "accuracy_metric": "purged_walk_forward_oos",
+    "last_success_accuracy": 0.8935009095419216,
+    "last_success_accuracy_metric": "purged_walk_forward_oos",
+    "consecutive_failures": 0,
+    "stuck_alert_sent": false,
+    "attempted_at": "2026-07-31T00:24:47.666581+00:00"
   }
 }
