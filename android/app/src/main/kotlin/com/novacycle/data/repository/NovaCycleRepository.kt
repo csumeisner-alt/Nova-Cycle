@@ -59,13 +59,13 @@ open class NovaCycleRepository @Inject constructor(
         return this
     }
 
-    suspend fun getPredictionLong(ticker: String = "VOO"): Result<PredictionResponse> =
+    open suspend fun getPredictionLong(ticker: String = "VOO"): Result<PredictionResponse> =
         runCatching { apiService.predictLong(ticker).recordDataFreshness() }
 
-    suspend fun getPredictionShort(ticker: String = "VOO"): Result<PredictionResponse> =
+    open suspend fun getPredictionShort(ticker: String = "VOO"): Result<PredictionResponse> =
         runCatching { apiService.predictShort(ticker).recordDataFreshness() }
 
-    suspend fun getHoldTime(ticker: String = "VOO"): Result<HoldTimeResponse> =
+    open suspend fun getHoldTime(ticker: String = "VOO"): Result<HoldTimeResponse> =
         runCatching { apiService.getHoldTime(ticker).recordDataFreshness() }
 
     suspend fun getConfidenceHistory(
@@ -109,7 +109,7 @@ open class NovaCycleRepository @Inject constructor(
         }
     }
 
-    suspend fun getSignalHistory(
+    open suspend fun getSignalHistory(
         ticker: String = "VOO",
         window: String = "30d"
     ): Result<List<SignalResponse>> = runCatching {
@@ -161,13 +161,13 @@ open class NovaCycleRepository @Inject constructor(
         }
     }
 
-    suspend fun getFilteredSignals(
+    open suspend fun getFilteredSignals(
         ticker: String = "VOO",
         window: String = "30d"
     ): Result<List<FilteredSignalResponse>> =
         runCatching { apiService.getFilteredSignalHistory(ticker, window).recordDataFreshness() }
 
-    suspend fun getCandles(
+    open suspend fun getCandles(
         ticker: String = "VOO",
         window: String = "30d",
         timeframe: String = "daily"
@@ -223,7 +223,7 @@ open class NovaCycleRepository @Inject constructor(
         )
     }
 
-    suspend fun getPriceSnapshot(
+    open suspend fun getPriceSnapshot(
         ticker: String = "VOO"
     ): Result<PriceSnapshotResponse> =
         runCatching { apiService.getPriceSnapshot(ticker).recordDataFreshness() }

@@ -2,6 +2,7 @@ package com.novacycle.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novacycle.data.remote.NetworkMonitor
 import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.data.remote.models.FilteredSignalResponse
 import com.novacycle.data.remote.models.PriceSnapshotResponse
@@ -17,6 +18,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -48,12 +51,17 @@ data class FilteredChartUiState(
  * Fetches backend-filtered signals, then applies the client-side strongest-confidence
  * rule via ApplyFilteredSignalsUseCase with the user's current sensitivity settings.
  * This double-filtering gives the user real-time control over what they see.
+ *
+ * Observes [NetworkMonitor] so that when connectivity is restored after an
+ * offline session the cache badge clears automatically — no user interaction
+ * required.  Rapid reconnects are debounced to avoid parallel fan-out.
  */
 @HiltViewModel
 class FilteredChartViewModel @Inject constructor(
     private val repository: NovaCycleRepository,
     private val applyFilteredSignalsUseCase: ApplyFilteredSignalsUseCase,
-    private val chartPrefs: ChartPreferencesRepository
+    private val chartPrefs: ChartPreferencesRepository,
+    private val networkMonitor: NetworkMonitor
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(FilteredChartUiState())
@@ -68,6 +76,16 @@ class FilteredChartViewModel @Inject constructor(
             val saved = chartPrefs.prefs(ChartScreenKey.FILTERED).first()
             _uiState.update { it.copy(renderMode = saved.renderMode) }
             loadData(timeframe = saved.timeframe)
+        }
+
+        // Auto-refresh when the network comes back while the badge is showing.
+        // debounce(500 ms) collapses rapid cellular ↔ Wi-Fi handoffs into one
+        // reload so parallel requests never fan out.
+        viewModelScope.launch {
+            networkMonitor.isConnected
+                .debounce(RECONNECT_DEBOUNCE_MS)
+                .filter { connected -> connected && _uiState.value.candlesFromCache }
+                .collect { loadData() }
         }
     }
 
@@ -165,4 +183,9 @@ class FilteredChartViewModel @Inject constructor(
         convictionTier = convictionTier,
         convictionReasons = convictionReasons
     )
+
+    companion object {
+        /** Rapid reconnect debounce window in milliseconds. */
+        const val RECONNECT_DEBOUNCE_MS = 500L
+    }
 }
