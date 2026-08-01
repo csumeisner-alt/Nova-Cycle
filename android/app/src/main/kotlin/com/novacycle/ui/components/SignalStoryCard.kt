@@ -35,7 +35,7 @@ fun SignalStoryCard(
     onDismiss: () -> Unit
 ) {
     val signalColor = if (signal.isBuy) NovaBuyGreen else NovaSellRed
-    val signalLabel = "${signal.signalType.uppercase()} ${"%.0f".format(signal.confidence)}%"
+    val signalLabel = "${signal.signalType.uppercase()} ${"%.0f".format(signal.confidence * 100f)}%"
     val gaugeLabel  = if (signal.isLongGauge) "Long-Trend" else "Short-Trend"
 
     ModalBottomSheet(
@@ -95,7 +95,7 @@ private fun SimpleSummary(signal: SignalData, holdTimeText: String) {
         if (signal.liquidityScore < 0.5f) add("💧 Low liquidity environment")
         if (signal.macroOverrideApplied) add("⚠️ Macro override was applied")
         if (signal.isHighConviction) add("⭐ High-conviction signal — all confirmation checks passed")
-        add("📈 Confidence: ${"%.1f".format(signal.confidence)}%")
+        add("📈 Confidence: ${"%.1f".format(signal.confidence * 100f)}%")
     }
     bullets.forEach { bullet ->
         Text(bullet, style = MaterialTheme.typography.bodyMedium,

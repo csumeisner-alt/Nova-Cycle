@@ -24,8 +24,10 @@ class GetSignalsUseCase @Inject constructor(
                 .filter { signal ->
                     // Apply sensitivity threshold filtering
                     when {
-                        signal.isBuy && signal.confidence < settings.buyThreshold -> false
-                        signal.isSell && signal.confidence < kotlin.math.abs(settings.sellThreshold) -> false
+                        // Backend confidence is normalized to 0–1; settings are
+                        // user-facing whole percentages (for example, 57).
+                        signal.isBuy && signal.confidence < settings.buyThreshold / 100f -> false
+                        signal.isSell && signal.confidence < kotlin.math.abs(settings.sellThreshold) / 100f -> false
                         // Optionally hide extended-hours signals
                         signal.isExtendedHours && !settings.extendedHoursEnabled -> false
                         else -> true

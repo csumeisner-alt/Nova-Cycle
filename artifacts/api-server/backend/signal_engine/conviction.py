@@ -105,6 +105,8 @@ class ConvictionEvaluator:
         long_score: float,
         short_score: float,
         now: Optional[float] = None,
+        tier_cap: Optional[str] = None,
+        tier_cap_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Compute the conviction tier for an actionable signal.
@@ -143,6 +145,23 @@ class ConvictionEvaluator:
                 ]
                 self._last_tier[key] = tier
                 return {"tier": tier, "reasons": reasons}
+
+            # Secondary decision-layer concerns can lower conviction without
+            # suppressing an otherwise actionable signal.  Apply this cap
+            # before hysteresis so a previously high-conviction signal cannot
+            # remain high while a current safety/quality penalty is active.
+            if tier_cap == TIER_OPPORTUNITY:
+                self._last_tier[key] = TIER_OPPORTUNITY
+                reasons = [
+                    "Secondary market conditions reduced this signal to "
+                    "Opportunity tier; it remains actionable but is not "
+                    "high conviction."
+                ]
+                if tier_cap_reason:
+                    reasons.append(tier_cap_reason)
+                if entry_reasons:
+                    reasons.extend(entry_reasons)
+                return {"tier": TIER_OPPORTUNITY, "reasons": reasons}
 
             if previous == TIER_HIGH_CONVICTION:
                 # Hysteresis: stay high-conviction unless inputs decisively

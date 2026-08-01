@@ -204,6 +204,7 @@ class DecisionFilter:
         liquidity_score: float,
         gap_momentum: Optional[float],
         confidence_history: List[Dict[str, Any]],
+        data_quality_degraded: bool = False,
     ) -> Dict[str, Any]:
         """
         Apply all decision-layer filters to a raw gauge signal.
@@ -220,9 +221,10 @@ class DecisionFilter:
                 long_buy_confidence / short_buy_confidence keys).
 
         Returns:
-            dict with allowed, final_signal, priority_boost, cycle_quality_score,
-            volatility_regime, liquidity_class, confidence metrics, filter_flags,
-            and a human-readable reason.
+            dict with allowed, final_signal, priority_boost, decision_penalty,
+            conviction_tier_cap, cycle_quality_score, volatility_regime,
+            liquidity_class, confidence metrics, filter_flags, and a
+            human-readable reason.
         """
         try:
             signal = str(signal_type).lower().strip()
@@ -239,6 +241,8 @@ class DecisionFilter:
                     "confidence_momentum": 0.0,
                     "filter_flags": {},
                     "reason": "Signal is neutral; no filters applied.",
+                    "decision_penalty": 0.0,
+                    "conviction_tier_cap": None,
                 }
 
             volatility_regime = self.infer_volatility_regime(indicators)
@@ -272,7 +276,24 @@ class DecisionFilter:
                 "divergence": divergence,
                 "cycle_quality_score": round(cycle_quality_score, 4),
                 "confidence_momentum": round(confidence_momentum, 4),
+                "liquidity_score": round(float(liquidity_score), 4),
+                "data_quality_degraded": bool(data_quality_degraded),
             }
+
+            # Data-quality degradation is a safety stop.  A malformed or
+            # incomplete candle set must never be promoted to an Opportunity
+            # merely because the raw gauge happened to cross its threshold.
+            if data_quality_degraded:
+                return self._blocked(
+                    cycle_quality_score,
+                    volatility_regime,
+                    liquidity_class,
+                    confidence_long,
+                    confidence_short,
+                    confidence_momentum,
+                    filter_flags,
+                    "Signal blocked: market data quality is degraded.",
+                )
 
             if signal == "buy":
                 return self._evaluate_buy(
@@ -319,6 +340,8 @@ class DecisionFilter:
                 "confidence_momentum": 0.0,
                 "filter_flags": {"error": str(exc)},
                 "reason": f"Filter error (defaulting to allowed): {exc}",
+                "decision_penalty": 0.0,
+                "conviction_tier_cap": None,
             }
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -340,8 +363,10 @@ class DecisionFilter:
         confidence_short: float,
         filter_flags: Dict[str, Any],
     ) -> Dict[str, Any]:
-        # Rule 1: Block BUY in unfavorable volatility regimes
-        if volatility_regime in ("macro_shock", "compressed"):
+        # Severe macro shocks remain a hard safety block.  Compressed
+        # volatility is only a downgrade: a strong setup can still be useful
+        # as an Opportunity ahead of a breakout.
+        if volatility_regime == "macro_shock":
             return self._blocked(
                 cycle_quality_score,
                 volatility_regime,
@@ -353,8 +378,26 @@ class DecisionFilter:
                 f"BUY blocked: volatility_regime={volatility_regime} is unfavorable.",
             )
 
-        # Rule 2: Block BUY after negative macro gaps
+        penalty = 0.0
+        downgrade_reasons: List[str] = []
+
+        if volatility_regime == "compressed":
+            penalty += 0.08
+            downgrade_reasons.append("compressed volatility")
+
+        # A negative gap is a warning, not proof that a reversal setup is
+        # invalid.  Keep the signal but cap it at Opportunity.
         if gap_percent < -float(settings.MACRO_GAP_THRESHOLD):
+            penalty += 0.08
+            downgrade_reasons.append(f"negative macro gap ({gap_percent:+.2f}%)")
+
+        # Extremely thin liquidity is still a hard block.  Moderate low
+        # liquidity is a downgrade so valid regular-session setups are not
+        # silently discarded.
+        if liquidity_class == "low" and (
+            float(filter_flags.get("liquidity_score", 1.0))
+            < float(settings.LIQUIDITY_SCORE_THRESHOLD)
+        ):
             return self._blocked(
                 cycle_quality_score,
                 volatility_regime,
@@ -363,58 +406,32 @@ class DecisionFilter:
                 confidence_short,
                 confidence_momentum,
                 filter_flags,
-                f"BUY blocked: negative macro gap ({gap_percent:+.2f}%).",
+                "BUY blocked: extremely low liquidity.",
             )
 
-        # Rule 3: Block BUY in low liquidity
         if liquidity_class == "low":
-            return self._blocked(
-                cycle_quality_score,
-                volatility_regime,
-                liquidity_class,
-                confidence_long,
-                confidence_short,
-                confidence_momentum,
-                filter_flags,
-                "BUY blocked: low liquidity.",
-            )
+            penalty += 0.10
+            downgrade_reasons.append("moderately low liquidity")
 
-        # Rule 4: Block BUY on confidence divergence or negative momentum
+        # Divergence and negative momentum reduce conviction, but reversals
+        # often begin with exactly this disagreement.
         if divergence:
-            return self._blocked(
-                cycle_quality_score,
-                volatility_regime,
-                liquidity_class,
-                confidence_long,
-                confidence_short,
-                confidence_momentum,
-                filter_flags,
-                "BUY blocked: long confidence rising while short confidence falling.",
+            penalty += 0.08
+            downgrade_reasons.append(
+                "long confidence rising while short confidence is falling"
             )
 
         if confidence_momentum < 0:
-            return self._blocked(
-                cycle_quality_score,
-                volatility_regime,
-                liquidity_class,
-                confidence_long,
-                confidence_short,
-                confidence_momentum,
-                filter_flags,
-                "BUY blocked: confidence momentum is negative.",
-            )
+            penalty += min(0.08, abs(float(confidence_momentum)))
+            downgrade_reasons.append("confidence momentum is negative")
 
-        # Rule 5: Block BUY when cycle quality is below threshold
+        # Cycle quality is a ranking/conviction input.  Only severe safety
+        # conditions above block; marginal quality keeps the signal as an
+        # Opportunity and applies a notification penalty.
         if cycle_quality_score < min_quality:
-            return self._blocked(
-                cycle_quality_score,
-                volatility_regime,
-                liquidity_class,
-                confidence_long,
-                confidence_short,
-                confidence_momentum,
-                filter_flags,
-                f"BUY blocked: cycle_quality_score={cycle_quality_score:.3f} below threshold {min_quality:.3f}.",
+            penalty += min(0.10, max(0.0, min_quality - cycle_quality_score))
+            downgrade_reasons.append(
+                f"cycle quality {cycle_quality_score:.3f} is below {min_quality:.3f}"
             )
 
         # Small priority boost for positive continuation gaps with follow-through
@@ -422,6 +439,15 @@ class DecisionFilter:
         if gap_percent > float(settings.MACRO_GAP_THRESHOLD) and gap_momentum is not None:
             if float(gap_momentum) >= float(settings.GAP_MOMENTUM_THRESHOLD):
                 priority_boost += 0.05
+
+        if downgrade_reasons:
+            reason = (
+                "BUY allowed as Opportunity; conviction reduced by "
+                + ", ".join(downgrade_reasons)
+                + "."
+            )
+        else:
+            reason = "BUY allowed: all decision filters passed."
 
         return self._allowed(
             "buy",
@@ -433,7 +459,9 @@ class DecisionFilter:
             confidence_short,
             confidence_momentum,
             filter_flags,
-            "BUY allowed: all decision filters passed.",
+            reason,
+            decision_penalty=penalty,
+            conviction_tier_cap="opportunity" if downgrade_reasons else None,
         )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -456,6 +484,7 @@ class DecisionFilter:
     ) -> Dict[str, Any]:
         priority_boost = 0.0
         reasons: List[str] = []
+        penalty = 0.0
 
         # Increase SELL priority in unfavorable conditions
         if volatility_regime == "macro_shock":
@@ -464,10 +493,25 @@ class DecisionFilter:
 
         if liquidity_class == "low":
             priority_boost += 0.1
+            if float(filter_flags.get("liquidity_score", 1.0)) < float(
+                settings.LIQUIDITY_SCORE_THRESHOLD
+            ):
+                return self._blocked(
+                    cycle_quality_score,
+                    volatility_regime,
+                    liquidity_class,
+                    confidence_long,
+                    confidence_short,
+                    confidence_momentum,
+                    filter_flags,
+                    "SELL blocked: extremely low liquidity.",
+                )
+            penalty += 0.10
             reasons.append("low liquidity")
 
         if cycle_quality_score < min_quality:
             priority_boost += 0.1
+            penalty += min(0.10, max(0.0, min_quality - cycle_quality_score))
             reasons.append("low cycle quality")
 
         # Block SELL during strong positive continuation gaps unless momentum flips
@@ -490,6 +534,9 @@ class DecisionFilter:
         if reasons:
             reason += " Priority increased: " + ", ".join(reasons) + "."
 
+        if penalty:
+            reason += " Kept as Opportunity with a conviction penalty."
+
         return self._allowed(
             "sell",
             min(0.3, priority_boost),
@@ -501,6 +548,8 @@ class DecisionFilter:
             confidence_momentum,
             filter_flags,
             reason,
+            decision_penalty=penalty,
+            conviction_tier_cap="opportunity" if penalty else None,
         )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -517,6 +566,8 @@ class DecisionFilter:
         confidence_momentum: float,
         filter_flags: Dict[str, Any],
         reason: str,
+        decision_penalty: float = 0.0,
+        conviction_tier_cap: Optional[str] = None,
     ) -> Dict[str, Any]:
         return {
             "allowed": False,
@@ -530,6 +581,8 @@ class DecisionFilter:
             "confidence_momentum": confidence_momentum,
             "filter_flags": filter_flags,
             "reason": reason,
+            "decision_penalty": decision_penalty,
+            "conviction_tier_cap": conviction_tier_cap,
         }
 
     def _allowed(
@@ -544,6 +597,8 @@ class DecisionFilter:
         confidence_momentum: float,
         filter_flags: Dict[str, Any],
         reason: str,
+        decision_penalty: float = 0.0,
+        conviction_tier_cap: Optional[str] = None,
     ) -> Dict[str, Any]:
         return {
             "allowed": True,
@@ -557,4 +612,6 @@ class DecisionFilter:
             "confidence_momentum": confidence_momentum,
             "filter_flags": filter_flags,
             "reason": reason,
+            "decision_penalty": decision_penalty,
+            "conviction_tier_cap": conviction_tier_cap,
         }

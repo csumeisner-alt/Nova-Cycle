@@ -96,8 +96,10 @@ class ApplyFilteredSignalsUseCase @Inject constructor() {
         }
 
         // Step 6: apply sensitivity threshold
-        val buyMin = settings.buyThreshold.toFloat()
-        val sellMin = kotlin.math.abs(settings.sellThreshold).toFloat()
+        // Backend confidence is normalized to 0–1; settings are whole
+        // percentages in the 50–80 range.
+        val buyMin = settings.buyThreshold / 100f
+        val sellMin = kotlin.math.abs(settings.sellThreshold) / 100f
 
         val thresholded = withCycles.filter { signal ->
             when (signal.signalType.lowercase()) {

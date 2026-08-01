@@ -823,10 +823,17 @@ async def predict_long(
             liquidity_score=1.0,
             gap_momentum=None,
             confidence_history=confidence_history,
+            data_quality_degraded=dq_degraded,
         )
         final_signal = decision["final_signal"]
         notify_confidence = min(
-            1.0, abs(result["score"]) / 100.0 + decision.get("priority_boost", 0.0)
+            1.0,
+            max(
+                0.0,
+                abs(result["score"]) / 100.0
+                + decision.get("priority_boost", 0.0)
+                - decision.get("decision_penalty", 0.0),
+            ),
         )
 
         # Conviction tier (label only — never suppresses the signal)
@@ -839,6 +846,8 @@ async def predict_long(
             ml_fallback=ml_fallback,
             long_score=result["score"],
             short_score=_last_short_score,
+            tier_cap=decision.get("conviction_tier_cap"),
+            tier_cap_reason=decision.get("reason"),
         )
 
         # Persist confidence history
@@ -1083,10 +1092,17 @@ async def predict_short(
             liquidity_score=liquidity_score,
             gap_momentum=gap_momentum,
             confidence_history=confidence_history,
+            data_quality_degraded=dq_degraded,
         )
         final_signal = decision["final_signal"]
         notify_confidence = min(
-            1.0, abs(result["score"]) / 100.0 + decision.get("priority_boost", 0.0)
+            1.0,
+            max(
+                0.0,
+                abs(result["score"]) / 100.0
+                + decision.get("priority_boost", 0.0)
+                - decision.get("decision_penalty", 0.0),
+            ),
         )
 
         # Conviction tier (label only — never suppresses the signal)
@@ -1099,6 +1115,8 @@ async def predict_short(
             ml_fallback=ml_fallback,
             long_score=_last_long_score,
             short_score=result["score"],
+            tier_cap=decision.get("conviction_tier_cap"),
+            tier_cap_reason=decision.get("reason"),
         )
 
         # Persist confidence history

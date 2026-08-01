@@ -60,11 +60,12 @@ def test_buy_blocked_in_macro_shock(df):
     assert "BUY blocked" in result["reason"]
 
 
-def test_buy_blocked_in_compressed_regime(df):
+def test_buy_is_kept_as_opportunity_in_compressed_regime(df):
     indicators = {"latest": {"vix_regime": "LOW", "atr_compression_score": 0.1, "trend_strength_index": 0.5}}
     result = _evaluate(df, "buy", indicators=indicators)
-    assert result["final_signal"] == "neutral"
+    assert result["final_signal"] == "buy"
     assert result["volatility_regime"] == "compressed"
+    assert result["conviction_tier_cap"] == "opportunity"
 
 
 def test_buy_allowed_in_calm_regime(df):
@@ -85,11 +86,12 @@ def test_sell_allowed_in_macro_shock_with_priority_boost(df):
 # 2. Gap-type filtering
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_buy_blocked_after_negative_macro_gap(df):
+def test_buy_is_kept_as_opportunity_after_negative_macro_gap(df):
     latest_candle = {"gap_type": "gap_down", "gap_percent": -1.5}
     result = _evaluate(df, "buy", latest_candle=latest_candle)
-    assert result["final_signal"] == "neutral"
+    assert result["final_signal"] == "buy"
     assert "negative macro gap" in result["reason"]
+    assert result["conviction_tier_cap"] == "opportunity"
 
 
 def test_buy_prioritized_after_positive_continuation_gap(df):
@@ -124,11 +126,18 @@ def test_sell_allowed_during_strong_positive_gap_when_momentum_flips(df):
 # 3. Liquidity-class filtering
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_buy_blocked_in_low_liquidity(df):
+def test_buy_is_kept_as_opportunity_in_moderate_low_liquidity(df):
     result = _evaluate(df, "buy", liquidity_score=0.3)
-    assert result["final_signal"] == "neutral"
+    assert result["final_signal"] == "buy"
     assert result["liquidity_class"] == "low"
     assert "low liquidity" in result["reason"]
+    assert result["conviction_tier_cap"] == "opportunity"
+
+
+def test_buy_blocked_in_extremely_low_liquidity(df):
+    result = _evaluate(df, "buy", liquidity_score=0.1)
+    assert result["final_signal"] == "neutral"
+    assert "extremely low liquidity" in result["reason"]
 
 
 def test_buy_allowed_in_normal_liquidity(df):
@@ -154,14 +163,15 @@ def test_sell_priority_increased_in_low_liquidity(df):
 # 4. Confidence divergence suppression
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_buy_blocked_when_long_rises_and_short_falls(df):
+def test_buy_is_kept_as_opportunity_when_long_rises_and_short_falls(df):
     history = [
         {"long_buy_confidence": 0.5, "short_buy_confidence": 0.7},
         {"long_buy_confidence": 0.6, "short_buy_confidence": 0.6},
     ]
     result = _evaluate(df, "buy", confidence_history=history)
-    assert result["final_signal"] == "neutral"
+    assert result["final_signal"] == "buy"
     assert result["filter_flags"]["divergence"] is True
+    assert result["conviction_tier_cap"] == "opportunity"
 
 
 def test_buy_allowed_when_confidence_rises_together(df):
@@ -174,14 +184,15 @@ def test_buy_allowed_when_confidence_rises_together(df):
     assert result["filter_flags"]["divergence"] is False
 
 
-def test_buy_blocked_when_confidence_momentum_negative(df):
+def test_buy_is_kept_as_opportunity_when_confidence_momentum_negative(df):
     history = [
         {"long_buy_confidence": 0.5, "short_buy_confidence": 0.6},
         {"long_buy_confidence": 0.5, "short_buy_confidence": 0.5},
     ]
     result = _evaluate(df, "buy", confidence_history=history)
-    assert result["final_signal"] == "neutral"
+    assert result["final_signal"] == "buy"
     assert result["confidence_momentum"] < 0
+    assert result["conviction_tier_cap"] == "opportunity"
 
 
 def test_sell_allowed_when_confidence_momentum_flips(df):
@@ -210,12 +221,13 @@ def test_cycle_quality_score_combines_factors(df):
     assert score > 0.5
 
 
-def test_buy_blocked_when_cycle_quality_below_threshold(df):
+def test_buy_is_kept_as_opportunity_when_cycle_quality_below_threshold(df):
     # Low liquidity + compressed regime pushes score below 0.6
     indicators = {"latest": {"vix_regime": "LOW", "atr_compression_score": 0.1, "trend_strength_index": 0.5}}
     result = _evaluate(df, "buy", indicators=indicators, liquidity_score=0.3)
-    assert result["final_signal"] == "neutral"
+    assert result["final_signal"] == "buy"
     assert result["cycle_quality_score"] < settings.DECISION_BUY_MIN_CYCLE_QUALITY
+    assert result["conviction_tier_cap"] == "opportunity"
 
 
 def test_sell_allowed_regardless_of_cycle_quality(df):
@@ -223,6 +235,7 @@ def test_sell_allowed_regardless_of_cycle_quality(df):
     result = _evaluate(df, "sell", indicators=indicators, liquidity_score=0.3)
     assert result["final_signal"] == "sell"
     assert result["priority_boost"] > 0.0
+    assert result["conviction_tier_cap"] == "opportunity"
 
 
 def test_sell_priority_increased_when_cycle_quality_low(df):
@@ -230,6 +243,13 @@ def test_sell_priority_increased_when_cycle_quality_low(df):
     result = _evaluate(df, "sell", indicators=indicators, liquidity_score=0.3)
     assert result["cycle_quality_score"] < settings.DECISION_BUY_MIN_CYCLE_QUALITY
     assert result["priority_boost"] > 0.0
+    assert result["conviction_tier_cap"] == "opportunity"
+
+
+def test_degraded_data_blocks_actionable_signal(df):
+    result = _evaluate(df, "buy", data_quality_degraded=True)
+    assert result["final_signal"] == "neutral"
+    assert "data quality" in result["reason"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

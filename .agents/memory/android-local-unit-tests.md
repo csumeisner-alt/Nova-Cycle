@@ -29,3 +29,4 @@ One-time SDK bootstrap (fast, ~1 min): download commandlinetools zip from dl.goo
 - APK downloads must always use the CI-published release artifact; a locally debug-signed APK with the same package name cannot update a CI-signed installation and causes Android's package-conflict error.
 - Incremental gradle hides Kotlin deprecation warnings: use `./gradlew compileDebugKotlin --rerun-tasks` and grep `^w:` to audit deprecations.
 - Persisted Android backend URLs survive APK updates; when a default endpoint changes, migrate only known obsolete app-owned hosts and preserve deliberate custom server overrides.
+- This workspace may retain `android/local.properties` pointing at `/home/runner/android-sdk` even when that SDK directory is absent; local Android verification then requires the documented SDK bootstrap before Gradle can resolve dependencies.

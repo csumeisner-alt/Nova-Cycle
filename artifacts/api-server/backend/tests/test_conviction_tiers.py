@@ -77,6 +77,18 @@ class TestTierClassification:
             long_score=-90.0, short_score=-90.0, now=0.0)
         assert res["tier"] == TIER_OPPORTUNITY
 
+    def test_decision_layer_cap_overrides_hysteresis(self):
+        ev = make_eval()
+        assert ev.evaluate(**STRONG_BUY, now=0.0)["tier"] == TIER_HIGH_CONVICTION
+        res = ev.evaluate(
+            **STRONG_BUY,
+            tier_cap=TIER_OPPORTUNITY,
+            tier_cap_reason="Compressed volatility reduced conviction.",
+            now=60.0,
+        )
+        assert res["tier"] == TIER_OPPORTUNITY
+        assert any("Compressed volatility" in reason for reason in res["reasons"])
+
 
 class TestRegimeTransitionDowngrade:
     def test_recent_regime_change_caps_tier(self):

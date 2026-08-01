@@ -78,6 +78,12 @@ fun SettingsScreen(
             val sellDisplay = kotlin.math.abs(settings.sellThreshold)
             Text("SELL Threshold: ${sellDisplay}%", style = MaterialTheme.typography.bodyMedium)
             Slider(value = sellDisplay.toFloat(), onValueChange = { viewModel.updateSellThreshold(it.toInt()) }, valueRange = 50f..80f, steps = 29)
+            Text(
+                "Display and notification filter only — it does not change the model or create new signals. " +
+                    "Lower values show more already-generated opportunities.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
 
             Spacer(Modifier.height(4.dp))
 

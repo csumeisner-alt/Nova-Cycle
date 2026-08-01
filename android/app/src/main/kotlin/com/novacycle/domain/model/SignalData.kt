@@ -13,7 +13,7 @@ data class SignalData(
     val signalType: String,
     /** "long" or "short" */
     val gaugeType: String,
-    /** 0–100 confidence percentage */
+    /** Normalized confidence in the backend's 0–1 representation. */
     val confidence: Float,
     val sessionType: String = "regular",
     val isExtendedHours: Boolean = false,
