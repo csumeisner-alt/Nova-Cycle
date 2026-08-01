@@ -310,8 +310,12 @@ async def test_macro_safety_shape():
         assert key in body, f"missing key: {key}"
     assert isinstance(body["override_active"], bool)
     t = body["thresholds"]
-    assert t["long_strong_bear"] == -70.0
-    assert t["long_strong_bull"] == 70.0
+    # Thresholds are driven by config.LONG_BUY/SELL_THRESHOLD (currently ±65),
+    # not the old hardcoded ±70.  Assert against the live config values so this
+    # test stays correct if the threshold changes in config.py.
+    from config import settings
+    assert t["long_strong_bear"] == settings.LONG_SELL_THRESHOLD
+    assert t["long_strong_bull"] == settings.LONG_BUY_THRESHOLD
     assert t["ml_override_threshold"] == 0.80
 
 

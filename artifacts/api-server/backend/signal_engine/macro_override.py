@@ -5,24 +5,42 @@ Prevents conflicting short-term signals from firing against a
 strong long-term trend, unless the short-term ML is very confident.
 
 Rules:
-  1. If long_score < -70  AND  short_signal == 'buy'   AND  ml_conf ≤ 0.80
+  1. If long_score < LONG_STRONG_BEAR  AND  short_signal == 'buy'   AND  ml_conf ≤ 0.80
        → suppress signal (return 'neutral')
 
-  2. If long_score > +70  AND  short_signal == 'sell'  AND  ml_conf ≤ 0.80
+  2. If long_score > LONG_STRONG_BULL  AND  short_signal == 'sell'  AND  ml_conf ≤ 0.80
        → suppress signal (return 'neutral')
 
   High ML confidence (> 0.80) overrides the macro suppression.
 
 This layer is applied BEFORE every short-term signal output.
+
+Threshold alignment
+-------------------
+``LONG_STRONG_BULL`` / ``LONG_STRONG_BEAR`` are derived from
+``settings.LONG_BUY_THRESHOLD`` (currently ±65) so the suppression
+boundary stays in sync with the signal-emission threshold.  Previously
+these were hardcoded to ±70 while the long-gauge BUY/SELL signals fire at
+±65, leaving a 65–70 band where a confirmed long-trend signal existed but
+macro suppression never engaged.  Tying the two values closes that gap:
+any score strong enough to produce an actionable long-trend signal is now
+also strong enough to trigger suppression of a conflicting short-term
+signal (absent high ML confidence).
 """
 
 import logging
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 ML_OVERRIDE_THRESHOLD = 0.80   # ML must exceed this to bypass macro suppression
-LONG_STRONG_BEAR = -70.0
-LONG_STRONG_BULL = +70.0
+# Align with the long-gauge signal thresholds so every score that produces a
+# confirmed long-trend BUY/SELL also activates macro suppression of conflicting
+# short-term signals.  Do not hardcode these — they must move together with
+# LONG_BUY_THRESHOLD / LONG_SELL_THRESHOLD in config.py.
+LONG_STRONG_BEAR: float = settings.LONG_SELL_THRESHOLD   # e.g. -65.0
+LONG_STRONG_BULL: float = settings.LONG_BUY_THRESHOLD    # e.g. +65.0
 
 
 class MacroOverrideSafety:
