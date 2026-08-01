@@ -448,6 +448,47 @@ class ShortTrendModel:
                 )
                 return {"accuracy": 0.0, "val_accuracy": 0.0}
 
+            # ── VIX regime labels aligned to feature rows ────────────────────
+            # Passed to walk_forward_evaluate so the report includes per-regime
+            # OOS metrics (same as long-trend) rather than overall metrics only.
+            #
+            # indicators["vix_regime"] is a string Series from TechnicalIndicators
+            # (values: "LOW", "NORMAL", "HIGH", "EXTREME").  Convert to the
+            # same integer encoding that _regime_breakdown expects:
+            #   LOW=0, NORMAL=1, HIGH=2, EXTREME=3
+            # Any unknown or missing value defaults to NORMAL (1).
+            _VIX_REGIME_CODE = {"LOW": 0, "NORMAL": 1, "HIGH": 2, "EXTREME": 3}
+            vix_regime_for_wf = None
+            vix_regime_raw = indicators.get("vix_regime")
+            if vix_regime_raw is not None:
+                try:
+                    if isinstance(vix_regime_raw, pd.Series) and not vix_regime_raw.empty:
+                        # Align the Series to df's index so positional slicing
+                        # matches how y is constructed above (y = df["label"][:len(X)]).
+                        vr_aligned = (
+                            vix_regime_raw
+                            .reindex(df.index)
+                            .fillna("NORMAL")
+                            .astype(str)
+                            .str.upper()
+                            .map(_VIX_REGIME_CODE)
+                            .fillna(1)  # unknown strings → NORMAL
+                            .astype(np.int32)
+                        )
+                        vix_regime_for_wf = vr_aligned.values[:len(X)]
+                    elif isinstance(vix_regime_raw, str):
+                        # Scalar string regime: broadcast to all rows
+                        code = _VIX_REGIME_CODE.get(str(vix_regime_raw).upper(), 1)
+                        vix_regime_for_wf = np.full(len(X), code, dtype=np.int32)
+                    elif isinstance(vix_regime_raw, (int, float, np.integer)):
+                        # Already numeric (unlikely but guard): broadcast directly
+                        vix_regime_for_wf = np.full(len(X), int(vix_regime_raw), dtype=np.int32)
+                except Exception as exc:
+                    logger.warning(
+                        "short_trend: could not extract vix_regime for walk-forward: %s", exc
+                    )
+                    vix_regime_for_wf = None
+
             # ── Purged walk-forward evaluation (honest OOS metrics) ──────────
             # Chronological folds with an embargo gap >= the 12-bar label
             # horizon so no training label overlaps test-window prices; the
@@ -456,6 +497,7 @@ class ShortTrendModel:
                 X, y, sample_weights,
                 model_factory=ScaledMLP,
                 embargo=LABEL_HORIZON_BARS,
+                regime_labels=vix_regime_for_wf,
             )
             ml_calibration.save_walkforward_report("short_trend", wf_metrics)
             oos_acc = wf_metrics.get("oos_accuracy") if wf_metrics.get("evaluated") else None

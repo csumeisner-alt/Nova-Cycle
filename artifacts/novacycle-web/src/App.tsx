@@ -53,6 +53,7 @@ type ModelHealth = {
   ml_fallback_last_at?: string | null;
   ml_fallback_last_reason?: string | null;
   calibration?: CalibrationReport | null;
+  walk_forward?: CalibrationReport | null;
 };
 
 const RECENT_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -158,98 +159,144 @@ const REGIME_COLORS: Record<string, string> = {
   EXTREME: 'text-destructive',
 };
 
+function RegimeBreakdownTable({
+  breakdown,
+  evaluated,
+  reason,
+  modelKey,
+}: {
+  breakdown: RegimeEntry[] | undefined;
+  evaluated: boolean;
+  reason: string | undefined;
+  modelKey: string;
+}) {
+  if (!evaluated || !breakdown || breakdown.length === 0) {
+    return (
+      <div
+        className="p-3 bg-black/30 rounded-lg border border-white/5 font-mono text-sm text-muted-foreground"
+        data-testid={`regime-breakdown-empty-${modelKey}`}
+      >
+        {reason
+          ? `Walk-forward evaluation not available: ${reason}`
+          : 'No per-regime OOS data yet — walk-forward evaluation has not completed.'}
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto" data-testid={`regime-breakdown-table-${modelKey}`}>
+      <table className="w-full font-mono text-sm border-collapse">
+        <thead>
+          <tr className="text-[11px] text-muted-foreground uppercase tracking-wide border-b border-white/5">
+            <th className="text-left py-2 pr-4">Regime</th>
+            <th className="text-right py-2 px-2">Samples</th>
+            <th className="text-right py-2 px-2">OOS Acc</th>
+            <th className="text-right py-2 px-2">Baseline</th>
+            <th className="text-right py-2 px-2">Lift</th>
+            <th className="text-right py-2 pl-2">Brier</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-white/[0.04]">
+          {breakdown.map((row) => {
+            const lift = row.accuracy_lift_vs_majority;
+            const liftColor = lift > 0.01 ? 'text-primary' : lift < -0.01 ? 'text-destructive' : 'text-muted-foreground';
+            const regimeColor = REGIME_COLORS[row.regime] ?? 'text-foreground';
+            return (
+              <tr
+                key={row.regime_code}
+                className="hover:bg-white/[0.02] transition-colors"
+                data-testid={`regime-row-${modelKey}-${row.regime.toLowerCase()}`}
+              >
+                <td className={`py-2.5 pr-4 font-medium ${regimeColor}`}>
+                  {row.regime}
+                </td>
+                <td className="py-2.5 px-2 text-right text-muted-foreground">
+                  {row.oos_samples.toLocaleString()}
+                </td>
+                <td className="py-2.5 px-2 text-right" data-testid={`regime-acc-${modelKey}-${row.regime.toLowerCase()}`}>
+                  {(row.oos_accuracy * 100).toFixed(1)}%
+                </td>
+                <td className="py-2.5 px-2 text-right text-muted-foreground">
+                  {(row.majority_baseline_accuracy * 100).toFixed(1)}%
+                </td>
+                <td className={`py-2.5 px-2 text-right font-medium ${liftColor}`} data-testid={`regime-lift-${modelKey}-${row.regime.toLowerCase()}`}>
+                  {lift >= 0 ? '+' : ''}{(lift * 100).toFixed(1)}%
+                </td>
+                <td className="py-2.5 pl-2 text-right text-muted-foreground">
+                  {row.oos_brier_score.toFixed(4)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="mt-3 text-[11px] text-muted-foreground font-mono leading-relaxed">
+        Lift = OOS accuracy − majority-class baseline. Positive lift means the model beats always-predicting-the-majority class.
+        HIGH/EXTREME rows with negative lift indicate the model degrades under volatility stress.
+      </p>
+    </div>
+  );
+}
+
 function RegimeBreakdownPanel({ health }: { health: any }) {
   const models: Record<string, ModelHealth> = health?.models ?? {};
   const longTrend = models['long_trend'];
-  const calibration = longTrend?.calibration;
-  const breakdown: RegimeEntry[] | undefined = calibration?.regime_breakdown;
+  const shortTrend = models['short_trend'];
 
-  // Only render if we have the long_trend model entry
-  if (!longTrend) return null;
+  // Only render if at least one model is present
+  if (!longTrend && !shortTrend) return null;
 
-  const generatedAt = calibration?.generated_at;
-  const evaluated = calibration?.evaluated ?? false;
-  const reason = calibration?.reason;
+  const longCalibration = longTrend?.calibration;
+  const shortWalkForward = shortTrend?.walk_forward;
 
   return (
     <div
       className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5"
       data-testid="panel-regime-breakdown"
     >
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-2 text-muted-foreground">
-          <Gauge className="w-4 h-4" />
-          <span className="text-sm font-medium tracking-wide">LONG-TREND OOS BREAKDOWN BY VIX REGIME</span>
-        </div>
-        {generatedAt && (
-          <span className="text-[11px] font-mono text-muted-foreground hidden sm:block">
-            {new Date(generatedAt).toLocaleString('en-US', { hour12: false })}
-          </span>
-        )}
+      <div className="flex items-center space-x-2 text-muted-foreground mb-4">
+        <Gauge className="w-4 h-4" />
+        <span className="text-sm font-medium tracking-wide">OOS BREAKDOWN BY VIX REGIME</span>
       </div>
 
-      {!evaluated || !breakdown || breakdown.length === 0 ? (
-        <div
-          className="p-3 bg-black/30 rounded-lg border border-white/5 font-mono text-sm text-muted-foreground"
-          data-testid="regime-breakdown-empty"
-        >
-          {reason
-            ? `Walk-forward evaluation not available: ${reason}`
-            : 'No per-regime OOS data yet — walk-forward evaluation has not completed.'}
-        </div>
-      ) : (
-        <div className="overflow-x-auto" data-testid="regime-breakdown-table">
-          <table className="w-full font-mono text-sm border-collapse">
-            <thead>
-              <tr className="text-[11px] text-muted-foreground uppercase tracking-wide border-b border-white/5">
-                <th className="text-left py-2 pr-4">Regime</th>
-                <th className="text-right py-2 px-2">Samples</th>
-                <th className="text-right py-2 px-2">OOS Acc</th>
-                <th className="text-right py-2 px-2">Baseline</th>
-                <th className="text-right py-2 px-2">Lift</th>
-                <th className="text-right py-2 pl-2">Brier</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/[0.04]">
-              {breakdown.map((row) => {
-                const lift = row.accuracy_lift_vs_majority;
-                const liftColor = lift > 0.01 ? 'text-primary' : lift < -0.01 ? 'text-destructive' : 'text-muted-foreground';
-                const regimeColor = REGIME_COLORS[row.regime] ?? 'text-foreground';
-                return (
-                  <tr
-                    key={row.regime_code}
-                    className="hover:bg-white/[0.02] transition-colors"
-                    data-testid={`regime-row-${row.regime.toLowerCase()}`}
-                  >
-                    <td className={`py-2.5 pr-4 font-medium ${regimeColor}`}>
-                      {row.regime}
-                    </td>
-                    <td className="py-2.5 px-2 text-right text-muted-foreground">
-                      {row.oos_samples.toLocaleString()}
-                    </td>
-                    <td className="py-2.5 px-2 text-right" data-testid={`regime-acc-${row.regime.toLowerCase()}`}>
-                      {(row.oos_accuracy * 100).toFixed(1)}%
-                    </td>
-                    <td className="py-2.5 px-2 text-right text-muted-foreground">
-                      {(row.majority_baseline_accuracy * 100).toFixed(1)}%
-                    </td>
-                    <td className={`py-2.5 px-2 text-right font-medium ${liftColor}`} data-testid={`regime-lift-${row.regime.toLowerCase()}`}>
-                      {lift >= 0 ? '+' : ''}{(lift * 100).toFixed(1)}%
-                    </td>
-                    <td className="py-2.5 pl-2 text-right text-muted-foreground">
-                      {row.oos_brier_score.toFixed(4)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <p className="mt-3 text-[11px] text-muted-foreground font-mono leading-relaxed">
-            Lift = OOS accuracy − majority-class baseline. Positive lift means the model beats always-predicting-the-majority class.
-            HIGH/EXTREME rows with negative lift indicate the model degrades under volatility stress.
-          </p>
-        </div>
-      )}
+      <div className="space-y-6">
+        {longTrend && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-mono text-muted-foreground uppercase tracking-wide">Long-Trend Model</span>
+              {longCalibration?.generated_at && (
+                <span className="text-[11px] font-mono text-muted-foreground hidden sm:block">
+                  {new Date(longCalibration.generated_at).toLocaleString('en-US', { hour12: false })}
+                </span>
+              )}
+            </div>
+            <RegimeBreakdownTable
+              breakdown={longCalibration?.regime_breakdown}
+              evaluated={longCalibration?.evaluated ?? false}
+              reason={longCalibration?.reason}
+              modelKey="long-trend"
+            />
+          </div>
+        )}
+
+        {shortTrend && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-mono text-muted-foreground uppercase tracking-wide">Short-Trend Model</span>
+              {shortWalkForward?.generated_at && (
+                <span className="text-[11px] font-mono text-muted-foreground hidden sm:block">
+                  {new Date(shortWalkForward.generated_at).toLocaleString('en-US', { hour12: false })}
+                </span>
+              )}
+            </div>
+            <RegimeBreakdownTable
+              breakdown={shortWalkForward?.regime_breakdown}
+              evaluated={shortWalkForward?.evaluated ?? false}
+              reason={shortWalkForward?.reason}
+              modelKey="short-trend"
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
