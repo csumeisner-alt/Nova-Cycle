@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.novacycle.data.remote.models.CandleResponse
 import com.novacycle.data.remote.models.FilteredSignalResponse
 import com.novacycle.data.remote.models.PriceSnapshotResponse
+import com.novacycle.data.repository.ChartPreferencesRepository
+import com.novacycle.data.repository.ChartScreenKey
 import com.novacycle.data.repository.NovaCycleRepository
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.SignalData
@@ -14,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -29,6 +32,8 @@ data class FilteredChartUiState(
     /** Candle timeframe: 'daily', '5min', '15min' or '1h' */
     val selectedTimeframe: String = "daily",
     val ticker: String = "VOO",
+    /** Chart render mode name: 'CANDLES' or 'LINE' */
+    val renderMode: String = "CANDLES",
     /** Epoch millis of the last successful data refresh on this screen; null if none yet */
     val lastUpdatedAtMillis: Long? = null
 )
@@ -42,7 +47,8 @@ data class FilteredChartUiState(
 @HiltViewModel
 class FilteredChartViewModel @Inject constructor(
     private val repository: NovaCycleRepository,
-    private val applyFilteredSignalsUseCase: ApplyFilteredSignalsUseCase
+    private val applyFilteredSignalsUseCase: ApplyFilteredSignalsUseCase,
+    private val chartPrefs: ChartPreferencesRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(FilteredChartUiState())
@@ -51,7 +57,13 @@ class FilteredChartViewModel @Inject constructor(
     private var currentSettings: SensitivitySettings = SensitivitySettings()
 
     init {
-        loadData()
+        // Restore the persisted timeframe + render mode BEFORE the first load,
+        // so the saved timeframe is fetched immediately (no daily flash-reload).
+        viewModelScope.launch {
+            val saved = chartPrefs.prefs(ChartScreenKey.FILTERED).first()
+            _uiState.update { it.copy(renderMode = saved.renderMode) }
+            loadData(timeframe = saved.timeframe)
+        }
     }
 
     fun loadData(
@@ -108,6 +120,15 @@ class FilteredChartViewModel @Inject constructor(
     fun setTimeframe(timeframe: String) {
         if (timeframe != _uiState.value.selectedTimeframe) {
             loadData(timeframe = timeframe)
+            viewModelScope.launch { chartPrefs.saveTimeframe(ChartScreenKey.FILTERED, timeframe) }
+        }
+    }
+
+    /** Toggle candles/line render mode and persist the choice. */
+    fun setRenderMode(renderMode: String) {
+        if (renderMode != _uiState.value.renderMode) {
+            _uiState.update { it.copy(renderMode = renderMode) }
+            viewModelScope.launch { chartPrefs.saveRenderMode(ChartScreenKey.FILTERED, renderMode) }
         }
     }
 

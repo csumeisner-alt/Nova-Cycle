@@ -73,7 +73,8 @@ fun RawChartScreen(
     LaunchedEffect(settings) { viewModel.applySettings(settings) }
 
     var selectedSignal by remember { mutableStateOf<SignalData?>(null) }
-    var renderMode by remember { mutableStateOf(ChartRenderMode.CANDLES) }
+    val renderMode = if (uiState.renderMode == ChartRenderMode.LINE.name)
+        ChartRenderMode.LINE else ChartRenderMode.CANDLES
     val windows = listOf("7d", "30d", "90d")
 
     PullRefreshBox(
@@ -129,8 +130,10 @@ fun RawChartScreen(
             FilterChip(
                 selected = renderMode == ChartRenderMode.LINE,
                 onClick  = {
-                    renderMode = if (renderMode == ChartRenderMode.LINE)
-                        ChartRenderMode.CANDLES else ChartRenderMode.LINE
+                    viewModel.setRenderMode(
+                        if (renderMode == ChartRenderMode.LINE)
+                            ChartRenderMode.CANDLES.name else ChartRenderMode.LINE.name
+                    )
                 },
                 label = { Text(if (renderMode == ChartRenderMode.LINE) "Line" else "Candles") }
             )
