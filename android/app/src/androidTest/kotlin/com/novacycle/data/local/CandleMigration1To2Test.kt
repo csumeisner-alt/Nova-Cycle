@@ -694,4 +694,173 @@ class CandleMigration1To2Test {
             context.deleteDatabase(dbName4)
         }
     }
+
+    /**
+     * Builds a v1-shaped database, inserts two signal_history rows (without conviction
+     * columns, which don't exist until v3), then opens it with Room applying the full
+     * MIGRATION_1_2 → MIGRATION_2_3 chain in one pass, and asserts:
+     *   - both rows are still present
+     *   - conviction_tier and conviction_reasons are NULL for every pre-existing row
+     *
+     * This closes the gap where the v2→v3 test starts from an already-upgraded database.
+     * A future migration that accidentally touches signal_history during the v1→v2 candles
+     * rebuild (e.g. DROP TABLE or erroneous INSERT ... SELECT) would wipe the rows and
+     * be caught here, whereas the v2-only test would not detect it.
+     */
+    @Test
+    fun fullMigrationChain_v1ToV3_preservesSignalHistoryRowsWithNullConvictionColumns() {
+        val dbName5 = "signal_migration_v1_v3_test.db"
+        context.deleteDatabase(dbName5)
+
+        // ── Step 1: build a hand-crafted v1 database ──────────────────────────
+        val dbFile = context.getDatabasePath(dbName5)
+        dbFile.parentFile?.mkdirs()
+
+        val v1 = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+        v1.execSQL("PRAGMA user_version = 1")
+
+        // v1 candles: no `timeframe` column; PK is (ticker, timestamp)
+        v1.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS candles (
+                ticker               TEXT    NOT NULL,
+                timestamp            TEXT    NOT NULL,
+                open                 REAL    NOT NULL,
+                high                 REAL    NOT NULL,
+                low                  REAL    NOT NULL,
+                close                REAL    NOT NULL,
+                volume               INTEGER NOT NULL,
+                is_extended_hours    INTEGER NOT NULL,
+                session_type         TEXT    NOT NULL,
+                gap_percent          REAL,
+                gap_type             TEXT,
+                PRIMARY KEY(ticker, timestamp)
+            )
+            """.trimIndent()
+        )
+
+        // v1 signal_history: no conviction columns (added by MIGRATION_2_3)
+        v1.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id                       TEXT    NOT NULL,
+                timestamp                TEXT    NOT NULL,
+                ticker                   TEXT    NOT NULL,
+                cycle_id                 TEXT,
+                signal_type              TEXT    NOT NULL,
+                gauge_type               TEXT    NOT NULL,
+                confidence               REAL    NOT NULL,
+                session_type             TEXT    NOT NULL,
+                is_extended_hours        INTEGER NOT NULL,
+                gap_type                 TEXT,
+                liquidity_score          REAL    NOT NULL,
+                macro_override_applied   INTEGER NOT NULL,
+                PRIMARY KEY(id)
+            )
+            """.trimIndent()
+        )
+
+        // confidence_history is unchanged across all versions
+        v1.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS confidence_history (
+                id                       TEXT    NOT NULL,
+                timestamp                TEXT    NOT NULL,
+                ticker                   TEXT    NOT NULL,
+                long_buy_confidence      REAL    NOT NULL,
+                long_sell_confidence     REAL    NOT NULL,
+                short_buy_confidence     REAL    NOT NULL,
+                short_sell_confidence    REAL    NOT NULL,
+                session_type             TEXT    NOT NULL,
+                is_extended_hours        INTEGER NOT NULL,
+                PRIMARY KEY(id)
+            )
+            """.trimIndent()
+        )
+
+        // Insert two signal_history rows that must survive both migrations intact
+        v1.execSQL(
+            """
+            INSERT INTO signal_history VALUES
+                ('sig-v1-001','2024-07-01T10:00:00','VOO',NULL,'BUY','long_trend',0.78,'regular',0,NULL,1.0,0)
+            """.trimIndent()
+        )
+        v1.execSQL(
+            """
+            INSERT INTO signal_history VALUES
+                ('sig-v1-002','2024-07-02T11:30:00','VOO','cycle-99','SELL','short_trend',0.63,'regular',0,'gap_up',0.85,1)
+            """.trimIndent()
+        )
+        v1.close()
+
+        // ── Step 2: open with Room, running MIGRATION_1_2 then MIGRATION_2_3 ──
+        // Room sees user_version=1, applies both migrations in sequence, then validates
+        // the resulting schema against the v3 entity definitions. The absence of
+        // fallbackToDestructiveMigration ensures any migration gap or schema drift
+        // raises an IllegalStateException rather than silently wiping data.
+        val db = Room.databaseBuilder(
+            context,
+            NovaCycleDatabase::class.java,
+            dbName5
+        )
+            .addMigrations(AppModule.MIGRATION_1_2, AppModule.MIGRATION_2_3)
+            .build()
+
+        try {
+            // ── Step 3: verify both signal rows survived with NULL conviction columns ─
+            val cursor = db.openHelper.readableDatabase.query(
+                "SELECT id, signal_type, conviction_tier, conviction_reasons " +
+                        "FROM signal_history ORDER BY timestamp"
+            )
+
+            val rows = mutableListOf<Map<String, String?>>()
+            while (cursor.moveToNext()) {
+                rows.add(
+                    mapOf(
+                        "id"                 to cursor.getString(0),
+                        "signal_type"        to cursor.getString(1),
+                        "conviction_tier"    to if (cursor.isNull(2)) null else cursor.getString(2),
+                        "conviction_reasons" to if (cursor.isNull(3)) null else cursor.getString(3)
+                    )
+                )
+            }
+            cursor.close()
+
+            assertEquals(
+                "Both signal_history rows must survive the full v1→v2→v3 migration chain",
+                2, rows.size
+            )
+            assertTrue(
+                "conviction_tier must be NULL for every pre-existing signal row after full chain",
+                rows.all { it["conviction_tier"] == null }
+            )
+            assertTrue(
+                "conviction_reasons must be NULL for every pre-existing signal row after full chain",
+                rows.all { it["conviction_reasons"] == null }
+            )
+
+            // Spot-check row identity and signal_type to confirm no row corruption
+            assertEquals("sig-v1-001", rows[0]["id"])
+            assertEquals("BUY",        rows[0]["signal_type"])
+            assertEquals("sig-v1-002", rows[1]["id"])
+            assertEquals("SELL",       rows[1]["signal_type"])
+
+            // Confirm the remaining fields are intact for the second row
+            val c2 = db.openHelper.readableDatabase.query(
+                "SELECT ticker, gauge_type, confidence, liquidity_score, macro_override_applied, gap_type " +
+                        "FROM signal_history WHERE id='sig-v1-002'"
+            )
+            c2.moveToFirst()
+            assertEquals("VOO",          c2.getString(0))
+            assertEquals("short_trend",  c2.getString(1))
+            assertEquals(0.63f,          c2.getFloat(2),   0.001f)
+            assertEquals(0.85f,          c2.getFloat(3),   0.001f)
+            assertEquals(1,              c2.getInt(4))
+            assertEquals("gap_up",       c2.getString(5))
+            c2.close()
+        } finally {
+            db.close()
+            context.deleteDatabase(dbName5)
+        }
+    }
 }
