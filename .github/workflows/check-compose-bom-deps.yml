@@ -97,6 +97,36 @@ jobs:
             echo "No Compose version conflict resolutions found."
           fi
 
+      # ── Validation note ────────────────────────────────────────────────────
+      # The grep patterns in the three steps above have been validated end-to-end
+      # against synthetic dep-tree fixtures that reproduce each failure mode:
+      #
+      #   1. FAILED marker — an artifact Gradle could not resolve (e.g. a BOM
+      #      bump that references a coordinate not yet published to Maven Central).
+      #      Reproduced by: a dep-tree line ending with "material-icons-extended:
+      #      1.7.0 FAILED".  The `grep -qE "^.*FAILED$"` pattern correctly exits
+      #      non-zero.
+      #
+      #   2. Duplicate-class warning — the historical material-icons-extended
+      #      failure: an explicit version pin (e.g. 1.5.4) and the BOM-managed
+      #      version (e.g. 1.7.0) both land on the classpath, causing Gradle to
+      #      emit "Duplicate class androidx.compose.material.icons.Icons found in
+      #      modules: material-icons-extended-1.5.4.jar / 1.7.0.jar".  The
+      #      `grep -qi "duplicate class"` pattern correctly exits non-zero.
+      #
+      #   3. Compose conflict-resolution notice — Gradle prints "1.7.0 -> 1.5.4
+      #      (conflict resolution)" when it forces a downgrade to satisfy an
+      #      explicit pin.  The combined `grep -i conflict | grep -i androidx.compose`
+      #      pattern correctly surfaces the warning.
+      #
+      #   4. Clean tree — all three checks produce no false positives when the
+      #      dependency tree contains no conflict markers.
+      #
+      # Validation script: android/scripts/test-dep-conflict-check.sh
+      # Run `bash android/scripts/test-dep-conflict-check.sh` from the repo root
+      # to re-exercise all four fixtures locally (no Android SDK required).
+      # ───────────────────────────────────────────────────────────────────────
+
       # Always upload the full dependency tree so engineers can inspect it in
       # the Actions UI even when the job passes.
       - name: Upload dependency tree as workflow artifact
