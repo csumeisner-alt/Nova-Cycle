@@ -1847,6 +1847,39 @@ async def healthz(session: AsyncSession = Depends(get_session)):
                 f"since startup (last: {info['ml_fallback_last_reason']} at {info['ml_fallback_last_at']})"
             )
 
+    # ── Regime-breakdown degradation alerts ──────────────────────────────
+    # Fire when any HIGH or EXTREME VIX row has a negative accuracy lift,
+    # meaning the model performs worse than the majority-class baseline
+    # under volatility stress.  Configurable threshold (default: 0.0).
+    _VOLATILE_REGIMES = {"HIGH", "EXTREME"}
+    _REGIME_LIFT_ALERT_THRESHOLD = 0.0  # lift < this value triggers alert
+
+    # Long-trend uses the calibration report for regime_breakdown.
+    long_calibration = models.get("long_trend", {}).get("calibration") or {}
+    if long_calibration.get("evaluated") and long_calibration.get("regime_breakdown"):
+        for _row in long_calibration["regime_breakdown"]:
+            _lift = _row.get("accuracy_lift_vs_majority") or 0.0
+            if _row.get("regime") in _VOLATILE_REGIMES and _lift < _REGIME_LIFT_ALERT_THRESHOLD:
+                degraded = True
+                alerts.append(
+                    f"long_trend: model degrades under {_row['regime']} VIX — "
+                    f"accuracy lift vs majority = {_lift:+.3f} "
+                    f"({_row.get('oos_samples', '?')} OOS samples)"
+                )
+
+    # Short-trend uses the walk_forward report for regime_breakdown.
+    short_walk_forward = models.get("short_trend", {}).get("walk_forward") or {}
+    if short_walk_forward.get("evaluated") and short_walk_forward.get("regime_breakdown"):
+        for _row in short_walk_forward["regime_breakdown"]:
+            _lift = _row.get("accuracy_lift_vs_majority") or 0.0
+            if _row.get("regime") in _VOLATILE_REGIMES and _lift < _REGIME_LIFT_ALERT_THRESHOLD:
+                degraded = True
+                alerts.append(
+                    f"short_trend: model degrades under {_row['regime']} VIX — "
+                    f"accuracy lift vs majority = {_lift:+.3f} "
+                    f"({_row.get('oos_samples', '?')} OOS samples)"
+                )
+
     # ── VIX all-rows-filtered summary (zero-volume wipe) ─────────────────
     vix_zero_volume_filter = dict(_vix_all_filtered_stats)
     if _vix_all_filtered_stats["count"] > 0:

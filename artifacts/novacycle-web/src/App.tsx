@@ -200,14 +200,26 @@ function RegimeBreakdownTable({
             const lift = row.accuracy_lift_vs_majority;
             const liftColor = lift > 0.01 ? 'text-primary' : lift < -0.01 ? 'text-destructive' : 'text-muted-foreground';
             const regimeColor = REGIME_COLORS[row.regime] ?? 'text-foreground';
+            const isVolatileRegime = row.regime === 'HIGH' || row.regime === 'EXTREME';
+            const isDegraded = isVolatileRegime && lift < 0;
             return (
               <tr
                 key={row.regime_code}
-                className="hover:bg-white/[0.02] transition-colors"
+                className={`transition-colors ${isDegraded ? 'bg-destructive/10 hover:bg-destructive/15' : 'hover:bg-white/[0.02]'}`}
                 data-testid={`regime-row-${modelKey}-${row.regime.toLowerCase()}`}
+                aria-label={isDegraded ? `${row.regime} regime degraded under volatility stress` : undefined}
               >
                 <td className={`py-2.5 pr-4 font-medium ${regimeColor}`}>
-                  {row.regime}
+                  <span className="flex items-center gap-1.5">
+                    {row.regime}
+                    {isDegraded && (
+                      <AlertTriangle
+                        className="w-3.5 h-3.5 text-destructive shrink-0"
+                        aria-hidden="true"
+                        data-testid={`icon-regime-degraded-${modelKey}-${row.regime.toLowerCase()}`}
+                      />
+                    )}
+                  </span>
                 </td>
                 <td className="py-2.5 px-2 text-right text-muted-foreground">
                   {row.oos_samples.toLocaleString()}
