@@ -425,11 +425,83 @@ async def _compute_gap_momentum(
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Intraday timeframes served by resampling stored 5-minute candles at read
+# time. Nothing is persisted; model inputs and ingestion are unaffected.
+_RESAMPLED_TIMEFRAMES = {"15min": "15min", "1h": "60min"}
+
+
+def _resample_5min_rows(rows: list, rule: str, out_timeframe: str) -> list[dict]:
+    """Aggregate stored 5-minute candles into coarser intraday buckets.
+
+    Buckets are grouped by (time bucket, session_type) so a bar never blends
+    pre-market/regular/after-hours data — session separators on the charts
+    stay accurate at every timeframe.
+    """
+    if not rows:
+        return []
+    df = pd.DataFrame(
+        [
+            {
+                "timestamp": r.timestamp,
+                "open": r.open,
+                "high": r.high,
+                "low": r.low,
+                "close": r.close,
+                "volume": r.volume or 0,
+                "is_extended_hours": bool(r.is_extended_hours),
+                "session_type": r.session_type or "regular",
+                "gap_percent": r.gap_percent,
+                "gap_type": r.gap_type,
+            }
+            for r in rows
+        ]
+    )
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["bucket"] = df["timestamp"].dt.floor(rule)
+    out: list[dict] = []
+    for (bucket, session_type), group in df.groupby(
+        ["bucket", "session_type"], sort=True
+    ):
+        group = group.sort_values("timestamp")
+        first_gap = group.loc[group["gap_percent"].notna() & (group["gap_percent"] != 0.0)]
+        out.append(
+            {
+                # Sort key only (dropped below): a bucket can span two
+                # sessions (e.g. regular + after-hours in the 16:00 hour),
+                # and lexical session order would invert chronology.
+                "_first_ts": group["timestamp"].iloc[0],
+                "id": None,
+                "ticker": settings.TICKER,
+                "timestamp": bucket.isoformat(),
+                "open": float(group["open"].iloc[0]),
+                "high": float(group["high"].max()),
+                "low": float(group["low"].min()),
+                "close": float(group["close"].iloc[-1]),
+                "volume": int(group["volume"].sum()),
+                "timeframe": out_timeframe,
+                "is_extended_hours": bool(group["is_extended_hours"].iloc[0]),
+                "session_type": session_type,
+                "gap_percent": (
+                    float(first_gap["gap_percent"].iloc[0]) if not first_gap.empty else 0.0
+                ),
+                "gap_type": (
+                    first_gap["gap_type"].iloc[0] if not first_gap.empty else None
+                ),
+            }
+        )
+    out.sort(key=lambda c: (c["timestamp"], c["_first_ts"]))
+    for c in out:
+        del c["_first_ts"]
+    return out
+
+
 @router.get("/voo_candles")
 async def get_voo_candles(
     ticker: str = Query(default="VOO"),
     window: str = Query(default="30d", description="e.g. 7d, 30d, 90d, 1y"),
-    timeframe: str = Query(default="daily", description="'daily' or '5min'"),
+    timeframe: str = Query(
+        default="daily", description="'daily', '5min', '15min' or '1h'"
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -438,28 +510,39 @@ async def get_voo_candles(
     Query parameters:
       ticker:    Always 'VOO' for now
       window:    Time window (e.g. '30d', '90d', '1y')
-      timeframe: 'daily' or '5min'
+      timeframe: 'daily' or '5min' (stored) or '15min'/'1h' (resampled from
+                 the stored 5-minute candles at read time)
     """
     _validate_ticker(ticker)
 
-    if timeframe not in ("daily", "5min"):
-        raise HTTPException(status_code=400, detail="timeframe must be 'daily' or '5min'")
+    if timeframe not in ("daily", "5min", *_RESAMPLED_TIMEFRAMES):
+        raise HTTPException(
+            status_code=400,
+            detail="timeframe must be one of 'daily', '5min', '15min', '1h'",
+        )
 
     delta = _parse_window(window)
     since = datetime.utcnow() - delta
+
+    stored_timeframe = "5min" if timeframe in _RESAMPLED_TIMEFRAMES else timeframe
 
     try:
         result = await db.execute(
             select(VooCandle)
             .where(
                 VooCandle.ticker == settings.TICKER,
-                VooCandle.timeframe == timeframe,
+                VooCandle.timeframe == stored_timeframe,
                 VooCandle.timestamp >= since,
             )
             .order_by(VooCandle.timestamp.asc())
         )
         rows = result.scalars().all()
-        candles = [_candle_to_dict(r) for r in rows]
+        if timeframe in _RESAMPLED_TIMEFRAMES:
+            candles = _resample_5min_rows(
+                rows, _RESAMPLED_TIMEFRAMES[timeframe], timeframe
+            )
+        else:
+            candles = [_candle_to_dict(r) for r in rows]
 
         # The Android app expects a flat array of candles, not a wrapped object.
         return candles

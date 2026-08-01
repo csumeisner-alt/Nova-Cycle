@@ -67,8 +67,10 @@ internal fun DrawScope.drawPriceReferenceLines(
     priceMin: Float,
     priceRange: Float,
     chartHeight: Float,
-    padding: Float
+    padding: Float,
+    plotWidth: Float = 0f
 ) {
+    val rightEdge = if (plotWidth > 0f) plotWidth else size.width - padding
     val references = listOf(
         // Draw the current/latest line last so it remains visible when the
         // freshest 5-minute price is also the short-model input price.
@@ -82,7 +84,7 @@ internal fun DrawScope.drawPriceReferenceLines(
         drawLine(
             color = color.copy(alpha = 0.8f),
             start = androidx.compose.ui.geometry.Offset(padding, y),
-            end = androidx.compose.ui.geometry.Offset(size.width - padding, y),
+            end = androidx.compose.ui.geometry.Offset(rightEdge, y),
             strokeWidth = 1.5f,
             pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 7f))
         )

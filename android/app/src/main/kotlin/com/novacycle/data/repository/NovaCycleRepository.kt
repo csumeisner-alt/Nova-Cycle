@@ -145,28 +145,35 @@ open class NovaCycleRepository @Inject constructor(
 
     suspend fun getCandles(
         ticker: String = "VOO",
-        window: String = "30d"
+        window: String = "30d",
+        timeframe: String = "daily"
     ): Result<List<CandleResponse>> = runCatching {
-        val remote = apiService.getVooCandles(ticker, window).recordDataFreshness()
-        val entities = remote.map { r ->
-            CandleEntity(
-                ticker = ticker,
-                timestamp = r.timestamp,
-                open = r.open,
-                high = r.high,
-                low = r.low,
-                close = r.close,
-                volume = r.volume,
-                isExtendedHours = r.isExtendedHours,
-                sessionType = r.sessionType,
-                gapPercent = r.gapPercent,
-                gapType = r.gapType
-            )
+        val remote = apiService.getVooCandles(ticker, window, timeframe).recordDataFreshness()
+        // The Room cache is not timeframe-aware, so only the default daily
+        // series is cached/offline-served; intraday timeframes would
+        // otherwise poison the fallback with mixed-resolution bars.
+        if (timeframe == "daily") {
+            val entities = remote.map { r ->
+                CandleEntity(
+                    ticker = ticker,
+                    timestamp = r.timestamp,
+                    open = r.open,
+                    high = r.high,
+                    low = r.low,
+                    close = r.close,
+                    volume = r.volume,
+                    isExtendedHours = r.isExtendedHours,
+                    sessionType = r.sessionType,
+                    gapPercent = r.gapPercent,
+                    gapType = r.gapType
+                )
+            }
+            candleDao.deleteByTicker(ticker)
+            candleDao.insertAll(entities)
         }
-        candleDao.deleteByTicker(ticker)
-        candleDao.insertAll(entities)
         remote
     }.recoverCatching { error ->
+        if (timeframe != "daily") throw error
         val cached = candleDao.getAllByTicker(ticker)
         if (cached.isEmpty()) throw error
         cached.map { e ->

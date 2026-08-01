@@ -24,6 +24,8 @@ data class RawChartUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val selectedWindow: String = "30d",
+    /** Candle timeframe: 'daily', '5min', '15min' or '1h' */
+    val selectedTimeframe: String = "daily",
     val ticker: String = "VOO",
     /** Epoch millis of the last successful data refresh on this screen; null if none yet */
     val lastUpdatedAtMillis: Long? = null
@@ -49,12 +51,17 @@ class RawChartViewModel @Inject constructor(
         loadData()
     }
 
-    fun loadData(window: String = _uiState.value.selectedWindow) {
+    fun loadData(
+        window: String = _uiState.value.selectedWindow,
+        timeframe: String = _uiState.value.selectedTimeframe
+    ) {
         viewModelScope.launch {
             val ticker = _uiState.value.ticker
-            _uiState.update { it.copy(isLoading = true, error = null, selectedWindow = window) }
+            _uiState.update {
+                it.copy(isLoading = true, error = null, selectedWindow = window, selectedTimeframe = timeframe)
+            }
 
-            val candlesDeferred = async { repository.getCandles(ticker, window) }
+            val candlesDeferred = async { repository.getCandles(ticker, window, timeframe) }
             val signalsDeferred = async {
                 getSignalsUseCase(ticker, window, currentSettings)
             }
@@ -87,6 +94,12 @@ class RawChartViewModel @Inject constructor(
 
     fun setWindow(window: String) {
         if (window != _uiState.value.selectedWindow) loadData(window)
+    }
+
+    fun setTimeframe(timeframe: String) {
+        if (timeframe != _uiState.value.selectedTimeframe) {
+            loadData(timeframe = timeframe)
+        }
     }
 
     /** Called by screen when settings change (passed down from SettingsViewModel) */

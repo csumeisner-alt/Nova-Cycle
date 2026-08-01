@@ -26,6 +26,8 @@ data class FilteredChartUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val selectedWindow: String = "30d",
+    /** Candle timeframe: 'daily', '5min', '15min' or '1h' */
+    val selectedTimeframe: String = "daily",
     val ticker: String = "VOO",
     /** Epoch millis of the last successful data refresh on this screen; null if none yet */
     val lastUpdatedAtMillis: Long? = null
@@ -52,12 +54,17 @@ class FilteredChartViewModel @Inject constructor(
         loadData()
     }
 
-    fun loadData(window: String = _uiState.value.selectedWindow) {
+    fun loadData(
+        window: String = _uiState.value.selectedWindow,
+        timeframe: String = _uiState.value.selectedTimeframe
+    ) {
         viewModelScope.launch {
             val ticker = _uiState.value.ticker
-            _uiState.update { it.copy(isLoading = true, error = null, selectedWindow = window) }
+            _uiState.update {
+                it.copy(isLoading = true, error = null, selectedWindow = window, selectedTimeframe = timeframe)
+            }
 
-            val candlesDeferred = async { repository.getCandles(ticker, window) }
+            val candlesDeferred = async { repository.getCandles(ticker, window, timeframe) }
             val signalsDeferred = async { repository.getFilteredSignals(ticker, window) }
             val priceSnapshotDeferred = async { repository.getPriceSnapshot(ticker) }
 
@@ -96,6 +103,12 @@ class FilteredChartViewModel @Inject constructor(
 
     fun setWindow(window: String) {
         if (window != _uiState.value.selectedWindow) loadData(window)
+    }
+
+    fun setTimeframe(timeframe: String) {
+        if (timeframe != _uiState.value.selectedTimeframe) {
+            loadData(timeframe = timeframe)
+        }
     }
 
     fun applySettings(settings: SensitivitySettings) {

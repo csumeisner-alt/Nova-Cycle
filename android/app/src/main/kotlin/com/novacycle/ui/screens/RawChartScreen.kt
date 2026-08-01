@@ -14,6 +14,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -24,10 +26,23 @@ import com.novacycle.domain.model.SignalData
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
 import com.novacycle.ui.components.UpdatedAgoLabel
+import com.novacycle.ui.components.ChartFreshnessHeader
 import com.novacycle.ui.components.ChartPriceSummary
+import com.novacycle.ui.components.ChartRenderMode
+import com.novacycle.ui.components.CrosshairReadout
+import com.novacycle.ui.components.PRICE_AXIS_WIDTH
+import com.novacycle.ui.components.TIME_AXIS_HEIGHT
+import com.novacycle.ui.components.candleIndexAt
+import com.novacycle.ui.components.chartCrosshairInput
 import com.novacycle.ui.components.chartPriceBounds
 import com.novacycle.ui.components.chartPriceToY
+import com.novacycle.ui.components.drawCloseLine
+import com.novacycle.ui.components.drawCrosshair
+import com.novacycle.ui.components.drawLastPriceMarker
+import com.novacycle.ui.components.drawPriceAxis
 import com.novacycle.ui.components.drawPriceReferenceLines
+import com.novacycle.ui.components.drawTimeAxis
+import com.novacycle.ui.components.signalIndexByCandle
 import com.novacycle.ui.theme.*
 import com.novacycle.viewmodel.RawChartViewModel
 import com.novacycle.viewmodel.SettingsViewModel
@@ -58,6 +73,7 @@ fun RawChartScreen(
     LaunchedEffect(settings) { viewModel.applySettings(settings) }
 
     var selectedSignal by remember { mutableStateOf<SignalData?>(null) }
+    var renderMode by remember { mutableStateOf(ChartRenderMode.CANDLES) }
     val windows = listOf("7d", "30d", "90d")
 
     PullRefreshBox(
@@ -85,8 +101,13 @@ fun RawChartScreen(
             modifier = Modifier.padding(horizontal = 12.dp),
             extendedHoursAware = true
         )
+        // Last candle timestamp + session, colored when stale
+        ChartFreshnessHeader(
+            lastCandle = uiState.candles.lastOrNull(),
+            modifier = Modifier.padding(horizontal = 12.dp)
+        )
 
-        // Window selector
+        // Window + timeframe + render-mode selectors
         Row(modifier = Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             windows.forEach { w ->
                 FilterChip(
@@ -95,6 +116,24 @@ fun RawChartScreen(
                     label    = { Text(w) }
                 )
             }
+        }
+        Row(modifier = Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TIMEFRAME_OPTIONS.forEach { (label, api) ->
+                FilterChip(
+                    selected = uiState.selectedTimeframe == api,
+                    onClick  = { viewModel.setTimeframe(api) },
+                    label    = { Text(label) }
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            FilterChip(
+                selected = renderMode == ChartRenderMode.LINE,
+                onClick  = {
+                    renderMode = if (renderMode == ChartRenderMode.LINE)
+                        ChartRenderMode.CANDLES else ChartRenderMode.LINE
+                },
+                label = { Text(if (renderMode == ChartRenderMode.LINE) "Line" else "Candles") }
+            )
         }
 
         if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -114,6 +153,8 @@ fun RawChartScreen(
                 candles = uiState.candles,
                 signals = uiState.signals,
                 priceSnapshot = uiState.priceSnapshot,
+                renderMode = renderMode,
+                isIntraday = uiState.selectedTimeframe != "daily",
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 onSignalTapped = { selectedSignal = it }
             )
@@ -138,8 +179,18 @@ fun RawChartScreen(
     }
 }
 
+/** Chip label → API timeframe value shared by both chart screens. */
+internal val TIMEFRAME_OPTIONS = listOf(
+    "5m" to "5min",
+    "15m" to "15min",
+    "1h" to "1h",
+    "1D" to "daily"
+)
+
 /**
- * Canvas candlestick chart with signal overlays.
+ * Canvas candlestick chart with signal overlays, right price axis, bottom
+ * time axis, last-price marker, line-mode rendering and a long-press
+ * crosshair with OHLC readout.
  * Zoom: pinch via transformable modifier. Pan: drag via transformable.
  */
 @Composable
@@ -147,6 +198,8 @@ fun CandlestickChart(
     candles: List<CandleResponse>,
     signals: List<SignalData>,
     priceSnapshot: com.novacycle.data.remote.models.PriceSnapshotResponse? = null,
+    renderMode: ChartRenderMode = ChartRenderMode.CANDLES,
+    isIntraday: Boolean = false,
     modifier: Modifier = Modifier,
     onSignalTapped: (SignalData) -> Unit = {}
 ) {
@@ -154,6 +207,7 @@ fun CandlestickChart(
 
     var scale   by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
+    var crosshairIndex by remember(candles) { mutableStateOf<Int?>(null) }
 
     val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
         scale   = (scale * zoomChange).coerceIn(0.5f, 8f)
@@ -168,58 +222,122 @@ fun CandlestickChart(
     val priceMax   = boundedPriceMax
     val priceRange = (priceMax - priceMin).coerceAtLeast(0.01f)
 
-    Box(modifier = modifier.transformable(state = transformableState)) {
+    val axisLabelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
+    val gridColor      = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    val crosshairColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+    val lineColor      = MaterialTheme.colorScheme.primary
+
+    // Signals attach to the nearest candle bucket at or before their
+    // timestamp, so markers survive timeframe changes.
+    val signalIndex = remember(candles, signals) {
+        signalIndexByCandle(candles, signals.map { it.timestamp })
+    }
+    val signalsByCandleIndex = remember(signalIndex, signals) {
+        signals.mapNotNull { s -> signalIndex[s.timestamp]?.let { it to s } }.toMap()
+    }
+
+    val density = LocalDensity.current
+    val axisWidthPx  = with(density) { PRICE_AXIS_WIDTH.toPx() }
+    val axisHeightPx = with(density) { TIME_AXIS_HEIGHT.toPx() }
+    val paddingPx    = with(density) { 8.dp.toPx() }
+
+    var chartWidthPx by remember { mutableFloatStateOf(0f) }
+
+    Box(
+        modifier = modifier
+            .onSizeChanged { chartWidthPx = it.width.toFloat() }
+            .transformable(state = transformableState)
+            .chartCrosshairInput(candles) { touchX, active ->
+                crosshairIndex = if (!active || chartWidthPx <= 0f) null else {
+                    val plotW = chartWidthPx - axisWidthPx
+                    val barW = ((plotW / candles.size) * scale).coerceAtLeast(4f)
+                    candleIndexAt(touchX, barW, offsetX, paddingPx, candles.size)
+                }
+            }
+    ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val padding     = 8.dp.toPx()
+            val padding     = paddingPx
+            val plotWidth   = size.width - axisWidthPx
+            val plotHeight  = size.height - axisHeightPx
             val candleCount = candles.size
-            val barWidth    = ((size.width / candleCount) * scale).coerceAtLeast(4f)
+            val barWidth    = ((plotWidth / candleCount) * scale).coerceAtLeast(4f)
             val wickWidth   = (barWidth * 0.15f).coerceAtLeast(1f)
 
-            val signalByTimestamp = signals.associateBy { it.timestamp }
+            // Axes and grid behind everything
+            drawPriceAxis(priceMin, priceRange, plotWidth, plotHeight, padding,
+                axisLabelColor, gridColor, textSizePx = 11.dp.toPx())
+            drawTimeAxis(candles, barWidth, offsetX, padding, plotWidth, plotHeight,
+                isIntraday, axisLabelColor, textSizePx = 10.dp.toPx())
 
             // Vertical session separators at every session-type transition
             // (pre-market → regular → after-hours), drawn behind the candles.
-            drawSessionSeparators(candles, barWidth, offsetX, padding)
+            drawSessionSeparators(candles, barWidth, offsetX, padding, plotHeight, plotWidth)
             priceSnapshot?.let {
-                drawPriceReferenceLines(it, priceMin, priceRange, size.height, padding)
+                drawPriceReferenceLines(it, priceMin, priceRange, plotHeight, padding, plotWidth)
+            }
+
+            if (renderMode == ChartRenderMode.LINE) {
+                drawCloseLine(candles, barWidth, offsetX, padding,
+                    priceMin, priceRange, plotHeight, lineColor)
             }
 
             candles.forEachIndexed { index, candle ->
                 val x = index * barWidth + offsetX + padding
-                if (x + barWidth < 0 || x > size.width) return@forEachIndexed
+                if (x + barWidth < 0 || x > plotWidth) return@forEachIndexed
 
-                val openY  = priceToY(candle.open,  priceMin, priceRange, size.height, padding)
-                val closeY = priceToY(candle.close, priceMin, priceRange, size.height, padding)
-                val highY  = priceToY(candle.high,  priceMin, priceRange, size.height, padding)
-                val lowY   = priceToY(candle.low,   priceMin, priceRange, size.height, padding)
+                val highY  = priceToY(candle.high,  priceMin, priceRange, plotHeight, padding)
+                val lowY   = priceToY(candle.low,   priceMin, priceRange, plotHeight, padding)
 
-                val isBullish   = candle.close >= candle.open
-                val candleColor = when {
-                    candle.isExtendedHours -> NovaExtendedBlue.copy(alpha = 0.7f)
-                    isBullish              -> NovaBuyGreen
-                    else                   -> NovaSellRed
+                if (renderMode == ChartRenderMode.CANDLES) {
+                    val openY  = priceToY(candle.open,  priceMin, priceRange, plotHeight, padding)
+                    val closeY = priceToY(candle.close, priceMin, priceRange, plotHeight, padding)
+
+                    val isBullish   = candle.close >= candle.open
+                    val candleColor = when {
+                        candle.isExtendedHours -> NovaExtendedBlue.copy(alpha = 0.7f)
+                        isBullish              -> NovaBuyGreen
+                        else                   -> NovaSellRed
+                    }
+
+                    // Wick
+                    drawLine(
+                        color  = candleColor,
+                        start  = Offset(x + barWidth / 2, highY),
+                        end    = Offset(x + barWidth / 2, lowY),
+                        strokeWidth = wickWidth
+                    )
+                    // Body
+                    drawRect(
+                        color   = candleColor,
+                        topLeft = Offset(x + wickWidth, minOf(openY, closeY)),
+                        size    = Size((barWidth - wickWidth * 2).coerceAtLeast(1f), abs(openY - closeY).coerceAtLeast(1f))
+                    )
                 }
 
-                // Wick
-                drawLine(
-                    color  = candleColor,
-                    start  = Offset(x + barWidth / 2, highY),
-                    end    = Offset(x + barWidth / 2, lowY),
-                    strokeWidth = wickWidth
-                )
-                // Body
-                drawRect(
-                    color   = candleColor,
-                    topLeft = Offset(x + wickWidth, minOf(openY, closeY)),
-                    size    = Size((barWidth - wickWidth * 2).coerceAtLeast(1f), abs(openY - closeY).coerceAtLeast(1f))
-                )
-
-                // Signal marker
-                val signal = signalByTimestamp[candle.timestamp]
+                // Signal marker (drawn in both render modes)
+                val signal = signalsByCandleIndex[index]
                 if (signal != null) {
                     val markerSize = (barWidth * 0.8f).coerceIn(8f, 20f)
                     drawSignalMarker(signal, x + barWidth / 2, highY, lowY, markerSize)
                 }
+            }
+
+            // Last price pinned to the axis on top of everything
+            val lastPrice = priceSnapshot?.currentPrice ?: candles.last().close
+            drawLastPriceMarker(lastPrice, priceMin, priceRange, plotWidth, plotHeight,
+                padding, NovaWarningYellow, textSizePx = 10.dp.toPx())
+
+            crosshairIndex?.let { idx ->
+                candles.getOrNull(idx)?.let { c ->
+                    drawCrosshair(idx, c, barWidth, offsetX, padding,
+                        priceMin, priceRange, plotWidth, plotHeight, crosshairColor)
+                }
+            }
+        }
+
+        crosshairIndex?.let { idx ->
+            candles.getOrNull(idx)?.let { c ->
+                CrosshairReadout(candle = c, modifier = Modifier.align(Alignment.TopStart))
             }
         }
     }
@@ -234,17 +352,19 @@ internal fun DrawScope.drawSessionSeparators(
     candles: List<CandleResponse>,
     barWidth: Float,
     offsetX: Float,
-    padding: Float
+    padding: Float,
+    plotHeight: Float = size.height,
+    plotWidth: Float = size.width
 ) {
     val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
     for (i in 1 until candles.size) {
         if (candles[i].sessionType != candles[i - 1].sessionType) {
             val x = i * barWidth + offsetX + padding
-            if (x < 0 || x > size.width) continue
+            if (x < 0 || x > plotWidth) continue
             drawLine(
                 color = NovaExtendedBlue.copy(alpha = 0.35f),
                 start = Offset(x, 0f),
-                end   = Offset(x, size.height),
+                end   = Offset(x, plotHeight),
                 strokeWidth = 1.5f,
                 pathEffect  = dash
             )
