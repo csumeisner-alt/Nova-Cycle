@@ -186,6 +186,10 @@ fun DualGaugeWidget(
                 Spacer(modifier = Modifier.height(4.dp))
                 ConvictionTierBadge(tier)
             }
+            if (gaugeState.isCandidate && gaugeState.candidateSignal != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                CandidateBadge(direction = gaugeState.candidateSignal)
+            }
         }
     }
 }
