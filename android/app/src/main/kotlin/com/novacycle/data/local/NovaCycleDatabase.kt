@@ -23,7 +23,7 @@ import com.novacycle.data.local.entities.SignalHistoryEntity
         CandleEntity::class
     ],
     version = 3,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class NovaCycleDatabase : RoomDatabase() {
     abstract fun signalDao(): SignalDao

@@ -98,6 +98,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // Expose the generated Room schema JSON files as test assets so
+    // MigrationTestHelper can find them when running on-device tests.
+    sourceSets {
+        getByName("androidTest").assets.srcDirs(
+            "$projectDir/schemas"
+        )
+    }
 }
 
 dependencies {
@@ -106,6 +114,12 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("io.mockk:mockk:1.13.11")
+
+    // Instrumented migration tests — run on a real device or emulator
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.room.testing)
 
     // Material Components (provides Theme.Material3 used in AndroidManifest/themes)
     implementation(libs.material)
@@ -172,4 +186,10 @@ dependencies {
 // Allow references to generated code
 kapt {
     correctErrorTypes = true
+    arguments {
+        // Tell Room's annotation processor where to write schema JSON files.
+        // These files are checked in so schema drift is visible in code review.
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
 }
+
