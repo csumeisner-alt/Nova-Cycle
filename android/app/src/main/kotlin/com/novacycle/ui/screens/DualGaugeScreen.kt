@@ -178,6 +178,17 @@ fun DualGaugeScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // ── Tier track record: real historical performance per tier ──
+            TierTrackRecordCard(
+                record   = uiState.tierTrackRecord,
+                isError  = uiState.tierTrackRecordError,
+                isLoading = uiState.isLoading && uiState.tierTrackRecord == null && !uiState.tierTrackRecordError,
+                selectedWindow = uiState.tierWindow,
+                onSelectWindow = { viewModel.selectTierWindow(it) }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             // ── Hold-Time card ────────────────────────────────────────────
             val holdTime = uiState.holdTime
             Card(
@@ -282,6 +293,155 @@ fun DualGaugeScreen(
 
     if (showConfidenceSheet) {
         ConfidenceInfoSheet(onDismiss = { showConfidenceSheet = false })
+    }
+}
+
+/**
+ * Compact "tier track record" panel: shows realized win rate and average
+ * return per conviction tier over a selectable window, with plain-language
+ * copy and a sparse-data message instead of misleading tiny-sample stats.
+ */
+@Composable
+private fun TierTrackRecordCard(
+    record: com.novacycle.data.remote.models.TierTrackRecordResponse?,
+    isError: Boolean,
+    isLoading: Boolean,
+    selectedWindow: String,
+    onSelectWindow: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .luxeRim(CardDefaults.shape),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "Tier Track Record",
+                    style      = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val windows = record?.availableWindows ?: listOf("30d", "90d", "all")
+                    windows.forEach { w ->
+                        FilterChip(
+                            selected = w == selectedWindow,
+                            onClick  = { onSelectWindow(w) },
+                            label    = {
+                                Text(
+                                    when (w) { "all" -> "All"; else -> w },
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            Text(
+                "How each tier's signals actually performed, from completed buy→sell trades. Real history, not a prediction.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 10.dp)
+            )
+
+            when {
+                isLoading -> Text(
+                    "Loading track record…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                isError || record == null -> Text(
+                    "Track record unavailable right now.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                else -> {
+                    TierStatsRow(
+                        label     = "High-Conviction",
+                        stats     = record.highConviction,
+                        minSample = record.minSampleSize,
+                        highlight = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TierStatsRow(
+                        label     = "Opportunity",
+                        stats     = record.opportunity,
+                        minSample = record.minSampleSize,
+                        highlight = false
+                    )
+                    val overall = record.overall
+                    Text(
+                        text = if (overall.sufficientSample && overall.winRate != null)
+                            "Overall: ${(overall.winRate * 100).toInt()}% win rate over ${overall.tradeCount} trades"
+                        else
+                            "Overall: ${overall.tradeCount} completed trade${if (overall.tradeCount == 1) "" else "s"} so far — not enough history yet",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TierStatsRow(
+    label: String,
+    stats: com.novacycle.data.remote.models.TierStats,
+    minSample: Int,
+    highlight: Boolean,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text       = if (highlight) "★ $label" else label,
+                style      = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color      = if (highlight) MaterialTheme.colorScheme.primary
+                             else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                "${stats.tradeCount} trade${if (stats.tradeCount == 1) "" else "s"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (stats.sufficientSample && stats.winRate != null) {
+            val avg = stats.avgReturnPercent
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(
+                    "${(stats.winRate * 100).toInt()}% win rate",
+                    style      = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (avg != null) {
+                    Text(
+                        "${if (avg >= 0) "+" else ""}${"%.2f".format(avg)}% avg / trade",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (avg >= 0) NovaBuyGreen else NovaSellRed,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        } else {
+            Text(
+                "Not enough ${label.lowercase()} signals yet — needs at least $minSample completed trades for a reliable percentage.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

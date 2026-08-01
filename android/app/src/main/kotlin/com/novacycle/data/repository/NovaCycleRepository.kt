@@ -268,6 +268,17 @@ open class NovaCycleRepository @Inject constructor(
         }
 
     /**
+     * Fetch realized per-conviction-tier performance from /tier_track_record.
+     * Kept as a simple remote call because the backend is the source of truth
+     * for cycle aggregation and sparse-sample handling.
+     */
+    open suspend fun getTierTrackRecord(
+        ticker: String = "VOO",
+        window: String = "90d"
+    ): Result<TierTrackRecordResponse> =
+        runCatching { apiService.getTierTrackRecord(ticker, window).recordDataFreshness() }
+
+    /**
      * Check whether the backend still holds this token.
      *
      * Returns:

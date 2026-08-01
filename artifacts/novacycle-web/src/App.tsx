@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient
 import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown } from 'lucide-react';
 import { PredictionCard } from '@/components/PredictionCard';
 import { PerformanceDashboard } from '@/components/PerformanceDashboard';
+import { TierTrackRecordPanel } from '@/components/TierTrackRecordPanel';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { useState, useEffect } from 'react';
 
@@ -625,6 +626,7 @@ function StatusDashboard() {
             
              <VooPriceStrip />
              <PredictionsPanel />
+             <TierTrackRecordPanel />
 
             {!isLoading && !isError && health && <RetrainStatusPanel health={health} />}
 

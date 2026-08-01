@@ -50,6 +50,17 @@ CONFIDENCE_BANDS = {
 
 VALID_PERIODS = ("day", "week", "month")
 
+# Conviction tiers tracked by the tier track record.  "untiered" collects
+# cycles whose BUY signal predates tiering (conviction_tier is NULL).
+TIER_KEYS = ("high_conviction", "opportunity", "untiered")
+
+# Minimum number of completed cycles a tier needs before we surface a win
+# rate.  Below this, percentages from tiny samples mislead more than inform.
+MIN_TIER_SAMPLE = 5
+
+# Selectable windows for the tier track record endpoint.
+TIER_WINDOWS = ("30d", "90d", "all")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pure helpers (unit-testable without a DB)
@@ -450,6 +461,84 @@ def _serialize_cycle(c: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if isinstance(out.get(key), datetime):
             out[key] = out[key].isoformat()
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conviction-tier track record
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tier_group_stats(group: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Win rate / average return for one tier's completed cycles.
+
+    When the sample is below MIN_TIER_SAMPLE, win_rate and
+    avg_return_percent are null so clients can't render a misleading
+    percentage from a tiny sample (sufficient_sample=False flags this).
+    """
+    n = len(group)
+    sufficient = n >= MIN_TIER_SAMPLE
+    if not sufficient:
+        return {
+            "trade_count": n,
+            "win_rate": None,
+            "avg_return_percent": None,
+            "sufficient_sample": False,
+        }
+    wins = sum(1 for c in group if (c.get("return_percent") or 0.0) > 0.0)
+    returns = [float(c.get("return_percent") or 0.0) for c in group]
+    return {
+        "trade_count": n,
+        "win_rate": wins / n,
+        "avg_return_percent": sum(returns) / n,
+        "sufficient_sample": True,
+    }
+
+
+def compute_tier_track_record(cycles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate realized outcomes per conviction tier.
+
+    Cycles flagged price_data_absent are excluded entirely: their
+    return_percent is a 0.0 sentinel, not a real outcome, and counting
+    them would corrupt both win rate and average return.
+    """
+    usable = [c for c in cycles if not c.get("price_data_absent")]
+    excluded = len(cycles) - len(usable)
+
+    groups: Dict[str, List[Dict[str, Any]]] = {k: [] for k in TIER_KEYS}
+    for c in usable:
+        tier = c.get("conviction_tier_at_buy") or "untiered"
+        if tier not in groups:
+            tier = "untiered"
+        groups[tier].append(c)
+
+    return {
+        "overall": _tier_group_stats(usable),
+        "tiers": {k: _tier_group_stats(v) for k, v in groups.items()},
+        "excluded_price_data_absent": excluded,
+        "min_sample_size": MIN_TIER_SAMPLE,
+    }
+
+
+async def get_tier_track_record(
+    session: AsyncSession,
+    ticker: str = "VOO",
+    window: str = "90d",
+) -> Dict[str, Any]:
+    """Compute the /api/tier_track_record payload.
+
+    window: '30d', '90d', or 'all' (all time).  Never raises for empty
+    data — returns safe zero/null shapes.
+    """
+    effective_window = "3650d" if window == "all" else window
+    cycles = await generate_trade_cycles(
+        session, ticker=ticker, window=effective_window
+    )
+    payload = compute_tier_track_record(cycles)
+    payload.update({
+        "ticker": ticker,
+        "window": window,
+        "available_windows": list(TIER_WINDOWS),
+    })
+    return payload
 
 
 # ─────────────────────────────────────────────────────────────────────────────

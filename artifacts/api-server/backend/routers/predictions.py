@@ -1474,6 +1474,31 @@ async def model_performance(
     )
 
 
+@router.get("/tier_track_record")
+async def tier_track_record(
+    ticker: str = Query(default="VOO"),
+    window: str = Query(default="90d"),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Realized performance per conviction tier (win rate, average return per
+    completed BUY→SELL cycle), over a selectable window: '30d', '90d', 'all'.
+
+    Tiers with fewer than min_sample_size completed cycles report null
+    win_rate/avg_return_percent with sufficient_sample=false so clients can
+    show "not enough signals yet" instead of a misleading percentage.
+    Cycles missing price data are excluded (excluded_price_data_absent).
+    """
+    _validate_ticker(ticker)
+    from performance_engine import get_tier_track_record, TIER_WINDOWS
+    if window not in TIER_WINDOWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"window must be one of {', '.join(TIER_WINDOWS)} (got '{window}')",
+        )
+    return await get_tier_track_record(session, ticker=ticker, window=window)
+
+
 # ---------------------------------------------------------------------------
 # GET /healthz
 # ---------------------------------------------------------------------------

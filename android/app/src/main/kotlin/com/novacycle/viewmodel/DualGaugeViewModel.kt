@@ -9,6 +9,7 @@ import com.novacycle.data.remote.models.IndicatorResponse
 import com.novacycle.data.remote.models.MacroSafetyResponse
 import com.novacycle.data.remote.models.PriceSnapshotResponse
 import com.novacycle.data.remote.models.PredictionResponse
+import com.novacycle.data.remote.models.TierTrackRecordResponse
 import com.novacycle.data.repository.NovaCycleRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
@@ -32,6 +33,12 @@ data class DualGaugeUiState(
     val macroSafetyError: Boolean = false,
     val priceSnapshot: PriceSnapshotResponse? = null,
     val priceError: Boolean = false,
+    /** Realized per-tier performance; null while loading or if the fetch failed */
+    val tierTrackRecord: TierTrackRecordResponse? = null,
+    /** True when the tier track record fetch failed and no cached copy exists */
+    val tierTrackRecordError: Boolean = false,
+    /** Selected track-record window: "30d", "90d", or "all" */
+    val tierWindow: String = "90d",
     val isLoading: Boolean = false,
     val error: String? = null,
     /** Currently selected ticker — only "VOO" supported, placeholder for multi-ticker */
@@ -99,6 +106,9 @@ class DualGaugeViewModel @Inject constructor(
             val indicatorsDeferred = async { repository.getIndicators(ticker) }
             val macroSafetyDeferred = async { repository.getMacroSafety(ticker) }
             val priceDeferred = async { repository.getPriceSnapshot(ticker) }
+            val tierDeferred = async {
+                repository.getTierTrackRecord(ticker, _uiState.value.tierWindow)
+            }
 
             val longResult = longDeferred.await()
             val shortResult = shortDeferred.await()
@@ -106,6 +116,7 @@ class DualGaugeViewModel @Inject constructor(
             val indicatorsResult = indicatorsDeferred.await()
             val macroSafetyResult = macroSafetyDeferred.await()
             val priceResult = priceDeferred.await()
+            val tierResult = tierDeferred.await()
 
             // Data freshness is recorded centrally by the repository on remote success;
             // here we only track this screen's own "Updated X ago" header label.
@@ -128,6 +139,8 @@ class DualGaugeViewModel @Inject constructor(
                     macroSafetyError = macroSafetyResult.isFailure && state.macroSafety == null,
                     priceSnapshot = priceResult.getOrNull() ?: state.priceSnapshot,
                     priceError = priceResult.isFailure && state.priceSnapshot == null,
+                    tierTrackRecord = tierResult.getOrNull() ?: state.tierTrackRecord,
+                    tierTrackRecordError = tierResult.isFailure && state.tierTrackRecord == null,
                     lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()
                                           else state.lastUpdatedAtMillis,
                     isLoading = false,
@@ -156,6 +169,21 @@ class DualGaugeViewModel @Inject constructor(
      * Placeholder: only "VOO" is supported. In a future multi-ticker version,
      * this would trigger a reload with the new ticker symbol.
      */
+    /** Change the tier-track-record window and refetch only that panel */
+    fun selectTierWindow(window: String) {
+        if (window == _uiState.value.tierWindow) return
+        _uiState.update { it.copy(tierWindow = window) }
+        viewModelScope.launch {
+            val result = repository.getTierTrackRecord(_uiState.value.selectedTicker, window)
+            _uiState.update { state ->
+                state.copy(
+                    tierTrackRecord = result.getOrNull() ?: state.tierTrackRecord,
+                    tierTrackRecordError = result.isFailure && state.tierTrackRecord == null,
+                )
+            }
+        }
+    }
+
     fun selectTicker(ticker: String) {
         if (ticker == "VOO") {
             _uiState.update { it.copy(selectedTicker = "VOO") }

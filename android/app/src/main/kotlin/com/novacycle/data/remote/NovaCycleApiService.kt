@@ -98,6 +98,13 @@ interface NovaCycleApiService {
         @Query("confidence_max") confidenceMax: Float? = null
     ): ModelPerformanceResponse
 
+    /** Retrieve realized per-conviction-tier performance (win rate, avg return) */
+    @GET("tier_track_record")
+    suspend fun getTierTrackRecord(
+        @Query("ticker") ticker: String = "VOO",
+        @Query("window") window: String = "90d"
+    ): TierTrackRecordResponse
+
     /** Register or refresh an FCM device token with the backend */
     @POST("register_device")
     suspend fun registerDeviceToken(

@@ -230,6 +230,10 @@ async def _build_cycle(
         "macro_override_applied": buy.macro_override_applied,
         "volatility_class": volatility_class,
         "liquidity_class": liquidity_class,
+        # In-memory only (not persisted columns): used by the tier
+        # track-record aggregation.
+        "conviction_tier_at_buy": getattr(buy, "conviction_tier", None),
+        "price_data_absent": bool(not buy_price or not sell_price),
     }
 
 
@@ -541,7 +545,13 @@ async def _persist_cycles(
     if not new_cycles:
         return
 
-    session.add_all([TradeCycles(**c) for c in new_cycles])
+    # Cycles may carry in-memory-only keys (e.g. conviction_tier_at_buy,
+    # price_data_absent) that are not TradeCycles columns — strip them.
+    column_names = set(TradeCycles.__table__.columns.keys())
+    session.add_all([
+        TradeCycles(**{k: v for k, v in c.items() if k in column_names})
+        for c in new_cycles
+    ])
     await session.commit()
 
 
