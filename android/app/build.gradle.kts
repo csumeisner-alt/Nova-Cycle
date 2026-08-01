@@ -124,13 +124,13 @@ dependencies {
     // Material Components (provides Theme.Material3 used in AndroidManifest/themes)
     implementation(libs.material)
 
-    // Compose Material Icons Extended — full icon set including Speed, ShowChart, Timeline, BarChart
-    implementation(libs.material.icons.extended)
-
     // Compose BOM — manages all compose library versions in sync
     val composeBom = platform(libs.compose.bom)
     implementation(composeBom)
     debugImplementation(composeBom)
+
+    // Compose Material Icons Extended — version is BOM-managed (no explicit pin needed)
+    implementation(libs.material.icons.extended)
 
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)

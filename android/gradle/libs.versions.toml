@@ -12,7 +12,6 @@ navigation = "2.7.7"
 firebase-bom = "33.1.0"
 datastore = "1.1.1"
 material = "1.12.0"
-material-icons-extended = "1.7.6"
 moshi = "1.15.1"
 
 [libraries]
@@ -67,7 +66,7 @@ datastore-preferences = { group = "androidx.datastore", name = "datastore-prefer
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 
 # Compose Material Icons Extended (provides Speed, ShowChart, Timeline, BarChart, etc.)
-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "material-icons-extended" }
+material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 
 # Coroutines
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
