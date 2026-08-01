@@ -104,3 +104,82 @@ async def test_return_percent_loss_cycle_is_negative():
     cycle = await _build(buy_price=200.0, sell_price=190.0)
     assert cycle["return_percent"] < 0.0
     assert abs(cycle["return_percent"] - (-5.0)) < 1e-9
+
+
+# ── sell_price sentinel tests ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_return_percent_none_sell_price_is_sentinel_zero():
+    """None sell_price must produce return_percent=0.0 and return_dollars=0.0."""
+    cycle = await _build(buy_price=100.0, sell_price=None)
+    assert cycle["return_percent"] == 0.0, (
+        "Expected 0.0 sentinel when sell_price is None; got %r" % cycle["return_percent"]
+    )
+    assert cycle["return_dollars"] == 0.0, (
+        "Expected 0.0 sentinel when sell_price is None; got %r" % cycle["return_dollars"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_return_dollars_none_sell_price_is_sentinel_zero():
+    """None sell_price must produce return_dollars=0.0 (no TypeError from arithmetic)."""
+    cycle = await _build(buy_price=150.0, sell_price=None)
+    assert cycle["return_dollars"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_return_percent_zero_sell_price_is_sentinel_zero():
+    """Zero sell_price must produce return_percent=0.0 and return_dollars=0.0."""
+    cycle = await _build(buy_price=100.0, sell_price=0.0)
+    assert cycle["return_percent"] == 0.0, (
+        "Expected 0.0 sentinel when sell_price is 0.0; got %r" % cycle["return_percent"]
+    )
+    assert cycle["return_dollars"] == 0.0, (
+        "Expected 0.0 sentinel when sell_price is 0.0; got %r" % cycle["return_dollars"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_volatility_class_valid_string_when_sell_price_none():
+    """volatility_class must remain a valid non-empty string even when sell_price is None."""
+    cycle = await _build(buy_price=100.0, sell_price=None)
+    vc = cycle.get("volatility_class")
+    assert isinstance(vc, str) and vc, (
+        "volatility_class must be a non-empty string; got %r" % vc
+    )
+    assert vc in ("low", "medium", "high"), (
+        "volatility_class must be one of low/medium/high; got %r" % vc
+    )
+
+
+@pytest.mark.asyncio
+async def test_volatility_class_valid_string_when_sell_price_zero():
+    """volatility_class must remain a valid non-empty string even when sell_price is 0.0."""
+    cycle = await _build(buy_price=100.0, sell_price=0.0)
+    vc = cycle.get("volatility_class")
+    assert isinstance(vc, str) and vc, (
+        "volatility_class must be a non-empty string; got %r" % vc
+    )
+    assert vc in ("low", "medium", "high"), (
+        "volatility_class must be one of low/medium/high; got %r" % vc
+    )
+
+
+@pytest.mark.asyncio
+async def test_win_loss_regime_via_enrichment_when_sell_price_none():
+    """
+    _compute_win_loss_regime must return a valid string when return_percent is the
+    sentinel 0.0 (triggered by a None sell_price).  The function must not crash.
+    """
+    from reliability_engine import _compute_win_loss_regime
+
+    # Simulate the cycle dict that _build_cycle produces when sell_price is None
+    cycle = await _build(buy_price=100.0, sell_price=None)
+    regime = _compute_win_loss_regime(cycle)
+    assert isinstance(regime, str) and regime, (
+        "win_loss_regime must be a non-empty string; got %r" % regime
+    )
+    # return_percent == 0.0 is not a win, so the regime must reflect a loss label
+    assert "win" not in regime or "loss" in regime or regime == "unknown", (
+        "A zero-return cycle should not be classified as a win; got %r" % regime
+    )
