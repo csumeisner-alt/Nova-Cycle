@@ -343,4 +343,174 @@ class CandleMigration1To2Test {
             context.deleteDatabase(dbName2)
         }
     }
+
+    /**
+     * Creates a v2-shaped database, inserts two confidence_history rows, runs MIGRATION_2_3,
+     * and asserts that both rows are still present with every field value intact.
+     *
+     * MIGRATION_2_3 only touches signal_history (adds conviction columns), so
+     * confidence_history must be completely unaffected. This test guards against a future
+     * migration that accidentally DROPs or recreates confidence_history as a side-effect.
+     */
+    @Test
+    fun migration2To3_preservesConfidenceHistoryRows() {
+        val dbName3 = "confidence_migration_2_3_test.db"
+        context.deleteDatabase(dbName3)
+
+        // ── Step 1: build a hand-crafted v2 database ──────────────────────────
+        val dbFile = context.getDatabasePath(dbName3)
+        dbFile.parentFile?.mkdirs()
+
+        val v2 = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+        v2.execSQL("PRAGMA user_version = 2")
+
+        // v2 candles (with timeframe column) — required for Room schema validation
+        v2.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS candles (
+                ticker               TEXT    NOT NULL,
+                timeframe            TEXT    NOT NULL DEFAULT 'daily',
+                timestamp            TEXT    NOT NULL,
+                open                 REAL    NOT NULL,
+                high                 REAL    NOT NULL,
+                low                  REAL    NOT NULL,
+                close                REAL    NOT NULL,
+                volume               INTEGER NOT NULL,
+                is_extended_hours    INTEGER NOT NULL,
+                session_type         TEXT    NOT NULL,
+                gap_percent          REAL,
+                gap_type             TEXT,
+                PRIMARY KEY(ticker, timeframe, timestamp)
+            )
+            """.trimIndent()
+        )
+
+        // v2 signal_history — required for Room schema validation
+        v2.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id                       TEXT    NOT NULL,
+                timestamp                TEXT    NOT NULL,
+                ticker                   TEXT    NOT NULL,
+                cycle_id                 TEXT,
+                signal_type              TEXT    NOT NULL,
+                gauge_type               TEXT    NOT NULL,
+                confidence               REAL    NOT NULL,
+                session_type             TEXT    NOT NULL,
+                is_extended_hours        INTEGER NOT NULL,
+                gap_type                 TEXT,
+                liquidity_score          REAL    NOT NULL,
+                macro_override_applied   INTEGER NOT NULL,
+                PRIMARY KEY(id)
+            )
+            """.trimIndent()
+        )
+
+        // confidence_history is unchanged across all versions
+        v2.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS confidence_history (
+                id                       TEXT    NOT NULL,
+                timestamp                TEXT    NOT NULL,
+                ticker                   TEXT    NOT NULL,
+                long_buy_confidence      REAL    NOT NULL,
+                long_sell_confidence     REAL    NOT NULL,
+                short_buy_confidence     REAL    NOT NULL,
+                short_sell_confidence    REAL    NOT NULL,
+                session_type             TEXT    NOT NULL,
+                is_extended_hours        INTEGER NOT NULL,
+                PRIMARY KEY(id)
+            )
+            """.trimIndent()
+        )
+
+        // Insert two confidence_history rows that must survive the migration
+        v2.execSQL(
+            """
+            INSERT INTO confidence_history VALUES
+                ('ch-001','2024-05-01T09:30:00','VOO',0.82,0.18,0.45,0.55,'regular',0)
+            """.trimIndent()
+        )
+        v2.execSQL(
+            """
+            INSERT INTO confidence_history VALUES
+                ('ch-002','2024-05-02T09:30:00','VOO',0.61,0.39,0.70,0.30,'regular',0)
+            """.trimIndent()
+        )
+        v2.close()
+
+        // ── Step 2: open with Room, applying only MIGRATION_2_3 ───────────────
+        val db = Room.databaseBuilder(
+            context,
+            NovaCycleDatabase::class.java,
+            dbName3
+        )
+            .addMigrations(AppModule.MIGRATION_2_3)
+            .build()
+
+        try {
+            // ── Step 3: verify confidence_history rows survived intact ─────────
+            val cursor = db.openHelper.readableDatabase.query(
+                "SELECT id, ticker, long_buy_confidence, long_sell_confidence, " +
+                        "short_buy_confidence, short_sell_confidence, session_type, is_extended_hours " +
+                        "FROM confidence_history ORDER BY timestamp"
+            )
+
+            val rows = mutableListOf<Map<String, String>>()
+            while (cursor.moveToNext()) {
+                rows.add(
+                    mapOf(
+                        "id"                   to cursor.getString(0),
+                        "ticker"               to cursor.getString(1),
+                        "long_buy_confidence"  to cursor.getString(2),
+                        "long_sell_confidence" to cursor.getString(3),
+                        "short_buy_confidence" to cursor.getString(4),
+                        "short_sell_confidence"to cursor.getString(5),
+                        "session_type"         to cursor.getString(6),
+                        "is_extended_hours"    to cursor.getString(7)
+                    )
+                )
+            }
+            cursor.close()
+
+            assertEquals(
+                "Both confidence_history rows must still be present after v2→v3 migration",
+                2, rows.size
+            )
+
+            // First row assertions
+            assertEquals("ch-001", rows[0]["id"])
+            assertEquals("VOO", rows[0]["ticker"])
+            assertEquals("0.82", rows[0]["long_buy_confidence"])
+            assertEquals("0.18", rows[0]["long_sell_confidence"])
+            assertEquals("0.45", rows[0]["short_buy_confidence"])
+            assertEquals("0.55", rows[0]["short_sell_confidence"])
+            assertEquals("regular", rows[0]["session_type"])
+            assertEquals("0", rows[0]["is_extended_hours"])
+
+            // Second row assertions
+            assertEquals("ch-002", rows[1]["id"])
+            assertEquals("VOO", rows[1]["ticker"])
+            assertEquals("0.61", rows[1]["long_buy_confidence"])
+            assertEquals("0.39", rows[1]["long_sell_confidence"])
+
+            // Verify second row's remaining confidence values via a targeted query
+            val c2 = db.openHelper.readableDatabase.query(
+                "SELECT long_sell_confidence, short_buy_confidence, short_sell_confidence " +
+                        "FROM confidence_history WHERE id='ch-002'"
+            )
+            c2.moveToFirst()
+            val longSell2  = c2.getFloat(0)
+            val shortBuy2  = c2.getFloat(1)
+            val shortSell2 = c2.getFloat(2)
+            c2.close()
+
+            assertEquals("long_sell_confidence for ch-002",  0.39f, longSell2,  0.001f)
+            assertEquals("short_buy_confidence for ch-002",  0.70f, shortBuy2,  0.001f)
+            assertEquals("short_sell_confidence for ch-002", 0.30f, shortSell2, 0.001f)
+        } finally {
+            db.close()
+            context.deleteDatabase(dbName3)
+        }
+    }
 }
