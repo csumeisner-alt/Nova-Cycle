@@ -2,6 +2,10 @@
 Tests for signal_engine.normalization (Task: normalized gauge confidence)
 and the new confidence_percent/trend/display_signal fields on the
 prediction endpoints.
+
+Also contains deterministic coverage tests proving that strong long-side
+setups (all indicators bullish, high ML probability, fresh data) can cross
+the LONG_BUY_THRESHOLD and produce an actionable 'buy' signal.
 """
 
 import math
@@ -274,3 +278,129 @@ async def test_prediction_endpoints_no_data_returns_neutral(empty_client, endpoi
     assert body["confidence_percent"] == 0
     assert body["trend"] == TREND_NEUTRAL
     assert body["display_signal"] == SIGNAL_HOLD
+
+
+# ---------------------------------------------------------------------------
+# Deterministic BUY-reachability coverage for the long-trend gauge.
+#
+# These tests prove that a strong long-side setup (all indicators bullish,
+# high ML probability, fresh data with age=0) can cross the LONG_BUY_THRESHOLD
+# and produce an actionable 'buy' signal.  Previously the max achievable score
+# was +65 while the threshold was +70, making the BUY path unreachable.
+# ---------------------------------------------------------------------------
+
+class TestLongGaugeBuyReachable:
+    """Coverage tests: strong long setups must be able to produce 'buy'."""
+
+    # Perfect indicator dict: SMA golden cross, positive MACD, trending ADX,
+    # normal VIX (no penalty).
+    _PERFECT_INDICATORS = {
+        "latest": {
+            "sma50": 450.0,       # > sma200 → golden cross → +10
+            "sma200": 400.0,
+            "macd_histogram": 1.5,  # > 0 → positive momentum → +10
+            "adx": 30.0,          # > 25 → trending → amplifier fires → +10
+            "vix_regime": "NORMAL",  # 0 penalty
+        }
+    }
+
+    def _gauge(self):
+        from signal_engine.long_gauge import LongTrendGauge
+        return LongTrendGauge()
+
+    def test_perfect_setup_produces_buy(self):
+        """Max indicator (30) + max ML (40) = 70 with fresh data → crosses +65."""
+        result = self._gauge().compute_score(
+            indicators=self._PERFECT_INDICATORS,
+            ml_prediction=1.0,
+            age_in_days=0.0,
+        )
+        # Raw score = 30 + 40 = 70; weight = 1.0 → total = 70 > 65
+        assert result["signal"] == "buy", (
+            f"Expected 'buy' for perfect long setup, got signal={result['signal']!r} "
+            f"with score={result['score']}"
+        )
+        assert result["score"] > 65.0
+
+    def test_high_ml_with_good_technicals_produces_buy(self):
+        """A realistic strong setup (not all-max) still crosses the threshold."""
+        # indicator_score: SMA +10, MACD +10, ADX +10, VIX 0 = +30
+        # ml_score: 0.94 × 80 − 40 = 75.2 − 40 = 35.2
+        # raw = 65.2 > 65 → buy
+        result = self._gauge().compute_score(
+            indicators=self._PERFECT_INDICATORS,
+            ml_prediction=0.94,
+            age_in_days=0.0,
+        )
+        assert result["signal"] == "buy", (
+            f"High-ML + bullish technicals should produce 'buy', "
+            f"got signal={result['signal']!r}, score={result['score']}"
+        )
+        assert result["score"] > 65.0
+
+    def test_indicator_score_max_is_thirty(self):
+        """Verify the indicator component reaches its documented ±30 ceiling."""
+        gauge = self._gauge()
+        score, breakdown = gauge.compute_indicator_score(self._PERFECT_INDICATORS)
+        assert score == pytest.approx(30.0), (
+            f"Expected indicator_score=30 for perfect bullish inputs, got {score}. "
+            f"Breakdown: {breakdown}"
+        )
+
+    def test_symmetric_sell_is_also_reachable(self):
+        """SELL path symmetry: perfect bearish setup produces 'sell'."""
+        bearish = {
+            "latest": {
+                "sma50": 350.0,         # < sma200 → death cross → -10
+                "sma200": 400.0,
+                "macd_histogram": -1.5,  # < 0 → negative momentum → -10
+                "adx": 30.0,            # > 25 → amplifier fires (bearish) → -10
+                "vix_regime": "NORMAL",
+            }
+        }
+        result = self._gauge().compute_score(
+            indicators=bearish,
+            ml_prediction=0.0,  # ml_score = 0 × 80 − 40 = −40
+            age_in_days=0.0,
+        )
+        # raw = −30 + (−40) = −70 < −65 → sell
+        assert result["signal"] == "sell", (
+            f"Expected 'sell' for perfect bearish setup, got signal={result['signal']!r} "
+            f"with score={result['score']}"
+        )
+        assert result["score"] < -65.0
+
+    def test_borderline_ml_without_adx_stays_neutral(self):
+        """Without the ADX amplifier, a moderate ML score stays neutral."""
+        no_adx = {
+            "latest": {
+                "sma50": 450.0,
+                "sma200": 400.0,
+                "macd_histogram": 1.5,
+                "adx": 20.0,      # < 25 → amplifier does NOT fire
+                "vix_regime": "NORMAL",
+            }
+        }
+        # indicator_score = 10 + 10 + 0 + 0 = 20
+        # ml_score at 0.80 = 0.80×80−40 = 64−40 = 24
+        # raw = 44 < 65 → neutral
+        result = self._gauge().compute_score(
+            indicators=no_adx,
+            ml_prediction=0.80,
+            age_in_days=0.0,
+        )
+        assert result["signal"] == "neutral"
+
+    def test_stale_data_suppresses_buy_signal(self):
+        """Time-decay reduces a borderline-strong score below the threshold."""
+        # raw = 70; weight = exp(−0.005 × 30) ≈ 0.861 → total ≈ 60.3 < 65
+        result = self._gauge().compute_score(
+            indicators=self._PERFECT_INDICATORS,
+            ml_prediction=1.0,
+            age_in_days=30.0,
+        )
+        assert result["signal"] == "neutral", (
+            f"30-day-old data should decay below threshold, "
+            f"got signal={result['signal']!r}, score={result['score']}, "
+            f"weight={result['weight']}"
+        )

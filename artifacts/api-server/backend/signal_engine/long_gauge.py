@@ -5,12 +5,14 @@ Aggregates long-term technical indicators and ML model output into
 a single score in the range [-100, +100].
 
 Score composition:
-  indicator_score  (max ±30 total from individual ±10 contributions)
+  indicator_score  (max ±30: SMA ±10, MACD ±10, ADX ±10)
   ml_score         = ml_prediction × 80 − 40   → maps [0,1] to [-40,+40]
   total_score      = indicator_score + ml_score  (clamped to [-100, +100])
 
-BUY  threshold : total_score > +70
-SELL threshold : total_score < -70
+  Max raw score: 30 + 40 = 70  (before time-decay)
+
+BUY  threshold : total_score > +65
+SELL threshold : total_score < -65
 NEUTRAL        : otherwise
 
 Time-decay:
@@ -63,7 +65,7 @@ class LongTrendGauge:
             unavailable     →   0
 
           ADX (trend strength amplifier):
-            ADX > 25        → add ±5 in the direction of the existing score
+            ADX > 25        → add ±10 in the direction of the existing score
                               (amplifies signal when market is trending)
             ADX < 25        → no amplification
 
@@ -105,7 +107,7 @@ class LongTrendGauge:
         adx_score = 0.0
         if adx is not None and adx > 25.0:
             # Amplify in the direction of the current score
-            adx_score = 5.0 if total >= 0 else -5.0
+            adx_score = _IND_CAP if total >= 0 else -_IND_CAP
         breakdown["adx_amplifier"] = adx_score
         total += adx_score
 
@@ -144,8 +146,8 @@ class LongTrendGauge:
           total_score     = clamp(total_score, −100, +100)
 
         Signal rules:
-          score >  LONG_BUY_THRESHOLD  (+70) → 'buy'
-          score <  LONG_SELL_THRESHOLD (−70) → 'sell'
+          score >  LONG_BUY_THRESHOLD  (+65) → 'buy'
+          score <  LONG_SELL_THRESHOLD (−65) → 'sell'
           otherwise                          → 'neutral'
 
         Confidence:

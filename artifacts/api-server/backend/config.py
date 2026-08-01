@@ -42,8 +42,13 @@ class Settings(BaseSettings):
     LAMBDA_SHORT: float = 0.05   # per minute – short-trend gauge
 
     # ── Signal thresholds ─────────────────────────────────────────────────────
-    LONG_BUY_THRESHOLD: float = 70.0
-    LONG_SELL_THRESHOLD: float = -70.0
+    # Long-gauge max raw score: indicator (±30) + ML (±40) = ±70.
+    # Thresholds are set at ±65 so a strong setup (ADX trending, both SMA/MACD
+    # bullish, ML prediction ≥ ~0.94) can cross into actionable territory while
+    # fresh data (time-decay weight ≈ 1.0).  Previously at ±70 the BUY/SELL
+    # paths were mathematically unreachable even for perfect inputs.
+    LONG_BUY_THRESHOLD: float = 65.0
+    LONG_SELL_THRESHOLD: float = -65.0
     SHORT_BUY_THRESHOLD: float = 60.0
     SHORT_SELL_THRESHOLD: float = -60.0
 
