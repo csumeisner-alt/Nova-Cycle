@@ -192,8 +192,15 @@ async def _build_cycle(
     buy_price = await _lookup_price(session, ticker, buy.timestamp, buy.gauge_type)
     sell_price = await _lookup_price(session, ticker, sell.timestamp, sell.gauge_type)
 
-    return_dollars = sell_price - buy_price
-    return_percent = (return_dollars / buy_price) * 100.0 if buy_price else 0.0
+    # Guard against None or zero buy_price before any arithmetic.
+    # _lookup_price is typed float but callers may patch it with None in tests;
+    # a zero or missing price must never propagate a ZeroDivisionError or TypeError.
+    if not buy_price or not sell_price:
+        return_dollars = 0.0
+        return_percent = 0.0
+    else:
+        return_dollars = sell_price - buy_price
+        return_percent = (return_dollars / buy_price) * 100.0
     hold_time_minutes = (
         (sell.timestamp - buy.timestamp).total_seconds() / 60.0
         if sell.timestamp and buy.timestamp
