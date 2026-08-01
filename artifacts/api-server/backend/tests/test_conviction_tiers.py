@@ -225,3 +225,39 @@ class TestBacktestGuardrail:
         failures = check(report, signals=signals)
         impossible_tier_failures = [f for f in failures if "impossible tier" in f]
         assert impossible_tier_failures == [], impossible_tier_failures
+
+    def test_all_low_long_score_buys_triggers_threshold_reachability_failure(self):
+        """Fixture with ONLY low long_score buys must trigger a threshold reachability failure.
+
+        This is the negative-path canary: if a future change silently removes
+        all strong-buy rows from the fixture (or raises the threshold above 65),
+        the backtest must exit non-zero.  We inject a synthetic signal list where
+        every BUY has long_score <= 65 and confirm check() flags it.
+        """
+        low_score_signals = [
+            dict(
+                signal_type="buy", gauge_type="long", volatility_regime="calm",
+                cycle_quality_score=0.85, ml_confidence=0.90, ml_fallback=False,
+                long_score=60.0, short_score=45.0,
+                return_percent=1.0,
+            ),
+            dict(
+                signal_type="buy", gauge_type="long", volatility_regime="calm",
+                cycle_quality_score=0.80, ml_confidence=0.85, ml_fallback=False,
+                long_score=50.0, short_score=40.0,
+                return_percent=0.5,
+            ),
+            dict(
+                signal_type="buy", gauge_type="long", volatility_regime="calm",
+                cycle_quality_score=0.75, ml_confidence=0.80, ml_fallback=False,
+                long_score=65.0, short_score=35.0,
+                return_percent=0.8,
+            ),
+        ]
+        report = replay(low_score_signals)
+        failures = check(report, signals=low_score_signals)
+        reachability_failures = [f for f in failures if "threshold reachability" in f]
+        assert reachability_failures, (
+            "Expected a 'threshold reachability' failure when all BUY signals "
+            f"have long_score <= 65, but check() returned: {failures}"
+        )
