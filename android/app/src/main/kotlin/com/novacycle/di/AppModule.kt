@@ -5,6 +5,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.novacycle.data.local.NovaCycleDatabase
 import com.novacycle.data.local.dao.CandleDao
 import com.novacycle.data.local.dao.ConfidenceDao
@@ -32,6 +34,49 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
+    /**
+     * v1 → v2: candles gains a `timeframe` column and its primary key becomes
+     * (ticker, timeframe, timestamp). SQLite cannot alter primary keys, so the
+     * table is rebuilt; existing rows were all daily bars and are preserved as
+     * timeframe='daily'.
+     */
+    val MIGRATION_1_2 = object : Migration(1, 2) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS candles_new (
+                    ticker TEXT NOT NULL,
+                    timeframe TEXT NOT NULL DEFAULT 'daily',
+                    timestamp TEXT NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume INTEGER NOT NULL,
+                    is_extended_hours INTEGER NOT NULL,
+                    session_type TEXT NOT NULL,
+                    gap_percent REAL,
+                    gap_type TEXT,
+                    PRIMARY KEY(ticker, timeframe, timestamp)
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO candles_new (
+                    ticker, timeframe, timestamp, open, high, low, close,
+                    volume, is_extended_hours, session_type, gap_percent, gap_type
+                )
+                SELECT ticker, 'daily', timestamp, open, high, low, close,
+                       volume, is_extended_hours, session_type, gap_percent, gap_type
+                FROM candles
+                """.trimIndent()
+            )
+            db.execSQL("DROP TABLE candles")
+            db.execSQL("ALTER TABLE candles_new RENAME TO candles")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideNovaCycleDatabase(
@@ -41,7 +86,8 @@ object AppModule {
         NovaCycleDatabase::class.java,
         "novacycle_db"
     )
-        .fallbackToDestructiveMigration() // Simple strategy: rebuild on schema change
+        .addMigrations(MIGRATION_1_2)
+        .fallbackToDestructiveMigration() // Last-resort safety net for unknown versions
         .build()
 
     @Provides
