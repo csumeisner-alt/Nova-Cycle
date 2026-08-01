@@ -10,6 +10,8 @@ No ML model – pure heuristic with configurable multipliers.
 import logging
 from typing import Optional
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,10 +20,15 @@ class HoldTimePredictionEngine:
     Estimate how long to hold a VOO position opened on a BUY signal.
 
     Base hold-time rules:
-      long_score  > 70  → base = 15 days  (21_600 minutes)
-      short_score > 50  → base = 2 hours  (    120 minutes)
+      long_score  > LONG_BUY_THRESHOLD (65)  → base = 15 days  (21_600 minutes)
+      short_score > SHORT_BUY_THRESHOLD (50) → base = 2 hours  (    120 minutes)
       both triggered    → take the LONGER of the two (long dominates)
       neither triggered → default = 4 hours (240 minutes)
+
+    Thresholds are read from ``config.settings`` so they stay in sync with the
+    BUY signal thresholds used by the gauges.  Previously ``long_triggered``
+    used a hardcoded 70.0, which meant scores in the 65–70 band could produce
+    a BUY signal but would NOT receive the long base hold-time.
 
     Adjustments (multiplicative, applied in order):
       VIX regime:
@@ -76,8 +83,10 @@ class HoldTimePredictionEngine:
         confidence_factors: list[float] = []
 
         # ── Step 1: Determine base hold time ──────────────────────────────────
-        long_triggered = long_score > 70.0
-        short_triggered = short_score > 50.0  # mirrors SHORT_BUY_THRESHOLD
+        # Use the same thresholds as the gauges so a score that produces a BUY
+        # signal also qualifies for the appropriate base hold-time.
+        long_triggered = long_score > settings.LONG_BUY_THRESHOLD    # 65.0
+        short_triggered = short_score > settings.SHORT_BUY_THRESHOLD  # 50.0
 
         if long_triggered and short_triggered:
             base_minutes = self._BASE_LONG_MINUTES
