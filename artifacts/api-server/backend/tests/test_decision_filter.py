@@ -363,3 +363,55 @@ def test_neutral_signal_passthrough(df):
     )
     assert result["allowed"] is True
     assert result["final_signal"] == "neutral"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Cycle-quality gate boundary — wired to settings, not a local constant
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_buy_cycle_quality_gate_just_below_threshold(df):
+    """A BUY with cycle_quality_score just below settings.DECISION_BUY_MIN_CYCLE_QUALITY
+    must take the reduced-conviction (downgrade penalty) path, not the clean-pass path.
+    The boundary is read from settings so the test stays correct if the floor changes."""
+    from unittest.mock import patch
+
+    below = settings.DECISION_BUY_MIN_CYCLE_QUALITY - 0.01
+
+    with patch.object(df, "compute_cycle_quality_score", return_value=below):
+        result = _evaluate(df, "buy")
+
+    assert result["final_signal"] == "buy", (
+        "BUY should still be allowed (just downgraded) when cycle quality is marginally below threshold"
+    )
+    assert result["conviction_tier_cap"] == "opportunity", (
+        "conviction_tier_cap must be 'opportunity' when cycle quality is below the floor"
+    )
+    assert result["decision_penalty"] > 0.0, (
+        "decision_penalty must be non-zero for a below-threshold cycle quality"
+    )
+    assert "cycle quality" in result["reason"].lower(), (
+        "reason must mention cycle quality"
+    )
+    # Confirm the gate uses the live settings value, not a hardcoded constant
+    assert result["cycle_quality_score"] == pytest.approx(below)
+
+
+def test_buy_cycle_quality_gate_just_above_threshold(df):
+    """A BUY with cycle_quality_score just above settings.DECISION_BUY_MIN_CYCLE_QUALITY
+    must take the clean-pass path — no cycle-quality downgrade in the reason or penalty."""
+    from unittest.mock import patch
+
+    above = settings.DECISION_BUY_MIN_CYCLE_QUALITY + 0.01
+
+    with patch.object(df, "compute_cycle_quality_score", return_value=above):
+        result = _evaluate(df, "buy")
+
+    assert result["final_signal"] == "buy", (
+        "BUY must be allowed when cycle quality is marginally above threshold"
+    )
+    # No cycle-quality downgrade should appear in the reason
+    assert "cycle quality" not in result["reason"].lower(), (
+        "reason must not mention cycle quality when score is above the floor"
+    )
+    # Confirm the gate uses the live settings value, not a hardcoded constant
+    assert result["cycle_quality_score"] == pytest.approx(above)
