@@ -335,6 +335,127 @@ describe('PredictionCard – cross_bar_spike quarantine banner', () => {
   });
 });
 
+// ─── candidate badge ────────────────────────────────────────────────────────
+
+describe('PredictionCard – CANDIDATE badge', () => {
+  it('shows SELL CANDIDATE badge and "not executable" note when is_candidate=true and candidate_signal="sell"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          confidence_percent: 55,
+          trend: 'DOWN',
+          display_signal: 'NEUTRAL / HOLD',
+          is_candidate: true,
+          candidate_signal: 'sell',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('badge-candidate-long')).toBeInTheDocument(),
+    );
+
+    expect(screen.getByTestId('badge-candidate-long')).toHaveTextContent('SELL CANDIDATE');
+    expect(screen.getByTestId('text-candidate-note-long')).toHaveTextContent('not executable');
+    expect(screen.queryByTestId('badge-conviction-long')).not.toBeInTheDocument();
+  });
+
+  it('shows BUY CANDIDATE badge and "not executable" note when is_candidate=true and candidate_signal="buy"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          confidence_percent: 62,
+          trend: 'UP',
+          display_signal: 'NEUTRAL / HOLD',
+          is_candidate: true,
+          candidate_signal: 'buy',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('badge-candidate-long')).toBeInTheDocument(),
+    );
+
+    expect(screen.getByTestId('badge-candidate-long')).toHaveTextContent('BUY CANDIDATE');
+    expect(screen.getByTestId('text-candidate-note-long')).toHaveTextContent('not executable');
+    expect(screen.queryByTestId('badge-conviction-long')).not.toBeInTheDocument();
+  });
+
+  it('shows conviction badge and NOT candidate badge for a normal opportunity response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          confidence_percent: 70,
+          trend: 'UP',
+          display_signal: 'BUY BIAS',
+          conviction_tier: 'opportunity',
+          conviction_reasons: ['strong uptrend'],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('badge-conviction-long')).toBeInTheDocument(),
+    );
+
+    expect(screen.getByTestId('badge-conviction-long')).toHaveTextContent('OPPORTUNITY');
+    expect(screen.queryByTestId('badge-candidate-long')).not.toBeInTheDocument();
+  });
+
+  it('does not render candidate badge when is_candidate is false', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          confidence_percent: 55,
+          trend: 'DOWN',
+          display_signal: 'NEUTRAL / HOLD',
+          is_candidate: false,
+          candidate_signal: 'sell',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('text-confidence-long')).toHaveTextContent('55%'),
+    );
+
+    expect(screen.queryByTestId('badge-candidate-long')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('text-candidate-note-long')).not.toBeInTheDocument();
+  });
+
+  it('does not render candidate badge when candidate_signal is null even if is_candidate is true', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          confidence_percent: 55,
+          trend: 'DOWN',
+          display_signal: 'NEUTRAL / HOLD',
+          is_candidate: true,
+          candidate_signal: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('text-confidence-long')).toHaveTextContent('55%'),
+    );
+
+    expect(screen.queryByTestId('badge-candidate-long')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('text-candidate-note-long')).not.toBeInTheDocument();
+  });
+});
+
 // ─── auto-refresh transition tests ──────────────────────────────────────────
 
 function makeResponse(overrides: Record<string, unknown> = {}) {
