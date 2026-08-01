@@ -1,6 +1,7 @@
 package com.novacycle.ui.screens
 
 import com.novacycle.data.remote.models.AccuracyHistoryEntry
+import java.time.ZoneId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -208,6 +209,50 @@ class RetrainHistoryRowTest {
         assertEquals(
             "formatIsoTimestamp(\"\") must return \"\" (raw fallback) so RetrainHistoryRow does not crash",
             "",
+            displayed
+        )
+    }
+
+    // ── DST-edge timestamps — correct local hour must be shown ────────────────
+
+    /**
+     * Spring-forward boundary: America/New_York 2026-03-08.
+     *
+     * At 2026-03-08T07:00:00Z the clocks in New York jump from 2:00 AM EST to
+     * 3:00 AM EDT (UTC-4 takes effect at that exact instant).  The formatted
+     * output must show 03:00, not 02:00.
+     */
+    @Test
+    fun `spring-forward DST boundary shows correct post-transition local hour`() {
+        // 2026-03-08T07:00:00Z == the instant clocks spring from 02:00 EST → 03:00 EDT
+        val displayed = formatIsoTimestamp(
+            "2026-03-08T07:00:00Z",
+            ZoneId.of("America/New_York")
+        )
+        assertEquals(
+            "Timestamp at the spring-forward boundary must display as 03:00 EDT, not 02:00",
+            "2026-03-08 03:00",
+            displayed
+        )
+    }
+
+    /**
+     * Fall-back boundary: America/New_York 2025-11-02.
+     *
+     * At 2025-11-02T06:00:00Z the clocks in New York fall back from 2:00 AM EDT
+     * to 1:00 AM EST (UTC-5 takes effect at that exact instant).  The formatted
+     * output must show 01:00, not 02:00.
+     */
+    @Test
+    fun `fall-back DST boundary shows correct post-transition local hour`() {
+        // 2025-11-02T06:00:00Z == the instant clocks fall from 02:00 EDT → 01:00 EST
+        val displayed = formatIsoTimestamp(
+            "2025-11-02T06:00:00Z",
+            ZoneId.of("America/New_York")
+        )
+        assertEquals(
+            "Timestamp at the fall-back boundary must display as 01:00 EST, not 02:00",
+            "2025-11-02 01:00",
             displayed
         )
     }
