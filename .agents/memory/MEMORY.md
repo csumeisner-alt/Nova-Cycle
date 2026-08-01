@@ -13,3 +13,4 @@
 - [Market data and push readiness](novacycle-market-data-and-push.md) — validate OHLC before prediction and treat FCM credentials plus device registration as separate blockers
 - [SQLite async cancellation](sqlite-async-cancellation.md) — cancelled aiosqlite queries kill the pooled connection; timeout tests need file-based DBs, not :memory:
 - [Android chart framework](android-chart-framework.md) — server-side candle resampling, int volumes for Moshi, daily-only Room cache, plot-inset draw helpers, bucket-based signal mapping
+- [Android local build fallback](android-local-build.md) — build with SDK + standard JDK 17 and attach a debug APK when CI release signing is unavailable
