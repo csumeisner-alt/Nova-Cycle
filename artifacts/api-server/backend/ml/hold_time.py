@@ -19,7 +19,7 @@ class HoldTimePredictionEngine:
 
     Base hold-time rules:
       long_score  > 70  → base = 15 days  (21_600 minutes)
-      short_score > 60  → base = 2 hours  (    120 minutes)
+      short_score > 50  → base = 2 hours  (    120 minutes)
       both triggered    → take the LONGER of the two (long dominates)
       neither triggered → default = 4 hours (240 minutes)
 
@@ -77,7 +77,7 @@ class HoldTimePredictionEngine:
 
         # ── Step 1: Determine base hold time ──────────────────────────────────
         long_triggered = long_score > 70.0
-        short_triggered = short_score > 60.0
+        short_triggered = short_score > 50.0  # mirrors SHORT_BUY_THRESHOLD
 
         if long_triggered and short_triggered:
             base_minutes = self._BASE_LONG_MINUTES

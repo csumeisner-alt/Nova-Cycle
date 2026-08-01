@@ -10,9 +10,21 @@ Score composition:
                      → maps [0,1] to [-40,+40]
   total_score      = (indicator_score + ml_score) × time_decay_weight
 
-BUY  threshold: total_score > +60
-SELL threshold: total_score < -60
+BUY  threshold: total_score > +50
+SELL threshold: total_score < -50
 NEUTRAL:        otherwise
+
+Extended-hours calibration:
+  Indicator contributions are already halved for extended-hours bars
+  (ext_mult = 0.5 inside compute_indicator_score). The time-decay
+  base_weight is therefore set to 1.0 for ALL sessions — applying a
+  second 0.5 multiplier would make the threshold mathematically
+  unreachable during extended hours and would suppress strong setups
+  that only appear pre/post-market. The indicator halving alone is
+  sufficient to reflect the lower reliability of thin-session data.
+
+  Extended max raw score:  13 (indicators) + 40 (ML) = 53  → clears ±50
+  Regular   max raw score: 26 (indicators) + 40 (ML) = 66  → clears ±50
 
 Liquidity filter:
   LiquidityScore = Volume_extended / Volume_regular
@@ -23,7 +35,7 @@ Gap influence (applied AFTER liquidity filter):
   gap_down → subtract 10 from the bearish (sell) components
 
 Time-decay:
-  base_weight = 0.5 if is_extended else 1.0
+  base_weight = 1.0 (same for regular and extended sessions)
   Weight(t)   = base_weight × exp(−LAMBDA_SHORT × age_in_minutes)
 """
 
@@ -222,8 +234,8 @@ class ShortTrendGauge:
           total_score = clamp(raw_score × Weight(t), −100, +100)
 
         Signal rules:
-          score >  SHORT_BUY_THRESHOLD  (+60) → 'buy'
-          score <  SHORT_SELL_THRESHOLD (−60) → 'sell'
+          score >  SHORT_BUY_THRESHOLD  (+50) → 'buy'
+          score <  SHORT_SELL_THRESHOLD (−50) → 'sell'
           otherwise                           → 'neutral'
 
         Liquidity suppression (applied here too):
@@ -278,9 +290,13 @@ class ShortTrendGauge:
             raw_score = indicator_score + ml_score
 
             # ── Time-decay ─────────────────────────────────────────────────────
-            # base_weight = 0.5 if extended else 1.0
-            # Weight(t)   = base_weight × exp(−LAMBDA_SHORT × age_in_minutes)
-            base_weight = 0.5 if is_extended else 1.0
+            # base_weight = 1.0 for both regular and extended sessions.
+            # Extended-hours uncertainty is already captured by the 0.5
+            # indicator multiplier inside compute_indicator_score; applying
+            # a second 0.5 here would make the threshold unreachable for any
+            # extended-hours setup regardless of signal strength.
+            # Weight(t) = 1.0 × exp(−LAMBDA_SHORT × age_in_minutes)
+            base_weight = 1.0
             weight = base_weight * math.exp(
                 -settings.LAMBDA_SHORT * max(0.0, age_in_minutes)
             )

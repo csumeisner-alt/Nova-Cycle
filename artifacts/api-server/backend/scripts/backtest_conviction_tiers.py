@@ -7,6 +7,11 @@ compares the two tiers on:
   - win rate (per completed BUY→SELL cycle)
   - average return per cycle
 
+Also emits a candidate-frequency / tier-outcome report that breaks results
+down by gauge type and session type (regular vs extended hours), so it is
+easy to see how often each combination qualifies and whether threshold
+changes are suppressing or releasing setups.
+
 Acceptance criteria (exit code non-zero on failure):
   1. Tiering must NEVER suppress a signal: every actionable input signal must
      receive a tier (opportunity coverage == 100% of signals; guardrail allows
@@ -22,14 +27,17 @@ Data source:
 Fixture format (JSON):
   {
     "signals": [
-      {"signal_type": "buy", "gauge_type": "long",
+      {"signal_type": "buy", "gauge_type": "short",
+       "is_extended": false,
        "volatility_regime": "calm", "cycle_quality_score": 0.8,
        "ml_confidence": 0.9, "ml_fallback": false,
-       "long_score": 75, "short_score": 40,
+       "long_score": 75, "short_score": 55,
        "return_percent": 1.2},   # realized cycle return for this signal
       ...
     ]
   }
+  Optional signal field: "is_extended" (bool, default false) marks the bar as
+  an extended-hours candidate; it appears in the candidate-frequency report.
 
 Usage:
     cd artifacts/api-server/backend
@@ -96,12 +104,57 @@ def replay(signals: list[dict]) -> dict:
     hc_rows = [s for tier, s in tiers if tier == TIER_HIGH_CONVICTION]
     opp_rows = [s for tier, s in tiers if tier == TIER_OPPORTUNITY]
 
+    # ── Candidate-frequency / tier-outcome report ─────────────────────────────
+    # Breaks down by gauge type × session type so it is easy to see which
+    # combinations qualify and how the threshold change affects coverage.
+    # "is_extended" is an optional signal field (default False).
+    candidate_freq: dict[str, dict] = {}
+    for tier, sig in tiers:
+        gauge = sig.get("gauge_type", "long")
+        session = "extended" if sig.get("is_extended", False) else "regular"
+        key = f"{gauge}:{session}"
+        if key not in candidate_freq:
+            candidate_freq[key] = {
+                "gauge_type": gauge,
+                "session": session,
+                "total": 0,
+                TIER_HIGH_CONVICTION: 0,
+                TIER_OPPORTUNITY: 0,
+            }
+        candidate_freq[key]["total"] += 1
+        candidate_freq[key][tier] += 1
+    # Add zero rows for combinations present in signals but never tiered
+    for sig in signals:
+        gauge = sig.get("gauge_type", "long")
+        session = "extended" if sig.get("is_extended", False) else "regular"
+        key = f"{gauge}:{session}"
+        if key not in candidate_freq:
+            candidate_freq[key] = {
+                "gauge_type": gauge,
+                "session": session,
+                "total": 0,
+                TIER_HIGH_CONVICTION: 0,
+                TIER_OPPORTUNITY: 0,
+            }
+    # Attach tier rate for readability
+    candidate_freq_list = []
+    for entry in sorted(candidate_freq.values(), key=lambda x: (x["gauge_type"], x["session"])):
+        total_input = sum(
+            1 for s in signals
+            if s.get("gauge_type", "long") == entry["gauge_type"]
+            and ("extended" if s.get("is_extended", False) else "regular") == entry["session"]
+        )
+        entry["input_candidates"] = total_input
+        entry["tier_rate"] = round(entry["total"] / total_input, 4) if total_input else None
+        candidate_freq_list.append(entry)
+
     return {
         "input_signals": len(signals),
         "untiered_neutral": untiered,
         "overall": metrics(all_rows),
         "high_conviction": metrics(hc_rows),
         "opportunity_only": metrics(opp_rows),
+        "candidate_frequency": candidate_freq_list,
     }
 
 
@@ -183,7 +236,29 @@ def main() -> int:
         return 0
 
     report = replay(signals)
+
+    # ── Candidate-frequency report ─────────────────────────────────────────────
+    print("── Candidate frequency / tier outcomes ──────────────────────────────")
+    freq = report.get("candidate_frequency", [])
+    if freq:
+        header = f"{'gauge:session':<20} {'input':>6} {'tiered':>7} {'tier_rate':>10} {TIER_HIGH_CONVICTION:>16} {TIER_OPPORTUNITY:>12}"
+        print(header)
+        print("-" * len(header))
+        for row in freq:
+            label = f"{row['gauge_type']}:{row['session']}"
+            print(
+                f"{label:<20} {row['input_candidates']:>6} {row['total']:>7} "
+                f"{(row['tier_rate'] or 0.0):>9.1%} "
+                f"{row[TIER_HIGH_CONVICTION]:>16} "
+                f"{row[TIER_OPPORTUNITY]:>12}"
+            )
+    else:
+        print("  (no tiered candidates)")
+    print()
+
+    # ── Full JSON report ───────────────────────────────────────────────────────
     print(json.dumps(report, indent=2))
+
     failures = check(report)
     if failures:
         print("\nFAIL:")

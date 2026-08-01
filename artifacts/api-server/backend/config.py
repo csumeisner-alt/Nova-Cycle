@@ -49,8 +49,16 @@ class Settings(BaseSettings):
     # paths were mathematically unreachable even for perfect inputs.
     LONG_BUY_THRESHOLD: float = 65.0
     LONG_SELL_THRESHOLD: float = -65.0
-    SHORT_BUY_THRESHOLD: float = 60.0
-    SHORT_SELL_THRESHOLD: float = -60.0
+    # Short-gauge max raw score:
+    #   Regular  hours: indicator (±26) + ML (±40) = ±66 → threshold ±50 reachable
+    #   Extended hours: indicator (±13) + ML (±40) = ±53 → threshold ±50 reachable
+    # Previously at ±60, extended-hours was unreachable (double-penalty: indicator
+    # contributions already halved AND base_weight = 0.5 → max extended = 26.5).
+    # The base_weight is now 1.0 for all sessions (see short_gauge.py); ±50 lets
+    # strong-but-not-perfect setups qualify without requiring unusually rare
+    # full-agreement across all four indicators simultaneously.
+    SHORT_BUY_THRESHOLD: float = 50.0
+    SHORT_SELL_THRESHOLD: float = -50.0
 
     # ── Liquidity ─────────────────────────────────────────────────────────────
     # LiquidityScore = Volume_extended / Volume_regular
