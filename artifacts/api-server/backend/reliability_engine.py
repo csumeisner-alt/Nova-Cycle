@@ -239,11 +239,13 @@ async def _build_cycle(
 
 async def _lookup_price(
     session: AsyncSession, ticker: str, ts: datetime, gauge_type: str
-) -> float:
+) -> Optional[float]:
     """
     Return the closest VOO close price at or before the signal timestamp.
     Long gauge uses daily candles; short gauge uses 5-minute candles.
-    Falls back to a synthetic price if no candle is available.
+    Returns None when no candle row is available so callers can treat the
+    resulting cycle as price-data-absent (return_percent sentinel = 0.0)
+    rather than computing a return from a synthetic $100 placeholder.
     """
     timeframe = "daily" if gauge_type == "long" else "5min"
     result = await session.execute(
@@ -261,8 +263,8 @@ async def _lookup_price(
     row = result.scalar_one_or_none()
     if row is not None and row.close is not None:
         return float(row.close)
-    # Fallback synthetic price if no candle data is available yet
-    return 100.0
+    # No candle available — return None so _build_cycle records return_percent=0.0
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
