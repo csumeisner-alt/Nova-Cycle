@@ -301,6 +301,148 @@ class TestFlaggedRetrainSkipsMetadata:
         assert long_rows[0]["accuracy"] == pytest.approx(0.60)
 
 
+class TestOOSLiftGateRejectsNegativeLiftRetrain:
+    """A long-trend retrain whose purged OOS accuracy_lift_vs_majority is at
+    or below LONG_MIN_OOS_ACCURACY_LIFT must be rejected and rolled back.
+    The scalar ml_confidence API contract (predict → float in [0,1]) is
+    verified to remain unchanged by the gate."""
+
+    def _make_trainer(self, monkeypatch, daily=None):
+        trainer = ModelTrainer()
+
+        async def _load_daily(db):
+            return daily if daily is not None else pd.DataFrame()
+
+        async def _load_fivemin(db):
+            return pd.DataFrame()
+
+        async def _load_vix(db):
+            return pd.DataFrame()
+
+        async def _load_spx(db):
+            return pd.Series(dtype=float)
+
+        async def _noop_meta(*a, **k):
+            return None
+
+        monkeypatch.setattr(ModelTrainer, "_load_daily_voo", staticmethod(_load_daily))
+        monkeypatch.setattr(ModelTrainer, "_load_fivemin_voo", staticmethod(_load_fivemin))
+        monkeypatch.setattr(ModelTrainer, "_load_vix", staticmethod(_load_vix))
+        monkeypatch.setattr(ModelTrainer, "_load_spx_close", staticmethod(_load_spx))
+        monkeypatch.setattr(
+            ModelTrainer, "_save_metadata", staticmethod(_noop_meta)
+        )
+        return trainer
+
+    def test_negative_oos_lift_rolls_back_model(self, isolated_paths, monkeypatch):
+        """A retrain that reports a negative OOS lift (below the majority
+        baseline) must be rejected and the pre-retrain model restored."""
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        # Establish a working model file on disk.
+        LongTrendModel().train(df, {})
+        assert long_path.exists()
+        good_bytes = long_path.read_bytes()
+        ts.record_training_result("long_trend", success=True, accuracy=0.60)
+
+        trainer = self._make_trainer(monkeypatch, daily=df)
+
+        # Simulate a retrain that writes a new pkl and reports a negative OOS
+        # lift — the candidate beats neither the majority baseline nor the
+        # existing model.  The gate must detect this and roll back.
+        def _below_baseline_train(self_m, d, indicators):
+            lt.MODEL_PATH.write_bytes(b"below-baseline-candidate")
+            self_m.model = object()  # non-None so gate logic is reached
+            return {
+                "accuracy": 0.45,  # headline OOS acc
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "calibration": {
+                    "evaluated": True,
+                    "oos_accuracy": 0.45,
+                    "majority_baseline_accuracy": 0.60,
+                    "accuracy_lift_vs_majority": -0.15,  # negative lift → reject
+                },
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _below_baseline_train)
+
+        asyncio.run(trainer.run_initial_training(object()))
+
+        # The gate must restore the pre-retrain model bytes.
+        assert long_path.read_bytes() == good_bytes, (
+            "Pre-retrain model must be restored when OOS lift is negative"
+        )
+
+        # The failure must be recorded so health endpoints and the shortened
+        # retry interval kick in.
+        status = ts.get_training_status().get("long_trend", {})
+        assert status.get("success") is False, "Expected failure recorded for rejected retrain"
+        assert "OOS quality gate" in (status.get("error") or ""), (
+            f"Expected OOS quality gate message in error, got: {status.get('error')}"
+        )
+
+    def test_positive_oos_lift_accepts_model(self, isolated_paths, monkeypatch):
+        """A retrain with positive OOS lift must be accepted and the model
+        on disk replaced.  The ml_confidence scalar contract is unchanged:
+        predict() returns a float in [0, 1] after acceptance."""
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        LongTrendModel().train(df, {})
+        ts.record_training_result("long_trend", success=True, accuracy=0.50)
+
+        trainer = self._make_trainer(monkeypatch, daily=df)
+
+        new_candidate_bytes = b"accepted-candidate-model"
+
+        def _above_baseline_train(self_m, d, indicators):
+            lt.MODEL_PATH.write_bytes(new_candidate_bytes)
+            self_m.model = object()
+            return {
+                "accuracy": 0.65,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "calibration": {
+                    "evaluated": True,
+                    "oos_accuracy": 0.65,
+                    "majority_baseline_accuracy": 0.55,
+                    "accuracy_lift_vs_majority": 0.10,  # positive → accept
+                },
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _above_baseline_train)
+
+        asyncio.run(trainer.run_initial_training(object()))
+
+        # Accepted: the new candidate bytes must be on disk.
+        assert long_path.read_bytes() == new_candidate_bytes, (
+            "New model must be kept when OOS lift is positive"
+        )
+
+        status = ts.get_training_status().get("long_trend", {})
+        assert status.get("success") is True, "Expected success recorded for accepted retrain"
+
+    def test_ml_confidence_contract_unchanged(self, isolated_paths, monkeypatch):
+        """After a successful retrain the predict() contract (scalar float in
+        [0, 1]) must be unchanged — no APK rebuild required."""
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        model = LongTrendModel()
+        model.train(df, {})
+        X, _, _ = model.build_features(df, {})
+        if len(X) == 0:
+            pytest.skip("No feature rows produced — insufficient data")
+
+        result = model.predict(X[-1:])
+        assert isinstance(result, float), f"predict() must return float, got {type(result)}"
+        assert 0.0 <= result <= 1.0, f"predict() must return [0,1], got {result}"
+
+
 class TestPredictReloadsRestoredModel:
     """After a rollback, the next predict() must serve the restored on-disk
     model (via mtime-based _maybe_reload), not the regressed in-memory one."""
@@ -314,7 +456,7 @@ class TestPredictReloadsRestoredModel:
         model.train(df_good, {})
         good_bytes = long_path.read_bytes()
 
-        X, _ = model.build_features(df_good, {})
+        X, _, _ = model.build_features(df_good, {})
         x = X[-1:]
         good_pred = model.predict(x)
 

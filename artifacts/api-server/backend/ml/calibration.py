@@ -94,6 +94,49 @@ def _reliability_bins(probs: np.ndarray, labels: np.ndarray) -> list:
     return bins
 
 
+def _regime_breakdown(
+    probs: np.ndarray,
+    labels: np.ndarray,
+    regime_labels: np.ndarray,
+) -> list:
+    """Per-VIX-regime OOS metrics for operator diagnostics.
+
+    Args:
+        probs:         Pooled OOS predicted probabilities [n].
+        labels:        Pooled OOS ground-truth labels [n] (0/1).
+        regime_labels: Integer VIX-regime encoding aligned to probs/labels [n].
+                       Encoding: 0=LOW, 1=NORMAL, 2=HIGH, 3=EXTREME.
+
+    Returns:
+        List of dicts, one per regime code present in the OOS data.
+    """
+    regime_names = {0: "LOW", 1: "NORMAL", 2: "HIGH", 3: "EXTREME"}
+    result = []
+    for code in sorted(np.unique(regime_labels).tolist()):
+        mask = regime_labels == code
+        n = int(mask.sum())
+        if n == 0:
+            continue
+        r_probs = probs[mask]
+        r_labels = labels[mask]
+        r_preds = (r_probs >= 0.5).astype(int)
+        r_acc = float((r_preds == r_labels).mean())
+        r_pos_rate = float(r_labels.mean())
+        r_baseline = max(r_pos_rate, 1.0 - r_pos_rate)
+        r_brier = float(np.mean((r_probs - r_labels) ** 2))
+        result.append({
+            "regime": regime_names.get(int(code), str(int(code))),
+            "regime_code": int(code),
+            "oos_samples": n,
+            "oos_accuracy": r_acc,
+            "majority_baseline_accuracy": r_baseline,
+            "accuracy_lift_vs_majority": r_acc - r_baseline,
+            "oos_brier_score": r_brier,
+            "positive_rate": r_pos_rate,
+        })
+    return result
+
+
 def walk_forward_evaluate(
     X: np.ndarray,
     y: np.ndarray,
@@ -101,6 +144,7 @@ def walk_forward_evaluate(
     model_factory: Callable,
     n_splits: int = 5,
     embargo: int = LABEL_HORIZON,
+    regime_labels: Optional[np.ndarray] = None,
 ) -> tuple[dict, np.ndarray, np.ndarray]:
     """
     Purged, chronological walk-forward evaluation.
@@ -109,6 +153,17 @@ def walk_forward_evaluate(
     latter part of the series; each fold trains on all rows strictly before
     the test window minus an `embargo` gap (>= label horizon) so no training
     label overlaps test prices.
+
+    Args:
+        X:             Feature matrix [n, features].
+        y:             Binary labels [n].
+        weights:       Sample weights [n] or None.
+        model_factory: Callable returning a fresh untrained classifier.
+        n_splits:      Number of sequential test folds.
+        embargo:       Purge gap in rows (>= label horizon) between train and test.
+        regime_labels: Optional integer VIX-regime encoding [n] (0=LOW … 3=EXTREME).
+                       When provided, per-regime OOS metrics are appended to the
+                       report so operators can see where the model works or fails.
 
     Returns:
         (metrics dict, pooled out-of-sample probs, pooled labels)
@@ -128,6 +183,7 @@ def walk_forward_evaluate(
 
     oos_probs: list = []
     oos_labels: list = []
+    oos_regimes: list = []
     fold_stats = []
 
     for k in range(n_splits):
@@ -148,6 +204,8 @@ def walk_forward_evaluate(
         probs = model.predict_proba(X[t0:t1])[:, 1]
         oos_probs.append(probs)
         oos_labels.append(y[t0:t1])
+        if regime_labels is not None and len(regime_labels) == n:
+            oos_regimes.append(regime_labels[t0:t1])
         fold_stats.append({
             "fold": k + 1,
             "train_rows": int(train_end),
@@ -199,6 +257,15 @@ def walk_forward_evaluate(
         "reliability_bins": _reliability_bins(probs, labels),
         "folds": fold_stats,
     }
+
+    # Per-VIX-regime breakdown: helps operators diagnose whether the model
+    # works in calm LOW/NORMAL regimes but fails in HIGH/EXTREME, or vice
+    # versa, so horizon/threshold tuning can target the right regime.
+    if oos_regimes:
+        pooled_regimes = np.concatenate(oos_regimes)
+        if len(pooled_regimes) == len(probs):
+            metrics["regime_breakdown"] = _regime_breakdown(probs, labels, pooled_regimes)
+
     return metrics, probs, labels
 
 

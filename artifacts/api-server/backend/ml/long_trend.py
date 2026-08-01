@@ -154,7 +154,7 @@ class LongTrendModel:
         self,
         df: pd.DataFrame,
         indicators: dict,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Build the feature matrix from regular-hours daily data.
 
@@ -167,10 +167,14 @@ class LongTrendModel:
             indicators: Output of TechnicalIndicators.compute_all()
 
         Returns:
-            (X: np.ndarray [n, features], weights: np.ndarray [n])
+            (X: np.ndarray [n, features], weights: np.ndarray [n],
+             valid_positions: np.ndarray [n] of integer row positions in df
+             that contributed to X, enabling caller to align labels by
+             position rather than assuming no rows were skipped.)
         """
         rows = []
         weights = []
+        valid_positions = []
 
         now = pd.Timestamp.utcnow().tz_localize(None)
 
@@ -317,6 +321,7 @@ class LongTrendModel:
                     vix_miss,
                 ]
                 rows.append(feature_row)
+                valid_positions.append(i)
 
                 # Time-decay weight: Weight(t) = exp(-LAMBDA_LONG × age_in_days)
                 ts_naive = ts
@@ -331,9 +336,17 @@ class LongTrendModel:
                 continue
 
         if not rows:
-            return np.array([]).reshape(0, len(FEATURE_NAMES)), np.array([])
+            return (
+                np.array([]).reshape(0, len(FEATURE_NAMES)),
+                np.array([]),
+                np.array([], dtype=np.intp),
+            )
 
-        return np.array(rows, dtype=np.float32), np.array(weights, dtype=np.float32)
+        return (
+            np.array(rows, dtype=np.float32),
+            np.array(weights, dtype=np.float32),
+            np.array(valid_positions, dtype=np.intp),
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Training
@@ -394,8 +407,12 @@ class LongTrendModel:
                 for k, v in indicators.items()
             }
 
-            X, weights = self.build_features(df, trimmed_indicators)
-            y = df["label"].values[: len(X)]
+            X, weights, valid_pos = self.build_features(df, trimmed_indicators)
+            # Align labels by the exact positions that produced feature rows.
+            # A plain [:len(X)] slice is wrong when build_features skips rows
+            # (e.g. non-positive close) because the skipped positions shift the
+            # label assignment for every row that follows them.
+            y = df["label"].values[valid_pos]
 
             min_rows = int(getattr(settings, "LONG_MIN_TRAINING_ROWS", 100))
             if len(X) < min_rows:
@@ -466,9 +483,18 @@ class LongTrendModel:
                         random_state=42,
                     )
 
+                # Extract VIX regime labels (column index 4 = vix_regime_enc)
+                # to enable per-regime OOS breakdown in the walk-forward report.
+                try:
+                    vix_regime_col = FEATURE_NAMES.index("vix_regime_enc")
+                    regime_labels = X[:, vix_regime_col].astype(np.intp)
+                except Exception:
+                    regime_labels = None
+
                 wf_metrics, oos_probs, oos_labels = (
                     ml_calibration.walk_forward_evaluate(
-                        X, y, weights, model_factory=_factory
+                        X, y, weights, model_factory=_factory,
+                        regime_labels=regime_labels,
                     )
                 )
                 calibration_summary.update(wf_metrics)
@@ -680,7 +706,7 @@ class LongTrendModel:
             np.ndarray of shape (1, n_features) or None if insufficient data.
         """
         try:
-            X, _ = self.build_features(df, indicators)
+            X, _, _ = self.build_features(df, indicators)
             if len(X) == 0:
                 return None
             return X[-1:].astype(np.float32)

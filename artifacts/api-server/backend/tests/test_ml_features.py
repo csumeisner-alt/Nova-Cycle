@@ -182,9 +182,9 @@ class TestOvernightWeighted:
 class TestModelPipelines:
     def test_long_feature_matrix_width(self):
         df = _daily_df()
-        X, w = LongTrendModel().build_features(df, {})
+        X, w, pos = LongTrendModel().build_features(df, {})
         assert X.shape[1] == len(LONG_FEATURES)
-        assert len(w) == len(X)
+        assert len(w) == len(X) == len(pos)
         assert np.isfinite(X).all()
 
     def test_short_feature_matrix_width(self):
