@@ -247,7 +247,47 @@ class ModelTrainer:
             else:
                 new_acc = long_result.get("accuracy", 0.0)
                 prev_acc = get_last_successful_accuracy("long_trend")
-                regressed, reason = check_accuracy_regression(new_acc, prev_acc)
+                new_metric = long_result.get("accuracy_metric")
+                prev_metric = get_last_successful_accuracy_metric("long_trend")
+                walk_forward = long_result.get("calibration") or {}
+                oos_lift = walk_forward.get("accuracy_lift_vs_majority")
+                regressed = False
+                reason = None
+                if (
+                    new_metric == "purged_walk_forward_oos"
+                    and oos_lift is not None
+                    and float(oos_lift)
+                    <= float(settings.LONG_MIN_OOS_ACCURACY_LIFT)
+                ):
+                    regressed = True
+                    reason = (
+                        "OOS quality gate: accuracy lift versus majority baseline "
+                        f"is {float(oos_lift):.4f}, required > "
+                        f"{float(settings.LONG_MIN_OOS_ACCURACY_LIFT):.4f}"
+                    )
+                    logger.error("Long-trend %s", reason)
+                # The existing 0.56 value is a legacy train-set metric. It is
+                # not comparable to a new purged OOS result and must not block
+                # migration to the honest metric.
+                if not regressed:
+                    upgrade_transition = _is_metric_upgrade_transition(
+                        prev_metric, new_metric
+                    )
+                    if upgrade_transition:
+                        logger.info(
+                            "long_trend accuracy metric upgraded (%s → %s); "
+                            "skipping regression comparison against %.4f",
+                            prev_metric, new_metric, prev_acc or 0.0,
+                        )
+                        regressed, reason = False, None
+                    else:
+                        if prev_metric != new_metric:
+                            logger.warning(
+                                "long_trend accuracy metric mismatch (%s → %s); "
+                                "regression check still applies",
+                                prev_metric, new_metric,
+                            )
+                        regressed, reason = check_accuracy_regression(new_acc, prev_acc)
                 if regressed:
                     logger.error("Long-trend %s", reason)
                     restored = _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
@@ -256,11 +296,15 @@ class ModelTrainer:
                         success=False,
                         error=reason,
                         accuracy=new_acc,
+                        accuracy_metric=new_metric,
                         rolled_back=restored,
                     )
                 else:
                     record_training_result(
-                        "long_trend", success=True, accuracy=new_acc
+                        "long_trend",
+                        success=True,
+                        accuracy=new_acc,
+                        accuracy_metric=long_result.get("accuracy_metric"),
                     )
                     long_flagged = False
             if long_flagged:
@@ -578,6 +622,7 @@ class ModelTrainer:
             df = pd.DataFrame(records)
             df.set_index("timestamp", inplace=True)
             df.index = pd.to_datetime(df.index)
+            df = df[~df.index.duplicated(keep="last")]
             return df
         except Exception as exc:
             logger.error("_load_daily_voo error: %s", exc)
@@ -615,6 +660,7 @@ class ModelTrainer:
             df = pd.DataFrame(records)
             df.set_index("timestamp", inplace=True)
             df.index = pd.to_datetime(df.index)
+            df = df[~df.index.duplicated(keep="last")]
             return df
         except Exception as exc:
             logger.error("_load_fivemin_voo error: %s", exc)
@@ -648,6 +694,7 @@ class ModelTrainer:
             df = pd.DataFrame(records)
             df.set_index("timestamp", inplace=True)
             df.index = pd.to_datetime(df.index)
+            df = df[~df.index.duplicated(keep="last")]
             return df
         except Exception as exc:
             logger.error("_load_vix error: %s", exc)
@@ -680,6 +727,7 @@ class ModelTrainer:
                 index=pd.to_datetime([r.timestamp for r in rows]),
                 dtype=float,
             )
+            series = series[~series.index.duplicated(keep="last")]
             logger.info("Loaded %d daily SPX futures closes", len(series))
             return series
         except Exception as exc:

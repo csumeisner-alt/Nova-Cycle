@@ -212,7 +212,12 @@ class DataFetcher:
                 progress=False,
             )
             # ^VIX is an index; Yahoo reports valid index candles with volume 0.
-            df = self._normalise_columns(df, drop_zero_volume=False)
+            # VIX is an index and legitimate regime jumps are common. Keep
+            # intra-bar OHLC validation, but skip the equity-feed cross-bar
+            # spike heuristic so real VIX observations are not quarantined.
+            df = self._normalise_columns(
+                df, drop_zero_volume=False, spike_threshold=0.0
+            )
             logger.info("Fetched %d daily VIX candles", len(df))
             return df
         except Exception as exc:
@@ -270,7 +275,9 @@ class DataFetcher:
                 progress=False,
             )
             # ^VIX is an index; Yahoo reports valid index candles with volume 0.
-            df = self._normalise_columns(df, drop_zero_volume=False)
+            df = self._normalise_columns(
+                df, drop_zero_volume=False, spike_threshold=0.0
+            )
             logger.info("Backfill fetch: %d daily VIX candles", len(df))
             return df
         except Exception as exc:
@@ -652,6 +659,7 @@ class DataFetcher:
         df: pd.DataFrame,
         *,
         drop_zero_volume: bool = True,
+        spike_threshold: Optional[float] = None,
     ) -> pd.DataFrame:
         """
         Standardise yfinance DataFrame column names to lower-case.
@@ -694,7 +702,9 @@ class DataFetcher:
         if not df.empty:
             try:
                 from ingestion.ohlc_validator import filter_valid_ohlc
-                df_valid, df_quarantined = filter_valid_ohlc(df)
+                df_valid, df_quarantined = filter_valid_ohlc(
+                    df, spike_threshold=spike_threshold
+                )
                 if not df_quarantined.empty:
                     for ts, row in df_quarantined.iterrows():
                         logger.warning(

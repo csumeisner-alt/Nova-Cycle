@@ -140,6 +140,17 @@ class Settings(BaseSettings):
     # ── Data history ──────────────────────────────────────────────────────────
     HISTORY_YEARS: int = 10
 
+    # ── Long-model target ─────────────────────────────────────────────────────
+    # The long model is trained on meaningful 21-trading-day moves.  Returns
+    # inside this band are treated as noise and excluded from the directional
+    # classifier instead of being forced into BUY/SELL labels.
+    LONG_LABEL_HORIZON_DAYS: int = 21
+    LONG_MEANINGFUL_MOVE_THRESHOLD: float = 0.02
+    LONG_MIN_TRAINING_ROWS: int = 80
+    # A directional model must beat the majority-class baseline on honest
+    # purged OOS evaluation before it can replace the active model.
+    LONG_MIN_OOS_ACCURACY_LIFT: float = 0.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

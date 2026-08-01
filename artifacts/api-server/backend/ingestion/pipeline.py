@@ -164,11 +164,84 @@ class IngestionPipeline:
                     "Found %d daily candles in DB. Running incremental update…", count
                 )
                 await self.run_incremental_update(db_session)
+
+            # A previously successful deployment may have VOO history but
+            # only a short VIX history.  Incremental ingestion alone cannot
+            # repair that because it starts at the latest stored VIX date.
+            # Reconcile the historical VIX start against VOO after normal
+            # startup ingestion, without blocking the main feed if Yahoo is
+            # unavailable.
+            await self._ensure_vix_history_coverage(db_session)
         finally:
             # Signal scheduled jobs that startup is done regardless of outcome.
             self._initialized_flag = True
             self._get_initialized_event().set()
             logger.info("IngestionPipeline initialized — scheduled jobs may now run.")
+
+    async def _ensure_vix_history_coverage(self, db_session: AsyncSession) -> None:
+        """Backfill VIX when its stored range starts materially after VOO.
+
+        VIX is an index, so zero volume remains valid.  This method is
+        deliberately best-effort: predictions can continue with an explicit
+        missing-data feature if the vendor is unavailable.
+        """
+        try:
+            voo_result = await db_session.execute(
+                select(func.min(VooCandle.timestamp)).where(
+                    VooCandle.ticker == settings.TICKER,
+                    VooCandle.timeframe == "daily",
+                )
+            )
+            vix_result = await db_session.execute(
+                select(func.min(VixCandle.timestamp)).where(
+                    VixCandle.ticker == settings.VIX_TICKER,
+                    VixCandle.timeframe == "daily",
+                )
+            )
+            voo_dates_result = await db_session.execute(
+                select(VooCandle.timestamp).where(
+                    VooCandle.ticker == settings.TICKER,
+                    VooCandle.timeframe == "daily",
+                    VooCandle.is_extended_hours == False,
+                ).order_by(VooCandle.timestamp)
+            )
+            vix_dates_result = await db_session.execute(
+                select(VixCandle.timestamp).where(
+                    VixCandle.ticker == settings.VIX_TICKER,
+                    VixCandle.timeframe == "daily",
+                )
+            )
+            voo_start = voo_result.scalar()
+            vix_start = vix_result.scalar()
+            if voo_start is None:
+                return
+            voo_dates = {row[0].date() for row in voo_dates_result.fetchall()}
+            vix_dates = {row[0].date() for row in vix_dates_result.fetchall()}
+            missing_dates = sorted(voo_dates - vix_dates)
+            if not missing_dates:
+                return
+
+            start = datetime.combine(missing_dates[0], datetime.min.time())
+            end = datetime.combine(missing_dates[-1], datetime.min.time())
+            logger.warning(
+                "vix_history_coverage_gap voo_start=%s vix_start=%s "
+                "missing_days=%d action=backfill",
+                voo_start.date().isoformat(),
+                vix_start.date().isoformat() if vix_start else None,
+                len(missing_dates),
+            )
+            df = await self.fetcher.fetch_vix_daily_range(start, end)
+            if df.empty:
+                logger.warning("vix_history_coverage_backfill_empty")
+                return
+            await self.store_vix_candles(
+                df, db_session, timeframe="daily", _is_backfill=True
+            )
+            logger.info(
+                "vix_history_coverage_backfill_complete rows=%d", len(df)
+            )
+        except Exception as exc:
+            logger.error("vix_history_coverage_backfill_failed error=%s", exc)
 
     async def remove_invalid_voo_candles(self, db_session: AsyncSession) -> int:
         """Remove malformed VOO rows left by older ingestion versions.

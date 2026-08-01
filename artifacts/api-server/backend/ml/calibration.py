@@ -164,7 +164,21 @@ def walk_forward_evaluate(
 
     probs = np.concatenate(oos_probs)
     labels = np.concatenate(oos_labels).astype(int)
-    accuracy = float(((probs >= 0.5).astype(int) == labels).mean())
+    predictions = (probs >= 0.5).astype(int)
+    accuracy = float((predictions == labels).mean())
+    positive_rate = float(labels.mean())
+    majority_baseline = max(positive_rate, 1.0 - positive_rate)
+    # Balanced accuracy prevents a directional model from looking useful
+    # merely because one meaningful-move class is more common.
+    tp = float(((predictions == 1) & (labels == 1)).sum())
+    tn = float(((predictions == 0) & (labels == 0)).sum())
+    positives = float((labels == 1).sum())
+    negatives = float((labels == 0).sum())
+    balanced_accuracy = (
+        0.5 * (tp / positives + tn / negatives)
+        if positives and negatives
+        else None
+    )
     brier = float(np.mean((probs - labels) ** 2))
 
     metrics = {
@@ -176,8 +190,11 @@ def walk_forward_evaluate(
         # The calibrated model's neutral point is the observed frequency of
         # the positive label, not necessarily 50%.  This matters for rare
         # event labels such as the short model's >0.3% one-hour move.
-        "positive_rate": float(labels.mean()),
+        "positive_rate": positive_rate,
         "oos_accuracy": accuracy,
+        "majority_baseline_accuracy": majority_baseline,
+        "accuracy_lift_vs_majority": accuracy - majority_baseline,
+        "oos_balanced_accuracy": balanced_accuracy,
         "oos_brier_score": brier,
         "reliability_bins": _reliability_bins(probs, labels),
         "folds": fold_stats,

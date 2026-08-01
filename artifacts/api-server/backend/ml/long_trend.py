@@ -61,6 +61,12 @@ FEATURE_NAMES = [
     "macro_sensitivity_score",
     "macro_override_flag",
     "overnight_return_weighted",
+    # Raw VIX context avoids collapsing materially different NORMAL readings
+    # into the same categorical value.
+    "vix_level_norm",
+    "vix_change_5d",
+    "vix_percentile_1y",
+    "vix_missing",
 ]
 
 
@@ -69,6 +75,7 @@ class LongTrendModel:
 
     def __init__(self):
         self.model = None
+        self._model_feature_count: Optional[int] = None
         self.calibrator = None
         self._model_loaded = False
         self._loaded_mtime: Optional[float] = None
@@ -182,6 +189,12 @@ class LongTrendModel:
         adx = indicators.get("adx", pd.Series(dtype=float))
         atr = indicators.get("atr", pd.Series(dtype=float))
         vix_regime = indicators.get("vix_regime", pd.Series(dtype=object))
+        vix_level = indicators.get("vix_level", pd.Series(dtype=float))
+        vix_change_5d = indicators.get("vix_change_5d", pd.Series(dtype=float))
+        vix_percentile_1y = indicators.get(
+            "vix_percentile_1y", pd.Series(dtype=float)
+        )
+        vix_missing = indicators.get("vix_missing", pd.Series(dtype=bool))
 
         # Volume 20-day rolling avg
         vol_avg20 = volume.rolling(20).mean()
@@ -229,6 +242,31 @@ class LongTrendModel:
                 # VIX regime encoding
                 regime_str = str(vix_regime.get(ts, "NORMAL")) if not vix_regime.empty else "NORMAL"
                 vix_enc = VIX_REGIME_MAP.get(regime_str, 1)
+                vix_val = (
+                    float(vix_level.get(ts, np.nan))
+                    if not vix_level.empty
+                    else np.nan
+                )
+                vix_norm = (
+                    np.clip(vix_val / 40.0, 0.0, 3.0)
+                    if np.isfinite(vix_val)
+                    else 0.5
+                )
+                vix_chg = (
+                    float(vix_change_5d.get(ts, 0.0))
+                    if not vix_change_5d.empty
+                    else 0.0
+                )
+                vix_pct = (
+                    float(vix_percentile_1y.get(ts, 0.5))
+                    if not vix_percentile_1y.empty
+                    else 0.5
+                )
+                vix_miss = (
+                    float(bool(vix_missing.get(ts, True)))
+                    if not vix_missing.empty
+                    else 1.0
+                )
 
                 # Recent returns
                 if i >= 5:
@@ -273,6 +311,10 @@ class LongTrendModel:
                     float(macro_sens.iloc[i]),
                     float(macro_flag.iloc[i]),
                     float(overnight_weighted.iloc[i]),
+                    vix_norm,
+                    vix_chg,
+                    vix_pct,
+                    vix_miss,
                 ]
                 rows.append(feature_row)
 
@@ -302,7 +344,9 @@ class LongTrendModel:
         Train XGBoost on historical daily VOO data.
 
         Target:
-          y(t) = 1 if Close(t+21) / Close(t) > 1.0 else 0
+          y(t) = 1 for a meaningful forward move at or above the configured
+          threshold, 0 for a meaningful move at or below the negative
+          threshold.  Near-flat outcomes are excluded as noise.
 
         Model hyper-parameters:
           n_estimators=200, max_depth=5, learning_rate=0.05,
@@ -325,11 +369,24 @@ class LongTrendModel:
             if "is_extended_hours" in df.columns:
                 df = df[df["is_extended_hours"] == False].copy()
 
-            # Build labels: 21-day forward return
+            # Build labels from meaningful forward moves.  Small returns are
+            # market noise for this horizon and are excluded rather than
+            # teaching the classifier that +0.1% and +8% are equivalent wins.
             df = df.copy()
-            df["future_close"] = df["close"].shift(-21)
+            horizon = int(getattr(settings, "LONG_LABEL_HORIZON_DAYS", 21))
+            threshold = float(
+                getattr(settings, "LONG_MEANINGFUL_MOVE_THRESHOLD", 0.02)
+            )
+            df["future_close"] = df["close"].shift(-horizon)
             df.dropna(subset=["future_close"], inplace=True)
-            df["label"] = (df["future_close"] > df["close"]).astype(int)
+            df["forward_return"] = df["future_close"] / df["close"] - 1.0
+            labeled_rows = len(df)
+            df = df[
+                (df["forward_return"] >= threshold)
+                | (df["forward_return"] <= -threshold)
+            ].copy()
+            df["label"] = (df["forward_return"] >= threshold).astype(int)
+            excluded_noise_rows = labeled_rows - len(df)
 
             # Trim indicators to match df
             trimmed_indicators = {
@@ -340,11 +397,22 @@ class LongTrendModel:
             X, weights = self.build_features(df, trimmed_indicators)
             y = df["label"].values[: len(X)]
 
-            if len(X) < 50:
+            min_rows = int(getattr(settings, "LONG_MIN_TRAINING_ROWS", 100))
+            if len(X) < min_rows:
                 logger.warning("Not enough data to train long-trend model (%d rows)", len(X))
                 return {"accuracy": 0.0, "feature_importances": {}}
 
-            # Normalize time-decay weights to mean 1.0. With a decade of
+            # Balance the meaningful-up/down classes so the model cannot
+            # achieve a superficially good score by preferring the more common
+            # direction in a trending decade.
+            class_counts = np.bincount(y.astype(int), minlength=2)
+            class_weights = np.ones(2, dtype=np.float32)
+            for class_id, count in enumerate(class_counts):
+                if count > 0:
+                    class_weights[class_id] = len(y) / (2.0 * count)
+            weights = weights * class_weights[y.astype(int)]
+
+            # Normalize time-decay and class weights to mean 1.0. With a decade of
             # history the raw exp(-λ·age) weights shrink to ~1e-8, so the
             # summed hessian never reaches XGBoost's min_child_weight and the
             # trees degenerate to a constant prediction.
@@ -358,10 +426,12 @@ class LongTrendModel:
 
             model = xgb.XGBClassifier(
                 n_estimators=200,
-                max_depth=5,
+                max_depth=3,
                 learning_rate=0.05,
                 subsample=0.8,
                 colsample_bytree=0.8,
+                min_child_weight=5,
+                reg_lambda=2.0,
                 eval_metric="logloss",
                 use_label_encoder=False,
                 random_state=42,
@@ -385,10 +455,12 @@ class LongTrendModel:
                 def _factory():
                     return xgb.XGBClassifier(
                         n_estimators=200,
-                        max_depth=5,
+                        max_depth=3,
                         learning_rate=0.05,
                         subsample=0.8,
                         colsample_bytree=0.8,
+                        min_child_weight=5,
+                        reg_lambda=2.0,
                         eval_metric="logloss",
                         use_label_encoder=False,
                         random_state=42,
@@ -449,8 +521,28 @@ class LongTrendModel:
                 )
 
             logger.info("Long-trend model trained: accuracy=%.4f", acc)
+            oos_acc = (
+                float(calibration_summary["oos_accuracy"])
+                if calibration_summary.get("evaluated")
+                and calibration_summary.get("oos_accuracy") is not None
+                else None
+            )
             return {
-                "accuracy": acc,
+                # Use purged walk-forward OOS as the headline when available.
+                # The chronological holdout is retained separately because it
+                # is useful for diagnostics but is not the acceptance metric.
+                "accuracy": oos_acc if oos_acc is not None else acc,
+                "accuracy_metric": (
+                    "purged_walk_forward_oos"
+                    if oos_acc is not None
+                    else "train"
+                ),
+                "train_accuracy": acc,
+                "target_horizon_days": horizon,
+                "meaningful_move_threshold": threshold,
+                "training_rows": int(len(X)),
+                "excluded_noise_rows": int(excluded_noise_rows),
+                "positive_label_rate": float(np.mean(y)),
                 "feature_importances": importances,
                 "degenerate": degenerate,
                 "degeneracy_reason": degeneracy_reason,
@@ -487,6 +579,17 @@ class LongTrendModel:
 
             if features.ndim == 1:
                 features = features.reshape(1, -1)
+            # Keep the APK-facing prediction path alive while an older
+            # 15-feature pickle is being replaced. New models use all 19
+            # features; legacy models consume the original stable prefix.
+            expected = self._model_feature_count
+            if expected is not None and features.shape[1] != expected:
+                if expected < features.shape[1] and expected == 15:
+                    features = features[:, :expected]
+                else:
+                    raise ValueError(
+                        f"model expects {expected} features, got {features.shape[1]}"
+                    )
 
             prob = float(self.model.predict_proba(features)[0][1])
 
@@ -521,19 +624,29 @@ class LongTrendModel:
             if MODEL_PATH.exists():
                 with open(MODEL_PATH, "rb") as f:
                     model = pickle.load(f)
-                # Guard: a model pickled before the feature-set extension has
-                # a smaller feature count. Never crash prediction on it —
-                # discard, log, and fall back to neutral until retraining.
                 n_in = getattr(model, "n_features_in_", None)
-                if n_in is not None and int(n_in) != len(FEATURE_NAMES):
+                self._model_feature_count = int(n_in) if n_in is not None else len(FEATURE_NAMES)
+                is_legacy_xgb = (
+                    n_in is not None
+                    and int(n_in) == 15
+                    and type(model).__module__.split(".")[0] == "xgboost"
+                )
+                if n_in is not None and int(n_in) != len(FEATURE_NAMES) and not is_legacy_xgb:
                     logger.warning(
                         "ml_model_stale model=long_trend expected_features=%d "
                         "found=%d action=discard_await_retrain",
                         len(FEATURE_NAMES), int(n_in),
                     )
                     self.model = None
+                    self._model_feature_count = None
                     self._model_loaded = True
                     return False
+                if is_legacy_xgb:
+                    logger.warning(
+                        "ml_model_legacy model=long_trend expected_features=%d "
+                        "found=%d action=serve_prefix_and_retrain",
+                        len(FEATURE_NAMES), int(n_in),
+                    )
                 self.model = model
                 self._model_loaded = True
                 logger.info("Long-trend model loaded from %s", MODEL_PATH)

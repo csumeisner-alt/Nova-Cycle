@@ -844,6 +844,15 @@ class TechnicalIndicators:
             return result
 
         try:
+            # Overlapping vendor fetches can briefly produce duplicate
+            # timestamps in an in-memory frame even though the DB uniqueness
+            # checks prevent duplicate daily rows. Reindexing a duplicate
+            # index raises and silently removes the macro feature set.
+            df = df.sort_index()
+            df = df[~df.index.duplicated(keep="last")]
+            if not vix_df.empty:
+                vix_df = vix_df.sort_index()
+                vix_df = vix_df[~vix_df.index.duplicated(keep="last")]
             # ── Regular-hours-only slice (for long-term indicators) ────────────
             if exclude_extended and "is_extended_hours" in df.columns:
                 reg_df = df[df["is_extended_hours"] == False].copy()
@@ -872,13 +881,31 @@ class TechnicalIndicators:
 
             # ── VIX regime ─────────────────────────────────────────────────────
             if not vix_df.empty and "close" in vix_df.columns:
-                result["vix_regime"] = self.compute_vix_regime(vix_df["close"])
-                result["vix_latest"] = float(vix_df["close"].iloc[-1])
+                vix_close = vix_df["close"].astype(float).sort_index()
+                vix_regime = self.compute_vix_regime(vix_close)
+                # VIX is a daily series. Align only from the latest known
+                # completed VIX observation; never backfill from the future.
+                vix_aligned = vix_close.reindex(reg_df.index, method="ffill")
+                regime_aligned = vix_regime.reindex(reg_df.index, method="ffill")
+                result["vix_regime"] = regime_aligned
+                result["vix_level"] = vix_aligned
+                result["vix_change_5d"] = vix_aligned.pct_change(5).replace(
+                    [np.inf, -np.inf], np.nan
+                ).fillna(0.0)
+                result["vix_percentile_1y"] = vix_aligned.rolling(
+                    min(252, max(20, len(vix_close))), min_periods=20
+                ).rank(pct=True).fillna(0.5)
+                result["vix_missing"] = vix_aligned.isna()
+                result["vix_latest"] = float(vix_close.iloc[-1])
                 result["vix_regime_latest"] = (
-                    self.compute_vix_regime(vix_df["close"]).iloc[-1]
+                    vix_regime.iloc[-1]
                 )
             else:
                 result["vix_regime"] = pd.Series("NORMAL", index=reg_df.index)
+                result["vix_level"] = pd.Series(np.nan, index=reg_df.index)
+                result["vix_change_5d"] = pd.Series(0.0, index=reg_df.index)
+                result["vix_percentile_1y"] = pd.Series(0.5, index=reg_df.index)
+                result["vix_missing"] = pd.Series(True, index=reg_df.index)
                 result["vix_latest"] = 20.0
                 result["vix_regime_latest"] = "NORMAL"
 

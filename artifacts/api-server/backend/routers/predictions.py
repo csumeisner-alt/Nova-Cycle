@@ -1742,6 +1742,57 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         )
 
     alerts = []
+    # Current-feed freshness does not prove that VIX covers the complete VOO
+    # training history. Keep this separate so a one-year VIX table cannot
+    # silently look healthy beside a decade of VOO candles.
+    vix_training_coverage = {
+        "voo_daily_rows": 0,
+        "vix_daily_rows": 0,
+        "voo_first_date": None,
+        "vix_first_date": None,
+        "coverage_ratio": 0.0,
+        "missing_voo_dates": None,
+        "complete": False,
+    }
+    try:
+        voo_dates_result = await session.execute(
+            select(VooCandle.timestamp).where(
+                VooCandle.ticker == settings.TICKER,
+                VooCandle.timeframe == "daily",
+                VooCandle.is_extended_hours == False,
+            ).order_by(VooCandle.timestamp)
+        )
+        vix_dates_result = await session.execute(
+            select(VixCandle.timestamp).where(
+                VixCandle.ticker == settings.VIX_TICKER,
+                VixCandle.timeframe == "daily",
+            ).order_by(VixCandle.timestamp)
+        )
+        voo_dates = [row[0].date() for row in voo_dates_result.fetchall()]
+        vix_dates = {row[0].date() for row in vix_dates_result.fetchall()}
+        missing = [day for day in voo_dates if day not in vix_dates]
+        vix_training_coverage.update({
+            "voo_daily_rows": len(voo_dates),
+            "vix_daily_rows": len(vix_dates),
+            "voo_first_date": voo_dates[0].isoformat() if voo_dates else None,
+            "vix_first_date": min(vix_dates).isoformat() if vix_dates else None,
+            "coverage_ratio": (
+                round((len(voo_dates) - len(missing)) / len(voo_dates), 4)
+                if voo_dates else 0.0
+            ),
+            "missing_voo_dates": len(missing),
+            "complete": bool(voo_dates) and not missing,
+        })
+        if voo_dates and missing:
+            degraded = True
+            alerts.append(
+                "vix: historical training coverage is incomplete "
+                f"({len(missing)} VOO dates missing)"
+            )
+    except Exception as exc:
+        logger.error("healthz: VIX training coverage lookup failed: %s", exc)
+        vix_training_coverage["error"] = str(exc)
+        degraded = True
     if spx_data and spx_data.get("stale"):
         alerts.append(f"spx_futures: {spx_data.get('detail')}")
     if vix_data and vix_data.get("stale"):
@@ -1854,6 +1905,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "models": models,
         "spx_futures": spx_data,
         "vix": vix_data,
+        "vix_training_coverage": vix_training_coverage,
         "voo_5min": fivemin_data,
         "voo_5min_recovery": fivemin_recovery,
         "notifications": notification_readiness,
