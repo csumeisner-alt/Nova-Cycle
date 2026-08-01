@@ -20,6 +20,12 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      # Validate that the grep patterns used in this workflow correctly detect
+      # every failure mode before running the expensive Gradle steps.  The
+      # script uses only bash and synthesised fixtures — no Android SDK needed.
+      - name: Validate grep patterns (dep-conflict check self-test)
+        run: bash android/scripts/test-dep-conflict-check.sh
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
