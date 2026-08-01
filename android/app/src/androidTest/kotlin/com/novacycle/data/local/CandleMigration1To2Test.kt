@@ -196,4 +196,151 @@ class CandleMigration1To2Test {
             db.close()
         }
     }
+
+    /**
+     * Creates a v2-shaped database, inserts two signal_history rows (which have no conviction
+     * columns at v2), runs MIGRATION_2_3, and confirms:
+     *   - both rows are still present
+     *   - conviction_tier and conviction_reasons are NULL for every pre-existing row
+     *
+     * This guards against a future DROP/recreate mistake in MIGRATION_2_3 that would
+     * silently wipe saved signals instead of just adding the new nullable columns.
+     */
+    @Test
+    fun migration2To3_preservesExistingSignalHistoryRowsWithNullConvictionTier() {
+        val dbName2 = "signal_migration_2_3_test.db"
+        context.deleteDatabase(dbName2)
+
+        // ── Step 1: build a hand-crafted v2 database ──────────────────────────
+        val dbFile = context.getDatabasePath(dbName2)
+        dbFile.parentFile?.mkdirs()
+
+        val v2 = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+        v2.execSQL("PRAGMA user_version = 2")
+
+        // v2 candles (with timeframe column) — required for Room schema validation
+        v2.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS candles (
+                ticker               TEXT    NOT NULL,
+                timeframe            TEXT    NOT NULL DEFAULT 'daily',
+                timestamp            TEXT    NOT NULL,
+                open                 REAL    NOT NULL,
+                high                 REAL    NOT NULL,
+                low                  REAL    NOT NULL,
+                close                REAL    NOT NULL,
+                volume               INTEGER NOT NULL,
+                is_extended_hours    INTEGER NOT NULL,
+                session_type         TEXT    NOT NULL,
+                gap_percent          REAL,
+                gap_type             TEXT,
+                PRIMARY KEY(ticker, timeframe, timestamp)
+            )
+            """.trimIndent()
+        )
+
+        // v2 signal_history: no conviction columns yet
+        v2.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id                       TEXT    NOT NULL,
+                timestamp                TEXT    NOT NULL,
+                ticker                   TEXT    NOT NULL,
+                cycle_id                 TEXT,
+                signal_type              TEXT    NOT NULL,
+                gauge_type               TEXT    NOT NULL,
+                confidence               REAL    NOT NULL,
+                session_type             TEXT    NOT NULL,
+                is_extended_hours        INTEGER NOT NULL,
+                gap_type                 TEXT,
+                liquidity_score          REAL    NOT NULL,
+                macro_override_applied   INTEGER NOT NULL,
+                PRIMARY KEY(id)
+            )
+            """.trimIndent()
+        )
+
+        // confidence_history is unchanged
+        v2.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS confidence_history (
+                id                       TEXT    NOT NULL,
+                timestamp                TEXT    NOT NULL,
+                ticker                   TEXT    NOT NULL,
+                long_buy_confidence      REAL    NOT NULL,
+                long_sell_confidence     REAL    NOT NULL,
+                short_buy_confidence     REAL    NOT NULL,
+                short_sell_confidence    REAL    NOT NULL,
+                session_type             TEXT    NOT NULL,
+                is_extended_hours        INTEGER NOT NULL,
+                PRIMARY KEY(id)
+            )
+            """.trimIndent()
+        )
+
+        // Insert two pre-existing signal rows (no conviction data at v2)
+        v2.execSQL(
+            """
+            INSERT INTO signal_history VALUES
+                ('sig-001','2024-03-01T10:00:00','VOO',NULL,'BUY','long_trend',0.72,'regular',0,NULL,1.0,0)
+            """.trimIndent()
+        )
+        v2.execSQL(
+            """
+            INSERT INTO signal_history VALUES
+                ('sig-002','2024-03-02T11:30:00','VOO','cycle-42','SELL','short_trend',0.65,'regular',0,'gap_up',0.9,1)
+            """.trimIndent()
+        )
+        v2.close()
+
+        // ── Step 2: open with Room, applying only MIGRATION_2_3 ───────────────
+        val db = Room.databaseBuilder(
+            context,
+            NovaCycleDatabase::class.java,
+            dbName2
+        )
+            .addMigrations(AppModule.MIGRATION_2_3)
+            .build()
+
+        try {
+            // ── Step 3: verify all signal rows survived ────────────────────────
+            val cursor = db.openHelper.readableDatabase.query(
+                "SELECT id, signal_type, conviction_tier, conviction_reasons " +
+                        "FROM signal_history ORDER BY timestamp"
+            )
+
+            val rows = mutableListOf<Map<String, String?>>()
+            while (cursor.moveToNext()) {
+                rows.add(
+                    mapOf(
+                        "id"                 to cursor.getString(0),
+                        "signal_type"        to cursor.getString(1),
+                        "conviction_tier"    to if (cursor.isNull(2)) null else cursor.getString(2),
+                        "conviction_reasons" to if (cursor.isNull(3)) null else cursor.getString(3)
+                    )
+                )
+            }
+            cursor.close()
+
+            assertEquals(
+                "Both pre-migration signal rows must still exist after v2→v3 upgrade",
+                2, rows.size
+            )
+            assertTrue(
+                "conviction_tier must be NULL for every pre-existing signal row",
+                rows.all { it["conviction_tier"] == null }
+            )
+            assertTrue(
+                "conviction_reasons must be NULL for every pre-existing signal row",
+                rows.all { it["conviction_reasons"] == null }
+            )
+            assertEquals("sig-001", rows[0]["id"])
+            assertEquals("BUY", rows[0]["signal_type"])
+            assertEquals("sig-002", rows[1]["id"])
+            assertEquals("SELL", rows[1]["signal_type"])
+        } finally {
+            db.close()
+            context.deleteDatabase(dbName2)
+        }
+    }
 }
