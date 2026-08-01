@@ -1,0 +1,108 @@
+name: Check Compose BOM Dependency Tree
+
+# Runs on every PR that touches Android source, Gradle build files, or the
+# version catalog.  Catches silent version conflicts that a BOM bump can
+# introduce — for example, material-icons-extended being re-pinned to a
+# version that conflicts with another Compose artifact.
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'android/**'
+      - '.github/workflows/check-compose-bom-deps.yml'
+  workflow_dispatch: # Allow manual runs from the GitHub Actions UI
+
+jobs:
+  check-dependency-tree:
+    name: Verify releaseRuntimeClasspath is conflict-free
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Re-use Gradle caches from the main build workflow where possible so
+      # this job doesn't re-download all dependencies on every run.
+      - name: Set up Gradle (with caching)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      # Resolve the full runtime dependency graph and save it to a file so the
+      # subsequent checks can scan it even if they themselves don't fail.
+      - name: Resolve releaseRuntimeClasspath dependency tree
+        working-directory: android
+        run: |
+          ./gradlew :app:dependencies \
+            --configuration releaseRuntimeClasspath \
+            --no-daemon \
+            2>&1 | tee /tmp/dep-tree.txt
+
+      # Exit non-zero when Gradle could not resolve an artifact.  This covers
+      # the most common BOM-bump failure: a new BOM version that references a
+      # coordinate that doesn't yet exist in Maven Central.
+      - name: Fail on unresolved dependencies (FAILED markers)
+        run: |
+          if grep -qE "^.*FAILED$" /tmp/dep-tree.txt; then
+            echo "::error::One or more dependencies failed to resolve. \
+          A recent BOM bump may have introduced a version conflict."
+            echo ""
+            echo "--- Lines with FAILED ---"
+            grep -E "FAILED$" /tmp/dep-tree.txt || true
+            exit 1
+          fi
+          echo "No FAILED resolution markers found."
+
+      # Gradle prints "duplicate class" warnings (and sometimes errors) when
+      # two artifacts on the classpath provide the same fully-qualified class.
+      # material-icons-extended historically caused this when an explicit version
+      # pin conflicted with the BOM-managed version.
+      - name: Fail on duplicate-class warnings
+        run: |
+          if grep -qi "duplicate class" /tmp/dep-tree.txt; then
+            echo "::error::Duplicate-class warning detected in the dependency \
+          tree.  The Compose BOM version may be pulling in a conflicting copy \
+          of material-icons-extended (or another artifact)."
+            echo ""
+            echo "--- Duplicate-class lines ---"
+            grep -i "duplicate class" /tmp/dep-tree.txt || true
+            exit 1
+          fi
+          echo "No duplicate-class warnings found."
+
+      # Check for version conflicts indicated by "conflict" appearing in the
+      # dependency tree output (e.g. "version conflict" resolution notices that
+      # indicate forced downgrades).
+      - name: Warn on forced version conflict resolutions
+        run: |
+          # Extract lines that contain both a conflict indicator and a Compose
+          # group ID so noise from unrelated dependencies is filtered out.
+          CONFLICTS=$(grep -i "conflict" /tmp/dep-tree.txt \
+            | grep -i "androidx.compose" || true)
+          if [ -n "$CONFLICTS" ]; then
+            echo "::warning::Compose dependency version conflicts detected. \
+          Review whether forced resolutions are intentional after the BOM bump."
+            echo ""
+            echo "--- Compose conflict lines ---"
+            echo "$CONFLICTS"
+          else
+            echo "No Compose version conflict resolutions found."
+          fi
+
+      # Always upload the full dependency tree so engineers can inspect it in
+      # the Actions UI even when the job passes.
+      - name: Upload dependency tree as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-runtime-classpath-dep-tree
+          path: /tmp/dep-tree.txt
+          if-no-files-found: ignore
