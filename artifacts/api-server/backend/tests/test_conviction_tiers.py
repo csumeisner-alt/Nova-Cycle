@@ -192,3 +192,36 @@ class TestBacktestGuardrail:
         }
         failures = check(report)
         assert any("profitability" in f for f in failures)
+
+    def test_fixture_contains_reachable_long_score_buy(self):
+        """Fixture must include at least one BUY with long_score > 65.
+
+        If this fails it means the fixture no longer exercises the reachable
+        part of the long-gauge threshold.  A regression that silently raises
+        the threshold above 65 would suppress all such signals but nothing
+        in the replay would detect the loss — this assertion is the canary.
+        """
+        signals = load_fixture(FIXTURE)
+        strong_buys = [
+            s for s in signals
+            if s.get("signal_type") == "buy" and float(s.get("long_score", 0.0)) > 65
+        ]
+        assert len(strong_buys) >= 1, (
+            "Fixture contains no BUY signal with long_score > 65; "
+            "a regression raising the threshold would pass the backtest undetected."
+        )
+
+    def test_no_buy_with_low_long_score_earns_high_conviction(self):
+        """BUY signals with long_score <= 65 must never receive TIER_HIGH_CONVICTION.
+
+        A long_score at or below 65 is below the agreement band for long-gauge
+        buy setups.  Tiering such a signal as high conviction would indicate a
+        misconfigured evaluator (e.g. the threshold accidentally reverted).
+        The check() function surfaces this via the '_signal_tiers' key that
+        replay() now includes in its return value.
+        """
+        signals = load_fixture(FIXTURE)
+        report = replay(signals)
+        failures = check(report, signals=signals)
+        impossible_tier_failures = [f for f in failures if "impossible tier" in f]
+        assert impossible_tier_failures == [], impossible_tier_failures

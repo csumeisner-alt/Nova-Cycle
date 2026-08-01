@@ -155,11 +155,27 @@ def replay(signals: list[dict]) -> dict:
         "high_conviction": metrics(hc_rows),
         "opportunity_only": metrics(opp_rows),
         "candidate_frequency": candidate_freq_list,
+        # Per-signal tier assignments; used by check() for threshold assertions.
+        "_signal_tiers": [(tier, sig) for tier, sig in tiers],
     }
 
 
-def check(report: dict) -> list[str]:
-    """Return list of failure strings (empty = pass)."""
+def check(report: dict, signals: list[dict] | None = None) -> list[str]:
+    """Return list of failure strings (empty = pass).
+
+    ``signals`` is the raw input list from the fixture/DB.  When supplied,
+    two additional threshold assertions run:
+
+    1. At least one BUY signal with ``long_score > 65`` exists in the fixture,
+       confirming that strong long-gauge setups are reachable under the current
+       threshold configuration.  A regression that accidentally raises the
+       threshold back above 65 would suppress all such signals — this assertion
+       catches that before it reaches production.
+
+    2. No BUY signal with ``long_score <= 65`` is awarded ``TIER_HIGH_CONVICTION``
+       in the replay.  Such a score is below the agreement band for long-gauge
+       buys, so claiming the top tier would indicate a misconfigured evaluator.
+    """
     failures = []
     actionable = report["input_signals"] - report["untiered_neutral"]
     tiered = report["overall"]["signals"]
@@ -178,6 +194,39 @@ def check(report: dict) -> list[str]:
                 f"profitability: high-conviction avg return {hc['avg_return']:+.2f}% "
                 f"does not beat overall {overall['avg_return']:+.2f}%"
             )
+
+    # ── Threshold reachability assertions ─────────────────────────────────────
+    if signals is not None:
+        # Assertion 1: fixture must contain at least one reachable strong buy.
+        strong_buys = [
+            s for s in signals
+            if s.get("signal_type") == "buy" and float(s.get("long_score", 0.0)) > 65
+        ]
+        if not strong_buys:
+            failures.append(
+                "threshold reachability: fixture contains no BUY signal with "
+                "long_score > 65; a regression raising the threshold would pass "
+                "this backtest undetected"
+            )
+
+        # Assertion 2: low-long-score buys must never earn TIER_HIGH_CONVICTION.
+        signal_tiers = report.get("_signal_tiers", [])
+        bad = [
+            sig for tier, sig in signal_tiers
+            if (
+                sig.get("signal_type") == "buy"
+                and float(sig.get("long_score", 0.0)) <= 65
+                and tier == TIER_HIGH_CONVICTION
+            )
+        ]
+        if bad:
+            failures.append(
+                f"impossible tier: {len(bad)} BUY signal(s) with long_score <= 65 "
+                f"were awarded {TIER_HIGH_CONVICTION} — evaluator thresholds may be "
+                f"misconfigured (long_scores: "
+                f"{[sig.get('long_score') for sig in bad]})"
+            )
+
     return failures
 
 
@@ -238,6 +287,7 @@ def main() -> int:
     report = replay(signals)
 
     # ── Candidate-frequency report ─────────────────────────────────────────────
+
     print("── Candidate frequency / tier outcomes ──────────────────────────────")
     freq = report.get("candidate_frequency", [])
     if freq:
@@ -259,7 +309,7 @@ def main() -> int:
     # ── Full JSON report ───────────────────────────────────────────────────────
     print(json.dumps(report, indent=2))
 
-    failures = check(report)
+    failures = check(report, signals=signals)
     if failures:
         print("\nFAIL:")
         for f in failures:
