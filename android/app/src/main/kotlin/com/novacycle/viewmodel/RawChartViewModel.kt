@@ -7,6 +7,7 @@ import com.novacycle.data.remote.models.PriceSnapshotResponse
 import com.novacycle.data.repository.ChartPreferencesRepository
 import com.novacycle.data.repository.ChartScreenKey
 import com.novacycle.data.repository.NovaCycleRepository
+import com.novacycle.data.repository.CandlesWithSource
 import com.novacycle.domain.model.SensitivitySettings
 import com.novacycle.domain.model.SignalData
 import com.novacycle.domain.usecase.GetSignalsUseCase
@@ -33,7 +34,11 @@ data class RawChartUiState(
     /** Chart render mode name: 'CANDLES' or 'LINE' */
     val renderMode: String = "CANDLES",
     /** Epoch millis of the last successful data refresh on this screen; null if none yet */
-    val lastUpdatedAtMillis: Long? = null
+    val lastUpdatedAtMillis: Long? = null,
+    /** True when the candle data was served from the Room cache (network unavailable). */
+    val candlesFromCache: Boolean = false,
+    /** ISO-8601 timestamp of the newest cached bar; non-null only when [candlesFromCache]. */
+    val cacheNewestBarTimestamp: String? = null
 )
 
 /**
@@ -86,9 +91,20 @@ class RawChartViewModel @Inject constructor(
             val anySuccess = candlesResult.isSuccess || signalsResult.isSuccess ||
                 priceSnapshotResult.isSuccess
 
+            val candlesSource = candlesResult.getOrNull()
+            val previousSource = CandlesWithSource(
+                candles = _uiState.value.candles,
+                fromCache = _uiState.value.candlesFromCache,
+                newestBarTimestamp = _uiState.value.cacheNewestBarTimestamp
+            )
+            val resolvedSource = candlesSource ?: previousSource
+
             _uiState.update { state ->
                 state.copy(
-                    candles = candlesResult.getOrDefault(state.candles),
+                    candles = resolvedSource.candles,
+                    candlesFromCache = resolvedSource.fromCache,
+                    cacheNewestBarTimestamp = if (resolvedSource.fromCache)
+                        resolvedSource.newestBarTimestamp else null,
                     signals = signalsResult.getOrDefault(state.signals),
                     priceSnapshot = priceSnapshotResult.getOrNull() ?: state.priceSnapshot,
                     lastUpdatedAtMillis = if (anySuccess) System.currentTimeMillis()

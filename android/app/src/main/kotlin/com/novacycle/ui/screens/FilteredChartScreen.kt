@@ -84,6 +84,12 @@ fun FilteredChartScreen(
         UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp), extendedHoursAware = true)
         // Last candle timestamp + session, colored when stale
         ChartFreshnessHeader(lastCandle = uiState.candles.lastOrNull(), modifier = Modifier.padding(horizontal = 12.dp))
+        // Offline cache badge — visible only when bars came from Room fallback
+        CachedDataBadge(
+            fromCache = uiState.candlesFromCache,
+            newestBarTimestamp = uiState.cacheNewestBarTimestamp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+        )
 
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             windows.forEach { w -> FilterChip(selected = uiState.selectedWindow == w, onClick = { viewModel.setWindow(w) }, label = { Text(w) }) }

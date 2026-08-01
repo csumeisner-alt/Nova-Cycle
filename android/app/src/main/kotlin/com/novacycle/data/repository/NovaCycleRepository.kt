@@ -15,6 +15,23 @@ import javax.inject.Singleton
 import android.util.Log
 
 /**
+ * Wrapper returned by [NovaCycleRepository.getCandles].
+ *
+ * @param candles            The candle bars for the requested (ticker, window, timeframe).
+ * @param fromCache          True when the data was served from the Room cache because the
+ *                           network fetch failed — i.e. the user is offline or the backend is
+ *                           unreachable.  False for a live remote fetch.
+ * @param newestBarTimestamp ISO-8601 timestamp of the most-recent bar in [candles], or null
+ *                           if the list is empty.  Used by the UI to show "cached · last bar
+ *                           X ago" when [fromCache] is true.
+ */
+data class CandlesWithSource(
+    val candles: List<CandleResponse>,
+    val fromCache: Boolean,
+    val newestBarTimestamp: String?
+)
+
+/**
  * Single source of truth for all NovaCycle data.
  *
  * Strategy:
@@ -154,7 +171,7 @@ open class NovaCycleRepository @Inject constructor(
         ticker: String = "VOO",
         window: String = "30d",
         timeframe: String = "daily"
-    ): Result<List<CandleResponse>> = runCatching {
+    ): Result<CandlesWithSource> = runCatching {
         val remote = apiService.getVooCandles(ticker, window, timeframe).recordDataFreshness()
         // Cache is timeframe-aware: each (ticker, timeframe) series is stored
         // independently, so every timeframe survives offline without mixing
@@ -177,11 +194,15 @@ open class NovaCycleRepository @Inject constructor(
         }
         candleDao.deleteByTickerAndTimeframe(ticker, timeframe)
         candleDao.insertAll(entities)
-        remote
+        CandlesWithSource(
+            candles = remote,
+            fromCache = false,
+            newestBarTimestamp = remote.lastOrNull()?.timestamp
+        )
     }.recoverCatching { error ->
         val cached = candleDao.getAllByTickerAndTimeframe(ticker, timeframe)
         if (cached.isEmpty()) throw error
-        cached.map { e ->
+        val candles = cached.map { e ->
             CandleResponse(
                 timestamp = e.timestamp,
                 open = e.open,
@@ -195,6 +216,11 @@ open class NovaCycleRepository @Inject constructor(
                 gapType = e.gapType
             )
         }
+        CandlesWithSource(
+            candles = candles,
+            fromCache = true,
+            newestBarTimestamp = candles.lastOrNull()?.timestamp
+        )
     }
 
     suspend fun getPriceSnapshot(

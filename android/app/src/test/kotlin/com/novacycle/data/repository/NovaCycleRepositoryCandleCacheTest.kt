@@ -85,8 +85,14 @@ class NovaCycleRepositoryCandleCacheTest {
         coEvery { apiService.getVooCandles("VOO", "30d", "daily") } returns
             listOf(candle("2026-07-31", 200f), candle("2026-08-01", 201f))
 
-        repository.getCandles("VOO", "1d", "5m")
-        repository.getCandles("VOO", "30d", "daily")
+        val intradayResult = repository.getCandles("VOO", "1d", "5m")
+        val dailyResult    = repository.getCandles("VOO", "30d", "daily")
+
+        // Remote fetches must not be marked as coming from cache
+        assertTrue("live intraday fetch should have fromCache=false", !intradayResult.getOrThrow().fromCache)
+        assertTrue("live daily fetch should have fromCache=false",    !dailyResult.getOrThrow().fromCache)
+        assertEquals("2026-08-01T09:30:00", intradayResult.getOrThrow().newestBarTimestamp)
+        assertEquals("2026-08-01",          dailyResult.getOrThrow().newestBarTimestamp)
 
         assertEquals(1, candleDao.getAllByTickerAndTimeframe("VOO", "5m").size)
         assertEquals(2, candleDao.getAllByTickerAndTimeframe("VOO", "daily").size)
@@ -106,7 +112,8 @@ class NovaCycleRepositoryCandleCacheTest {
         for (tf in listOf("5m", "15m", "1h", "daily")) {
             val result = repository.getCandles("VOO", "1d", tf)
             assertTrue("expected cached fallback for $tf", result.isSuccess)
-            assertEquals(1, result.getOrThrow().size)
+            assertEquals(1, result.getOrThrow().candles.size)
+            assertTrue("expected fromCache=true for $tf", result.getOrThrow().fromCache)
         }
     }
 

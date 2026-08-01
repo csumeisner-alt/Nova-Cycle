@@ -27,6 +27,7 @@ import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.SignalStoryCard
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.components.ChartFreshnessHeader
+import kotlinx.coroutines.delay
 import com.novacycle.ui.components.ChartPriceSummary
 import com.novacycle.ui.components.ChartRenderMode
 import com.novacycle.ui.components.CrosshairReadout
@@ -106,6 +107,12 @@ fun RawChartScreen(
         ChartFreshnessHeader(
             lastCandle = uiState.candles.lastOrNull(),
             modifier = Modifier.padding(horizontal = 12.dp)
+        )
+        // Offline cache badge — visible only when bars came from Room fallback
+        CachedDataBadge(
+            fromCache = uiState.candlesFromCache,
+            newestBarTimestamp = uiState.cacheNewestBarTimestamp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
         )
 
         // Window + timeframe + render-mode selectors
@@ -189,6 +196,81 @@ internal val TIMEFRAME_OPTIONS = listOf(
     "1h" to "1h",
     "1D" to "daily"
 )
+
+/**
+ * Unobtrusive amber pill shown below the chart header when candle data was
+ * served from the Room cache because the network was unreachable.  Hides
+ * automatically once a live fetch succeeds ([fromCache] becomes false).
+ */
+@Composable
+internal fun CachedDataBadge(
+    fromCache: Boolean,
+    newestBarTimestamp: String?,
+    modifier: Modifier = Modifier
+) {
+    if (!fromCache) return
+
+    val agoText = rememberCacheAgoText(newestBarTimestamp)
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.small,
+        color = NovaWarningYellow.copy(alpha = 0.15f),
+        contentColor = NovaWarningYellow
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text("⏱", style = MaterialTheme.typography.labelSmall)
+            Text(
+                text = if (agoText != null) "Cached · last bar $agoText" else "Cached",
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
+
+/** Produces a ticking "X ago" string from an ISO-8601 bar timestamp, refreshed every minute. */
+@Composable
+private fun rememberCacheAgoText(timestamp: String?): String? {
+    if (timestamp == null) return null
+    var agoText by remember(timestamp) { mutableStateOf(candleAgoText(timestamp)) }
+    LaunchedEffect(timestamp) {
+        while (true) {
+            delay(60_000L)
+            agoText = candleAgoText(timestamp)
+        }
+    }
+    return agoText
+}
+
+internal fun candleAgoText(timestamp: String): String? = try {
+    val epochMillis = parseIso8601ToMillis(timestamp) ?: return null
+    val diffMs = System.currentTimeMillis() - epochMillis
+    when {
+        diffMs < 0          -> null
+        diffMs < 60_000     -> "just now"
+        diffMs < 3_600_000  -> "${diffMs / 60_000}m ago"
+        diffMs < 86_400_000 -> "${diffMs / 3_600_000}h ago"
+        else                -> "${diffMs / 86_400_000}d ago"
+    }
+} catch (_: Exception) { null }
+
+private fun parseIso8601ToMillis(timestamp: String): Long? {
+    val formats = listOf(
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US),
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss",    java.util.Locale.US),
+        java.text.SimpleDateFormat("yyyy-MM-dd",               java.util.Locale.US)
+    )
+    for (fmt in formats) {
+        try {
+            fmt.isLenient = false
+            return fmt.parse(timestamp)?.time
+        } catch (_: Exception) { /* try next format */ }
+    }
+    return null
+}
 
 /**
  * Canvas candlestick chart with signal overlays, right price axis, bottom
