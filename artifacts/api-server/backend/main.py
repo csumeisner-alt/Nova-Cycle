@@ -9,11 +9,12 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -386,6 +387,21 @@ app.include_router(releases.router, prefix="/api", tags=["Releases"])
 # ---------------------------------------------------------------------------
 # Connectivity check — used by the Android app to verify it can reach the API
 # ---------------------------------------------------------------------------
+APK_DOWNLOAD_PATH = (
+    Path(__file__).resolve().parent / "downloads" / "novacycle-latest.apk"
+)
+
+
+@app.get("/api/downloads/novacycle-latest.apk", include_in_schema=False)
+async def download_latest_apk():
+    """Download the locally built release APK without requiring GitHub."""
+    return FileResponse(
+        APK_DOWNLOAD_PATH,
+        media_type="application/vnd.android.package-archive",
+        filename="novacycle-latest.apk",
+    )
+
+
 @app.get("/api")
 async def api_root():
     """Return a lightweight readiness response for the artifact proxy."""
