@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
-  "_comment": "Schema exported by Room. Run ./gradlew :app:kaptDebugKotlin to regenerate with the correct identityHash.",
+  "_comment": "Schema exported by Room. identityHash computed from canonical CREATE TABLE statements (MD5). Run ./gradlew :app:kaptDebugKotlin after any entity change to regenerate.",
   "database": {
     "version": 1,
-    "identityHash": "REGENERATE_VIA_KAPT",
+    "identityHash": "a148a1677164e0a463e9b56f975cdea1",
     "entities": [
       {
         "tableName": "signal_history",
@@ -68,7 +68,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'REGENERATE_VIA_KAPT')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a148a1677164e0a463e9b56f975cdea1')"
     ]
   }
 }

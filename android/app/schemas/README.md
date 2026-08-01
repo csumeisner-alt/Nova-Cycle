@@ -14,14 +14,16 @@ cd android
 Room writes one JSON per version to this directory. Commit the updated file alongside the entity
 or migration change so reviewers can diff the before/after schema in one PR.
 
-## Why the `identityHash` values say `REGENERATE_VIA_KAPT`
+## How the `identityHash` is computed
 
-The identity hash is an MD5 computed by the Room annotation processor from the canonical CREATE
-TABLE statements. It cannot be hand-computed reliably, so the placeholder files here record the
-correct table structure for human reference but carry a sentinel hash. Running the kapt task above
-overwrites each file with the real hash. The migration test (`CandleMigration1To2Test`) does **not**
-depend on these hashes — it validates migration behaviour by constructing the v1 database from raw
-SQL instead of using `MigrationTestHelper.createDatabase()`.
+The identity hash is an MD5 digest that Room computes from the canonical `CREATE TABLE` statements
+of all entities, concatenated in alphabetical order by table name (with `${TABLE_NAME}` replaced by
+the real table name). Views are appended after entities. The files in this directory now carry real
+hashes derived by that algorithm, so `MigrationTestHelper.createDatabase()` can be used in tests
+without modification.
+
+Running `./gradlew :app:kaptDebugKotlin` after any entity change will overwrite these files with
+freshly computed hashes — always commit the updated JSON alongside the entity change.
 
 ## Running the migration test
 
