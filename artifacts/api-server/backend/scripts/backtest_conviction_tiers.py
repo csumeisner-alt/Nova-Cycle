@@ -54,7 +54,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from signal_engine.conviction import (
-    ConvictionEvaluator, TIER_HIGH_CONVICTION, TIER_OPPORTUNITY,
+    AGREEMENT_BAND,
+    ConvictionEvaluator,
+    TIER_HIGH_CONVICTION,
+    TIER_OPPORTUNITY,
 )
 
 # Guardrail: tiering may not reduce baseline (opportunity) signal coverage by
@@ -196,35 +199,41 @@ def check(report: dict, signals: list[dict] | None = None) -> list[str]:
             )
 
     # ── Threshold reachability assertions ─────────────────────────────────────
+    # Both assertions use AGREEMENT_BAND (imported from signal_engine.conviction)
+    # so they stay in sync automatically when the constant changes.  The fixture
+    # generator (tests/fixtures/make_conviction_fixture.py) also uses this
+    # constant to derive score values, ensuring the fixture and the checks
+    # always agree on what "above the agreement band" means.
     if signals is not None:
         # Assertion 1: fixture must contain at least one reachable strong buy.
         strong_buys = [
             s for s in signals
-            if s.get("signal_type") == "buy" and float(s.get("long_score", 0.0)) > 65
+            if s.get("signal_type") == "buy"
+            and float(s.get("long_score", 0.0)) > AGREEMENT_BAND
         ]
         if not strong_buys:
             failures.append(
-                "threshold reachability: fixture contains no BUY signal with "
-                "long_score > 65; a regression raising the threshold would pass "
-                "this backtest undetected"
+                f"threshold reachability: fixture contains no BUY signal with "
+                f"long_score > AGREEMENT_BAND ({AGREEMENT_BAND}); a regression "
+                f"raising the threshold would pass this backtest undetected"
             )
 
-        # Assertion 2: low-long-score buys must never earn TIER_HIGH_CONVICTION.
+        # Assertion 2: below-band buys must never earn TIER_HIGH_CONVICTION.
         signal_tiers = report.get("_signal_tiers", [])
         bad = [
             sig for tier, sig in signal_tiers
             if (
                 sig.get("signal_type") == "buy"
-                and float(sig.get("long_score", 0.0)) <= 65
+                and float(sig.get("long_score", 0.0)) <= AGREEMENT_BAND
                 and tier == TIER_HIGH_CONVICTION
             )
         ]
         if bad:
             failures.append(
-                f"impossible tier: {len(bad)} BUY signal(s) with long_score <= 65 "
-                f"were awarded {TIER_HIGH_CONVICTION} — evaluator thresholds may be "
-                f"misconfigured (long_scores: "
-                f"{[sig.get('long_score') for sig in bad]})"
+                f"impossible tier: {len(bad)} BUY signal(s) with long_score <= "
+                f"AGREEMENT_BAND ({AGREEMENT_BAND}) were awarded {TIER_HIGH_CONVICTION}"
+                f" — evaluator thresholds may be misconfigured "
+                f"(long_scores: {[sig.get('long_score') for sig in bad]})"
             )
 
     return failures

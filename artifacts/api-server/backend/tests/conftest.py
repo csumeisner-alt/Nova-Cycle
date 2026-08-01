@@ -3,6 +3,24 @@
 import pytest
 
 
+@pytest.fixture
+def conviction_signals():
+    """In-memory conviction fixture built from live threshold constants.
+
+    Every score value is expressed as an offset from AGREEMENT_BAND,
+    MIN_CYCLE_QUALITY, or MIN_ML_CONFIDENCE so that the fixture stays in sync
+    automatically when those constants change.  Use this fixture in any test
+    that replays signals through the ConvictionEvaluator instead of loading
+    the static JSON file.
+
+    The JSON file (tests/fixtures/conviction_fixture.json) is the serialised
+    form of this same data; regenerate it with:
+        python tests/fixtures/make_conviction_fixture.py
+    """
+    from tests.fixtures.make_conviction_fixture import make_signals
+    return make_signals()
+
+
 @pytest.fixture(autouse=True)
 def _isolated_recovery_history(tmp_path, monkeypatch):
     """Redirect the persisted recovery-history JSON to a temp file so tests

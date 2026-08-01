@@ -10,17 +10,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from signal_engine.conviction import (
-    ConvictionEvaluator, TIER_HIGH_CONVICTION, TIER_OPPORTUNITY,
+    AGREEMENT_BAND,
+    ConvictionEvaluator,
+    MIN_CYCLE_QUALITY,
+    MIN_ML_CONFIDENCE,
     REGIME_TRANSITION_WINDOW_SECONDS,
+    TIER_HIGH_CONVICTION,
+    TIER_OPPORTUNITY,
 )
 from scripts.backtest_conviction_tiers import replay, check, load_fixture
 
 FIXTURE = str(Path(__file__).parent / "fixtures" / "conviction_fixture.json")
 
+# Scores are anchored to live constants so STRONG_BUY remains valid when
+# thresholds change.  See signal_engine/conviction.py for the constant
+# definitions and tests/fixtures/make_conviction_fixture.py for the fixture
+# generator that uses the same approach.
 STRONG_BUY = dict(
     signal_type="buy", gauge_type="long", volatility_regime="calm",
-    cycle_quality_score=0.85, ml_confidence=0.90, ml_fallback=False,
-    long_score=78.0, short_score=45.0,
+    cycle_quality_score=round(MIN_CYCLE_QUALITY + 0.20, 2),
+    ml_confidence=round(min(MIN_ML_CONFIDENCE + 0.25, 0.98), 2),
+    ml_fallback=False,
+    long_score=round(AGREEMENT_BAND + 62.0, 1),
+    short_score=round(AGREEMENT_BAND + 35.0, 1),
 )
 
 
@@ -155,20 +167,19 @@ class TestHysteresis:
 
 
 class TestBacktestGuardrail:
-    def test_fixture_replay_passes_guardrails(self):
-        signals = load_fixture(FIXTURE)
-        report = replay(signals)
+    def test_fixture_replay_passes_guardrails(self, conviction_signals):
+        """Replay the in-memory fixture (derived from live constants) and check guardrails."""
+        report = replay(conviction_signals)
         failures = check(report)
         assert failures == [], failures
 
-    def test_full_coverage_no_signal_lost(self):
-        signals = load_fixture(FIXTURE)
-        report = replay(signals)
+    def test_full_coverage_no_signal_lost(self, conviction_signals):
+        report = replay(conviction_signals)
         actionable = report["input_signals"] - report["untiered_neutral"]
         assert report["overall"]["signals"] == actionable
 
-    def test_high_conviction_outperforms_per_cycle(self):
-        report = replay(load_fixture(FIXTURE))
+    def test_high_conviction_outperforms_per_cycle(self, conviction_signals):
+        report = replay(conviction_signals)
         assert report["high_conviction"]["avg_return"] > report["overall"]["avg_return"]
         assert report["high_conviction"]["win_rate"] > report["overall"]["win_rate"]
 
@@ -193,64 +204,71 @@ class TestBacktestGuardrail:
         failures = check(report)
         assert any("profitability" in f for f in failures)
 
-    def test_fixture_contains_reachable_long_score_buy(self):
-        """Fixture must include at least one BUY with long_score > 65.
+    def test_fixture_contains_reachable_long_score_buy(self, conviction_signals):
+        """Fixture must include at least one BUY with long_score above AGREEMENT_BAND.
 
-        If this fails it means the fixture no longer exercises the reachable
-        part of the long-gauge threshold.  A regression that silently raises
-        the threshold above 65 would suppress all such signals but nothing
-        in the replay would detect the loss — this assertion is the canary.
+        Scores in the in-memory fixture are generated as ``AGREEMENT_BAND + offset``
+        so this assertion stays in sync automatically when AGREEMENT_BAND changes.
+        If it fails, the fixture generator (tests/fixtures/make_conviction_fixture.py)
+        no longer produces any above-band BUY — that is a bug in the generator.
         """
-        signals = load_fixture(FIXTURE)
         strong_buys = [
-            s for s in signals
-            if s.get("signal_type") == "buy" and float(s.get("long_score", 0.0)) > 65
+            s for s in conviction_signals
+            if s.get("signal_type") == "buy"
+            and float(s.get("long_score", 0.0)) > AGREEMENT_BAND
         ]
         assert len(strong_buys) >= 1, (
-            "Fixture contains no BUY signal with long_score > 65; "
-            "a regression raising the threshold would pass the backtest undetected."
+            f"Fixture contains no BUY signal with long_score > AGREEMENT_BAND "
+            f"({AGREEMENT_BAND}); regenerate via tests/fixtures/make_conviction_fixture.py."
         )
 
-    def test_no_buy_with_low_long_score_earns_high_conviction(self):
-        """BUY signals with long_score <= 65 must never receive TIER_HIGH_CONVICTION.
+    def test_no_buy_with_low_long_score_earns_high_conviction(self, conviction_signals):
+        """BUY signals with long_score <= AGREEMENT_BAND must never receive TIER_HIGH_CONVICTION.
 
-        A long_score at or below 65 is below the agreement band for long-gauge
-        buy setups.  Tiering such a signal as high conviction would indicate a
-        misconfigured evaluator (e.g. the threshold accidentally reverted).
-        The check() function surfaces this via the '_signal_tiers' key that
-        replay() now includes in its return value.
+        A long_score at or below AGREEMENT_BAND means the long-trend model does
+        not clearly agree with the buy.  Tiering such a signal as high conviction
+        would indicate a misconfigured evaluator (e.g. the threshold accidentally
+        reverted).  The check() function surfaces this via '_signal_tiers'.
         """
-        signals = load_fixture(FIXTURE)
-        report = replay(signals)
-        failures = check(report, signals=signals)
+        report = replay(conviction_signals)
+        failures = check(report, signals=conviction_signals)
         impossible_tier_failures = [f for f in failures if "impossible tier" in f]
         assert impossible_tier_failures == [], impossible_tier_failures
 
     def test_all_low_long_score_buys_triggers_threshold_reachability_failure(self):
-        """Fixture with ONLY low long_score buys must trigger a threshold reachability failure.
+        """Fixture with ONLY below-band long_score buys must trigger a reachability failure.
 
-        This is the negative-path canary: if a future change silently removes
-        all strong-buy rows from the fixture (or raises the threshold above 65),
-        the backtest must exit non-zero.  We inject a synthetic signal list where
-        every BUY has long_score <= 65 and confirm check() flags it.
+        This is the negative-path canary: if a future change silently removes all
+        strong-buy rows from the fixture, the backtest must exit non-zero.  We
+        inject a synthetic signal list where every BUY has long_score <= AGREEMENT_BAND
+        and confirm check() flags it.
         """
         low_score_signals = [
             dict(
                 signal_type="buy", gauge_type="long", volatility_regime="calm",
-                cycle_quality_score=0.85, ml_confidence=0.90, ml_fallback=False,
-                long_score=60.0, short_score=45.0,
+                cycle_quality_score=round(MIN_CYCLE_QUALITY + 0.20, 2),
+                ml_confidence=round(min(MIN_ML_CONFIDENCE + 0.25, 0.98), 2),
+                ml_fallback=False,
+                long_score=round(AGREEMENT_BAND - 10.0, 1),
+                short_score=round(AGREEMENT_BAND + 35.0, 1),
                 return_percent=1.0,
             ),
             dict(
                 signal_type="buy", gauge_type="long", volatility_regime="calm",
-                cycle_quality_score=0.80, ml_confidence=0.85, ml_fallback=False,
-                long_score=50.0, short_score=40.0,
+                cycle_quality_score=round(MIN_CYCLE_QUALITY + 0.15, 2),
+                ml_confidence=round(min(MIN_ML_CONFIDENCE + 0.20, 0.97), 2),
+                ml_fallback=False,
+                long_score=round(AGREEMENT_BAND - 20.0, 1),
+                short_score=round(AGREEMENT_BAND + 30.0, 1),
                 return_percent=0.5,
             ),
             dict(
                 signal_type="buy", gauge_type="long", volatility_regime="calm",
-                cycle_quality_score=0.75, ml_confidence=0.80, ml_fallback=False,
-                long_score=65.0, short_score=35.0,
+                cycle_quality_score=round(MIN_CYCLE_QUALITY + 0.10, 2),
+                ml_confidence=round(min(MIN_ML_CONFIDENCE + 0.15, 0.96), 2),
+                ml_fallback=False,
+                long_score=AGREEMENT_BAND,   # exactly at the band — not above
+                short_score=round(AGREEMENT_BAND + 25.0, 1),
                 return_percent=0.8,
             ),
         ]
@@ -259,5 +277,6 @@ class TestBacktestGuardrail:
         reachability_failures = [f for f in failures if "threshold reachability" in f]
         assert reachability_failures, (
             "Expected a 'threshold reachability' failure when all BUY signals "
-            f"have long_score <= 65, but check() returned: {failures}"
+            f"have long_score <= AGREEMENT_BAND ({AGREEMENT_BAND}), "
+            f"but check() returned: {failures}"
         )

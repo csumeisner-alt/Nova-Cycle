@@ -40,6 +40,17 @@ MIN_ML_CONFIDENCE = 0.65
 # A gauge "agrees" with a buy when its score is above +AGREEMENT_BAND, with a
 # sell when below -AGREEMENT_BAND. The band keeps a barely-positive score
 # from counting as meaningful agreement.
+#
+# ⚠ FIXTURE NOTE — if you change AGREEMENT_BAND, MIN_CYCLE_QUALITY, or
+# MIN_ML_CONFIDENCE, regenerate the test fixture so the replay scores stay
+# in sync with the new thresholds:
+#
+#     cd artifacts/api-server/backend
+#     python tests/fixtures/make_conviction_fixture.py
+#
+# The fixture generator (tests/fixtures/make_conviction_fixture.py) imports
+# these constants directly and expresses all scores as ``CONSTANT ± offset``,
+# so a single re-run is all that is needed.
 AGREEMENT_BAND = 10.0
 
 # ── Exit thresholds (to LOSE high conviction — wider, for hysteresis) ───────
