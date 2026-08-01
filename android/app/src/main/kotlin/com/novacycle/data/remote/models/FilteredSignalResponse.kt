@@ -17,5 +17,8 @@ data class FilteredSignalResponse(
     @Json(name = "gauge_type") val gaugeType: String,
     @Json(name = "confidence") val confidence: Float,
     @Json(name = "cycle_id") val cycleId: String? = null,
-    @Json(name = "session_type") val sessionType: String = "regular"
+    @Json(name = "session_type") val sessionType: String = "regular",
+    /** "opportunity" | "high_conviction" | null for pre-tiering rows. */
+    @Json(name = "conviction_tier") val convictionTier: String? = null,
+    @Json(name = "conviction_reasons") val convictionReasons: List<String> = emptyList()
 )

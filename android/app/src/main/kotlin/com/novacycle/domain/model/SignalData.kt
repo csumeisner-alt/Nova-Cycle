@@ -19,9 +19,13 @@ data class SignalData(
     val isExtendedHours: Boolean = false,
     val gapType: String? = null,
     val liquidityScore: Float = 1f,
-    val macroOverrideApplied: Boolean = false
+    val macroOverrideApplied: Boolean = false,
+    /** "opportunity" | "high_conviction" | null for pre-tiering signals. */
+    val convictionTier: String? = null,
+    val convictionReasons: List<String> = emptyList()
 ) {
     val isBuy: Boolean get() = signalType.lowercase() == "buy"
     val isSell: Boolean get() = signalType.lowercase() == "sell"
     val isLongGauge: Boolean get() = gaugeType.lowercase() == "long"
+    val isHighConviction: Boolean get() = convictionTier == "high_conviction"
 }

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronDown, ChevronUp, Star } from 'lucide-react';
 import { confidenceZone } from '@/lib/confidenceZone';
 import { useState } from 'react';
 
@@ -10,7 +10,26 @@ export type PredictionDisplay = {
   note?: string;
   data_quality_degraded?: boolean;
   data_quality_reason?: string;
+  conviction_tier?: 'opportunity' | 'high_conviction' | null;
+  conviction_reasons?: string[];
 };
+
+function ConvictionBadge({ tier, name }: { tier: NonNullable<PredictionDisplay['conviction_tier']>; name: string }) {
+  const isHigh = tier === 'high_conviction';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono border ${
+        isHigh
+          ? 'text-amber-300 bg-amber-400/10 border-amber-400/30'
+          : 'text-muted-foreground bg-white/5 border-white/10'
+      }`}
+      data-testid={`badge-conviction-${name}`}
+    >
+      {isHigh && <Star className="w-3 h-3 fill-current" />}
+      <span>{isHigh ? 'HIGH-CONVICTION' : 'OPPORTUNITY'}</span>
+    </span>
+  );
+}
 
 function TrendArrow({ trend }: { trend: PredictionDisplay['trend'] }) {
   if (trend === 'UP') return <TrendingUp className="w-4 h-4 text-emerald-400" data-testid="icon-trend-up" />;
@@ -107,6 +126,11 @@ export function PredictionCard({ name, label }: { name: string; label: string })
           TREND: {trend}
         </span>
       </div>
+      {data?.conviction_tier && (
+        <div className="flex items-center gap-2" title={(data.conviction_reasons ?? []).join(' ')}>
+          <ConvictionBadge tier={data.conviction_tier} name={name} />
+        </div>
+      )}
       <div className="h-2 w-full rounded-full bg-white/5 overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-500 ${zone.bar}`}

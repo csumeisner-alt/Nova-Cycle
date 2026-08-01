@@ -56,42 +56,54 @@ async def init_db() -> None:
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_device_tokens()
+    await _migrate_conviction_columns()
 
 
-async def _migrate_device_tokens() -> None:
+async def _add_missing_columns(table: str, new_cols: dict) -> None:
     """
-    Add the three notification-preference columns to an existing device_tokens
-    table that was created before they were introduced.
+    Add any missing columns to an existing table.
 
     SQLite does not support `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, so we
     check the column list first and only issue the ALTER when missing.
     This is idempotent and safe to run on every startup.
     """
-    _NEW_COLS = {
-        "min_buy_threshold":           "REAL NOT NULL DEFAULT 0.70",
-        "min_sell_threshold":          "REAL NOT NULL DEFAULT 0.70",
-        "extended_hours_notifications": "INTEGER NOT NULL DEFAULT 1",
-    }
+    from sqlalchemy import text
+    import logging
 
     async with async_engine.connect() as conn:
-        # Fetch current column names from PRAGMA
-        result = await conn.execute(
-            __import__("sqlalchemy").text("PRAGMA table_info(device_tokens)")
-        )
+        result = await conn.execute(text(f"PRAGMA table_info({table})"))
         existing_cols = {row[1] for row in result.fetchall()}  # row[1] = column name
 
-        for col_name, col_def in _NEW_COLS.items():
+        for col_name, col_def in new_cols.items():
             if col_name not in existing_cols:
                 await conn.execute(
-                    __import__("sqlalchemy").text(
-                        f"ALTER TABLE device_tokens ADD COLUMN {col_name} {col_def}"
-                    )
+                    text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
                 )
-                import logging
                 logging.getLogger(__name__).info(
-                    "Migrated device_tokens: added column %s", col_name
+                    "Migrated %s: added column %s", table, col_name
                 )
         await conn.commit()
+
+
+async def _migrate_device_tokens() -> None:
+    """Backfill notification-preference columns on device_tokens."""
+    await _add_missing_columns("device_tokens", {
+        "min_buy_threshold":            "REAL NOT NULL DEFAULT 0.70",
+        "min_sell_threshold":           "REAL NOT NULL DEFAULT 0.70",
+        "extended_hours_notifications": "INTEGER NOT NULL DEFAULT 1",
+        "high_conviction_only":         "INTEGER NOT NULL DEFAULT 0",
+    })
+
+
+async def _migrate_conviction_columns() -> None:
+    """Backfill conviction-tier columns on signal tables (NULL = pre-tiering)."""
+    await _add_missing_columns("signal_history", {
+        "conviction_tier":    "VARCHAR(24)",
+        "conviction_reasons": "TEXT",
+    })
+    await _add_missing_columns("filtered_signals", {
+        "conviction_tier": "VARCHAR(24)",
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -21,6 +21,8 @@ data class SensitivitySettings(
     val notificationSensitivity: NotifSensitivity = NotifSensitivity.STANDARD,
     /** Whether to send notifications for extended-hours signals */
     val extendedHoursNotifications: Boolean = true,
+    /** When true, only high-conviction signals trigger push notifications */
+    val highConvictionOnly: Boolean = false,
     /** Backend API base URL — overridable from settings screen */
     val apiBaseUrl: String = com.novacycle.BuildConfig.API_BASE_URL
 )

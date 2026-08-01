@@ -46,6 +46,8 @@ class GetSignalsUseCase @Inject constructor(
         isExtendedHours = isExtendedHours,
         gapType = gapType,
         liquidityScore = liquidityScore,
-        macroOverrideApplied = macroOverrideApplied
+        macroOverrideApplied = macroOverrideApplied,
+        convictionTier = convictionTier,
+        convictionReasons = convictionReasons
     )
 }

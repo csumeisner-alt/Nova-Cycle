@@ -390,6 +390,17 @@ private fun DrawScope.drawSignalMarker(
         signal.isExtendedHours -> drawTriangle(Offset(centerX, cy), markerSize, isBuy, NovaExtendedBlue, filled = false)
         else -> drawTriangle(Offset(centerX, cy), markerSize, isBuy, if (isBuy) NovaBuyGreen else NovaSellRed, filled = true)
     }
+
+    // High-conviction signals get a subtle halo ring around the marker so
+    // they stand out from ordinary opportunity-tier markers.
+    if (signal.isHighConviction) {
+        drawCircle(
+            color = NovaWarningYellow.copy(alpha = 0.9f),
+            radius = markerSize * 0.9f,
+            center = Offset(centerX, cy),
+            style = Stroke(width = 2.5f)
+        )
+    }
 }
 
 private fun DrawScope.drawTriangle(center: Offset, size: Float, pointingUp: Boolean, color: Color, filled: Boolean) {

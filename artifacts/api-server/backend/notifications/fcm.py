@@ -64,6 +64,7 @@ class FCMNotifier:
         score: Optional[float] = None,
         gap_type: Optional[str] = None,
         liquidity_score: Optional[float] = None,
+        conviction_tier: Optional[str] = None,
     ) -> bool:
         """
         Send a BUY/SELL signal push notification to a specific device.
@@ -98,7 +99,8 @@ class FCMNotifier:
         access_token, project_id = auth
 
         title, body = self._build_message(
-            signal_type, gauge_type, confidence, is_extended, gap_type
+            signal_type, gauge_type, confidence, is_extended, gap_type,
+            conviction_tier,
         )
 
         payload = {
@@ -120,6 +122,7 @@ class FCMNotifier:
                         if liquidity_score is not None else ""
                     ),
                     "ticker": settings.TICKER,
+                    "conviction_tier": conviction_tier or "",
                 },
                 "android": {
                     "priority": "HIGH",
@@ -271,6 +274,7 @@ class FCMNotifier:
         confidence: float,
         is_extended: bool,
         gap_type: Optional[str],
+        conviction_tier: Optional[str] = None,
     ) -> tuple[str, str]:
         """Build a human-readable notification title and body."""
         emoji_map = {"buy": "🟢", "sell": "🔴", "neutral": "⚪"}
@@ -279,13 +283,16 @@ class FCMNotifier:
         session_tag = " [Extended Hours]" if is_extended else ""
         horizon = "Long-Term" if gauge_type == "long" else "Short-Term"
         action = signal_type.upper()
+        tier_tag = " ⭐" if conviction_tier == "high_conviction" else ""
 
-        title = f"{emoji} NovaCycle {horizon} {action}{session_tag}"
+        title = f"{emoji} NovaCycle {horizon} {action}{session_tag}{tier_tag}"
 
         body_parts = [
             f"VOO {horizon} {action} signal",
             f"Confidence: {confidence:.0%}",
         ]
+        if conviction_tier == "high_conviction":
+            body_parts.insert(0, "High-Conviction")
         if gap_type and gap_type != "none":
             body_parts.append(f"Gap: {gap_type.replace('_', ' ').title()}")
         if is_extended:

@@ -12,7 +12,8 @@ import com.novacycle.data.local.entities.SignalHistoryEntity
 /**
  * Room database definition.
  * Version is incremented on schema changes. v1→v2 adds a timeframe column to
- * candles (see MIGRATION_1_2 in AppModule); fallbackToDestructiveMigration
+ * candles (see MIGRATION_1_2 in AppModule); v2→v3 adds conviction-tier columns
+ * to signal_history (MIGRATION_2_3); fallbackToDestructiveMigration
  * remains as a last-resort safety net.
  */
 @Database(
@@ -21,7 +22,7 @@ import com.novacycle.data.local.entities.SignalHistoryEntity
         ConfidenceHistoryEntity::class,
         CandleEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class NovaCycleDatabase : RoomDatabase() {

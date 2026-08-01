@@ -20,5 +20,7 @@ data class RegisterDeviceRequest(
     @Json(name = "device_name") val deviceName: String? = null,
     @Json(name = "min_buy_threshold") val minBuyThreshold: Double = 0.70,
     @Json(name = "min_sell_threshold") val minSellThreshold: Double = 0.70,
-    @Json(name = "extended_hours_notifications") val extendedHoursNotifications: Boolean = true
+    @Json(name = "extended_hours_notifications") val extendedHoursNotifications: Boolean = true,
+    /** When true, the backend only notifies this device for high-conviction signals. */
+    @Json(name = "high_conviction_only") val highConvictionOnly: Boolean = false
 )

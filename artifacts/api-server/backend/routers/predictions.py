@@ -28,6 +28,7 @@ from signal_engine.long_gauge import LongTrendGauge
 from signal_engine.short_gauge import ShortTrendGauge
 from signal_engine.macro_override import MacroOverrideSafety
 from signal_engine.decision_filter import DecisionFilter
+from signal_engine.conviction import ConvictionEvaluator, TIER_HIGH_CONVICTION
 from signal_engine.normalization import (
     normalize_gauge_output, reconcile_display_signal, NEUTRAL_DEFAULTS,
 )
@@ -134,6 +135,7 @@ _long_gauge = LongTrendGauge()
 _short_gauge = ShortTrendGauge()
 _macro_override = MacroOverrideSafety()
 _decision_filter = DecisionFilter()
+_conviction = ConvictionEvaluator()
 _long_model = LongTrendModel()
 _short_model = ShortTrendModel()
 _hold_engine = HoldTimePredictionEngine()
@@ -494,8 +496,11 @@ async def _store_confidence(session: AsyncSession, ticker: str, long_buy: float,
 async def _store_signal(session: AsyncSession, ticker: str, signal_type: str,
                         gauge_type: str, confidence: float, session_type: str,
                         is_extended: bool, gap_type: str, liquidity_score: float,
-                        macro_override: bool, cycle_id: Optional[str] = None):
+                        macro_override: bool, cycle_id: Optional[str] = None,
+                        conviction_tier: Optional[str] = None,
+                        conviction_reasons: Optional[list] = None):
     """Persist signal event to signal_history table."""
+    import json as _json
     entry = SignalHistory(
         timestamp=datetime.utcnow(),
         ticker=ticker,
@@ -507,7 +512,11 @@ async def _store_signal(session: AsyncSession, ticker: str, signal_type: str,
         is_extended_hours=is_extended,
         gap_type=gap_type,
         liquidity_score=liquidity_score,
-        macro_override_applied=macro_override
+        macro_override_applied=macro_override,
+        conviction_tier=conviction_tier,
+        conviction_reasons=(
+            _json.dumps(conviction_reasons) if conviction_reasons else None
+        ),
     )
     session.add(entry)
     await session.commit()
@@ -560,6 +569,7 @@ async def _notify_all_devices_bg(
     gap_type: str,
     liquidity_score: float,
     score: float,
+    conviction_tier: Optional[str] = None,
 ) -> None:
     """
     Background task: send FCM push notifications to all registered device tokens.
@@ -567,6 +577,7 @@ async def _notify_all_devices_bg(
     Each device's stored preferences are checked before firing:
       - Extended-hours signals are skipped when the device opted out.
       - Signals below the device's confidence threshold are silently skipped.
+      - Devices in "high-conviction only" mode skip non-high-conviction signals.
 
     Uses its own DB session so it can run after the request session is closed.
     Errors are logged but never raise — this must not affect prediction responses.
@@ -596,6 +607,9 @@ async def _notify_all_devices_bg(
                     "min_buy_threshold": t.min_buy_threshold,
                     "min_sell_threshold": t.min_sell_threshold,
                     "extended_hours_notifications": t.extended_hours_notifications,
+                    "high_conviction_only": bool(
+                        getattr(t, "high_conviction_only", False)
+                    ),
                 }
                 for t in result.scalars().all()
             ]
@@ -608,6 +622,19 @@ async def _notify_all_devices_bg(
         for device in tokens:
             # ── Preference filtering ────────────────────────────────────────
             # Skip extended-hours signals when the device has opted out.
+            # Skip non-high-conviction signals for devices that opted into
+            # high-conviction-only notifications.
+            if (
+                device["high_conviction_only"]
+                and conviction_tier != TIER_HIGH_CONVICTION
+            ):
+                logger.debug(
+                    "Skipping %s-tier notification for high-conviction-only device: %s",
+                    conviction_tier or "untiered",
+                    device["device_name"] or "unknown",
+                )
+                continue
+
             if is_extended and not device["extended_hours_notifications"]:
                 logger.debug(
                     "Skipping extended-hours notification for device: %s",
@@ -639,6 +666,7 @@ async def _notify_all_devices_bg(
                 score=score,
                 gap_type=gap_type,
                 liquidity_score=liquidity_score,
+                conviction_tier=conviction_tier,
             )
             if not ok:
                 logger.warning(
@@ -801,6 +829,18 @@ async def predict_long(
             1.0, abs(result["score"]) / 100.0 + decision.get("priority_boost", 0.0)
         )
 
+        # Conviction tier (label only — never suppresses the signal)
+        conviction = _conviction.evaluate(
+            signal_type=final_signal,
+            gauge_type="long",
+            volatility_regime=decision.get("volatility_regime", "calm"),
+            cycle_quality_score=decision.get("cycle_quality_score", 0.5),
+            ml_confidence=ml_confidence,
+            ml_fallback=ml_fallback,
+            long_score=result["score"],
+            short_score=_last_short_score,
+        )
+
         # Persist confidence history
         await _store_confidence(session, ticker,
                                 long_buy=long_buy_conf, long_sell=long_sell_conf,
@@ -819,7 +859,9 @@ async def predict_long(
                 confidence=abs(result["score"]) / 100.0,
                 session_type=session_type, is_extended=is_extended,
                 gap_type=str(latest.get("gap_type", "none")),
-                liquidity_score=1.0, macro_override=False
+                liquidity_score=1.0, macro_override=False,
+                conviction_tier=conviction["tier"],
+                conviction_reasons=conviction["reasons"],
             )
             asyncio.create_task(_notify_all_devices_bg(
                 signal_type=final_signal,
@@ -829,6 +871,7 @@ async def predict_long(
                 gap_type=str(latest.get("gap_type", "none")),
                 liquidity_score=1.0,
                 score=result["score"],
+                conviction_tier=conviction["tier"],
             ))
 
         return {
@@ -848,6 +891,8 @@ async def predict_long(
             "volatility_regime": decision.get("volatility_regime", "calm"),
             "liquidity_class": decision.get("liquidity_class", "normal"),
             "confidence_momentum": decision.get("confidence_momentum", 0.0),
+            "conviction_tier": conviction["tier"],
+            "conviction_reasons": conviction["reasons"],
             "data_quality_degraded": dq_degraded,
             "data_quality_reason": dq_reason,
             "timestamp": datetime.utcnow().isoformat(),
@@ -1044,6 +1089,18 @@ async def predict_short(
             1.0, abs(result["score"]) / 100.0 + decision.get("priority_boost", 0.0)
         )
 
+        # Conviction tier (label only — never suppresses the signal)
+        conviction = _conviction.evaluate(
+            signal_type=final_signal,
+            gauge_type="short",
+            volatility_regime=decision.get("volatility_regime", "calm"),
+            cycle_quality_score=decision.get("cycle_quality_score", 0.5),
+            ml_confidence=ml_confidence,
+            ml_fallback=ml_fallback,
+            long_score=_last_long_score,
+            short_score=result["score"],
+        )
+
         # Persist confidence history
         await _store_confidence(session, ticker,
                                 # Preserve the latest long-gauge values; the
@@ -1063,7 +1120,9 @@ async def predict_short(
                 confidence=abs(result["score"]) / 100.0,
                 session_type=session_type, is_extended=is_extended,
                 gap_type=gap_type, liquidity_score=liquidity_score,
-                macro_override=macro_override_applied
+                macro_override=macro_override_applied,
+                conviction_tier=conviction["tier"],
+                conviction_reasons=conviction["reasons"],
             )
             asyncio.create_task(_notify_all_devices_bg(
                 signal_type=final_signal,
@@ -1073,6 +1132,7 @@ async def predict_short(
                 gap_type=gap_type,
                 liquidity_score=liquidity_score,
                 score=result["score"],
+                conviction_tier=conviction["tier"],
             ))
 
         return {
@@ -1101,6 +1161,8 @@ async def predict_short(
             "volatility_regime": decision.get("volatility_regime", "calm"),
             "liquidity_class": decision.get("liquidity_class", "normal"),
             "confidence_momentum": decision.get("confidence_momentum", 0.0),
+            "conviction_tier": conviction["tier"],
+            "conviction_reasons": conviction["reasons"],
             "data_quality_degraded": dq_degraded,
             "data_quality_reason": dq_reason,
             "session_type": session_type,
@@ -1234,10 +1296,24 @@ async def signal_history(
             "is_extended_hours": r.is_extended_hours,
             "gap_type": r.gap_type,
             "liquidity_score": r.liquidity_score,
-            "macro_override_applied": r.macro_override_applied
+            "macro_override_applied": r.macro_override_applied,
+            "conviction_tier": r.conviction_tier,
+            "conviction_reasons": _parse_reasons(r.conviction_reasons),
         }
         for r in rows
     ]
+
+
+def _parse_reasons(raw: Optional[str]) -> list:
+    """Decode a JSON-encoded conviction_reasons column (never raises)."""
+    if not raw:
+        return []
+    try:
+        import json as _json
+        parsed = _json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -1313,7 +1389,9 @@ async def filtered_signal_history(
                 "confidence": sig.confidence,
                 "cycle_id": None,  # assigned when SELL found
                 "session_type": sig.session_type,
-                "is_extended_hours": sig.is_extended_hours
+                "is_extended_hours": sig.is_extended_hours,
+                "conviction_tier": sig.conviction_tier,
+                "conviction_reasons": _parse_reasons(sig.conviction_reasons),
             })
         elif sig.signal_type == "sell" and pending_buy is not None:
             cycle_id = str(uuid.uuid4())
@@ -1329,7 +1407,9 @@ async def filtered_signal_history(
                 "confidence": sig.confidence,
                 "cycle_id": cycle_id,
                 "session_type": sig.session_type,
-                "is_extended_hours": sig.is_extended_hours
+                "is_extended_hours": sig.is_extended_hours,
+                "conviction_tier": sig.conviction_tier,
+                "conviction_reasons": _parse_reasons(sig.conviction_reasons),
             })
             pending_buy = None
 

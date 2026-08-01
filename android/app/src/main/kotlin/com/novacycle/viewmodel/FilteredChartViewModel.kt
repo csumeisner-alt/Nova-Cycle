@@ -124,6 +124,8 @@ class FilteredChartViewModel @Inject constructor(
         signalType = signalType,
         gaugeType = gaugeType,
         confidence = confidence,
-        sessionType = sessionType
+        sessionType = sessionType,
+        convictionTier = convictionTier,
+        convictionReasons = convictionReasons
     )
 }

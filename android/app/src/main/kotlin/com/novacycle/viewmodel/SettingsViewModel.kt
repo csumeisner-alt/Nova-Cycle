@@ -58,6 +58,7 @@ class SettingsViewModel @Inject constructor(
         val KEY_STORY_LEVEL = stringPreferencesKey("story_level")
         val KEY_NOTIF_SENSITIVITY = stringPreferencesKey("notif_sensitivity")
         val KEY_EXTENDED_NOTIF = booleanPreferencesKey("extended_hours_notifications")
+        val KEY_HIGH_CONVICTION_ONLY = booleanPreferencesKey("high_conviction_only")
         val KEY_API_BASE_URL = stringPreferencesKey("api_base_url")
     }
 
@@ -81,6 +82,7 @@ class SettingsViewModel @Inject constructor(
                     prefs[KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
                 ),
                 extendedHoursNotifications = prefs[KEY_EXTENDED_NOTIF] ?: true,
+                highConvictionOnly = prefs[KEY_HIGH_CONVICTION_ONLY] ?: false,
                 apiBaseUrl = ApiUrlResolver.resolve(
                     prefs[KEY_API_BASE_URL],
                     com.novacycle.BuildConfig.API_BASE_URL
@@ -120,6 +122,10 @@ class SettingsViewModel @Inject constructor(
 
     fun updateExtendedHoursNotifications(enabled: Boolean) = saveAndSync { prefs ->
         prefs[KEY_EXTENDED_NOTIF] = enabled
+    }
+
+    fun updateHighConvictionOnly(enabled: Boolean) = saveAndSync { prefs ->
+        prefs[KEY_HIGH_CONVICTION_ONLY] = enabled
     }
 
     // ── URL validation & connection test ──────────────────────────────────────
@@ -216,6 +222,7 @@ class SettingsViewModel @Inject constructor(
         prefs[KEY_STORY_LEVEL] = defaults.storyCardLevel.name
         prefs[KEY_NOTIF_SENSITIVITY] = defaults.notificationSensitivity.name
         prefs[KEY_EXTENDED_NOTIF] = defaults.extendedHoursNotifications
+        prefs[KEY_HIGH_CONVICTION_ONLY] = defaults.highConvictionOnly
         prefs[KEY_API_BASE_URL] = defaults.apiBaseUrl
     }
 

@@ -23,6 +23,8 @@ data class GaugeState(
     val displaySignal: String = "NEUTRAL / HOLD",
     /** True when showing the no-data fallback — gauge renders gray */
     val isFallback: Boolean = false,
+    /** "opportunity" | "high_conviction" | null when the signal is neutral */
+    val convictionTier: String? = null,
     /** Directional gauge position: raw score -100..100 mapped to 0..100. */
     val gaugePercent: Int = ((score + 100f) / 2f).toInt().coerceIn(0, 100)
 ) {

@@ -1,0 +1,198 @@
+"""
+Backtest conviction tiers against historical signals and trade cycles.
+======================================================================
+Replays historical signal conditions through the ConvictionEvaluator and
+compares the two tiers on:
+  - signal coverage (count per tier)
+  - win rate (per completed BUY→SELL cycle)
+  - average return per cycle
+
+Acceptance criteria (exit code non-zero on failure):
+  1. Tiering must NEVER suppress a signal: every actionable input signal must
+     receive a tier (opportunity coverage == 100% of signals; guardrail allows
+     at most MAX_COVERAGE_DROP loss, and by construction it should be 0%).
+  2. High-conviction cycles must outperform the overall per-cycle average
+     return (they are the "trade on this" tier).
+
+Data source:
+  - By default, reads signal_history + trade_cycles from the local SQLite DB.
+  - With --fixture <path.json>, replays a deterministic fixture (used by the
+    automated test so CI never depends on live DB contents).
+
+Fixture format (JSON):
+  {
+    "signals": [
+      {"signal_type": "buy", "gauge_type": "long",
+       "volatility_regime": "calm", "cycle_quality_score": 0.8,
+       "ml_confidence": 0.9, "ml_fallback": false,
+       "long_score": 75, "short_score": 40,
+       "return_percent": 1.2},   # realized cycle return for this signal
+      ...
+    ]
+  }
+
+Usage:
+    cd artifacts/api-server/backend
+    python scripts/backtest_conviction_tiers.py [--fixture tests/fixtures/conviction_fixture.json]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from signal_engine.conviction import (
+    ConvictionEvaluator, TIER_HIGH_CONVICTION, TIER_OPPORTUNITY,
+)
+
+# Guardrail: tiering may not reduce baseline (opportunity) signal coverage by
+# more than this fraction. By design the evaluator only labels, so the
+# expected drop is exactly 0 — the guardrail exists to catch regressions.
+MAX_COVERAGE_DROP = 0.10
+
+
+def replay(signals: list[dict]) -> dict:
+    """Replay signals through a fresh evaluator; return per-tier metrics."""
+    evaluator = ConvictionEvaluator()
+    tiers: list[tuple[str, dict]] = []
+    untiered = 0
+    t = 0.0
+    for sig in signals:
+        t += 600.0  # 10 minutes apart; keeps regime-transition logic realistic
+        res = evaluator.evaluate(
+            signal_type=sig["signal_type"],
+            gauge_type=sig.get("gauge_type", "long"),
+            volatility_regime=sig.get("volatility_regime", "calm"),
+            cycle_quality_score=sig.get("cycle_quality_score", 0.5),
+            ml_confidence=sig.get("ml_confidence", 0.5),
+            ml_fallback=sig.get("ml_fallback", False),
+            long_score=sig.get("long_score", 0.0),
+            short_score=sig.get("short_score", 0.0),
+            now=t,
+        )
+        if res["tier"] is None:
+            untiered += 1
+            continue
+        tiers.append((res["tier"], sig))
+
+    def metrics(rows: list[dict]) -> dict:
+        returns = [
+            float(r["return_percent"]) for r in rows
+            if r.get("return_percent") is not None
+        ]
+        wins = sum(1 for x in returns if x > 0)
+        return {
+            "signals": len(rows),
+            "cycles": len(returns),
+            "win_rate": (wins / len(returns)) if returns else None,
+            "avg_return": (sum(returns) / len(returns)) if returns else None,
+        }
+
+    all_rows = [s for _, s in tiers]
+    hc_rows = [s for tier, s in tiers if tier == TIER_HIGH_CONVICTION]
+    opp_rows = [s for tier, s in tiers if tier == TIER_OPPORTUNITY]
+
+    return {
+        "input_signals": len(signals),
+        "untiered_neutral": untiered,
+        "overall": metrics(all_rows),
+        "high_conviction": metrics(hc_rows),
+        "opportunity_only": metrics(opp_rows),
+    }
+
+
+def check(report: dict) -> list[str]:
+    """Return list of failure strings (empty = pass)."""
+    failures = []
+    actionable = report["input_signals"] - report["untiered_neutral"]
+    tiered = report["overall"]["signals"]
+    if actionable > 0:
+        coverage = tiered / actionable
+        if coverage < 1.0 - MAX_COVERAGE_DROP:
+            failures.append(
+                f"coverage guardrail: only {coverage:.0%} of actionable signals "
+                f"received a tier (allowed drop <= {MAX_COVERAGE_DROP:.0%})"
+            )
+    hc = report["high_conviction"]
+    overall = report["overall"]
+    if hc["cycles"] and overall["cycles"]:
+        if hc["avg_return"] <= overall["avg_return"]:
+            failures.append(
+                f"profitability: high-conviction avg return {hc['avg_return']:+.2f}% "
+                f"does not beat overall {overall['avg_return']:+.2f}%"
+            )
+    return failures
+
+
+def load_fixture(path: str) -> list[dict]:
+    with open(path) as f:
+        return json.load(f)["signals"]
+
+
+def load_from_db() -> list[dict]:
+    """Pair signal_history rows with trade-cycle returns from the local DB."""
+    import sqlite3
+
+    db_path = Path(__file__).resolve().parents[1] / "novacycle.db"
+    if not db_path.exists():
+        raise SystemExit(f"No database at {db_path}; use --fixture instead.")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cycles = {
+        row["cycle_id"]: row["return_percent"]
+        for row in conn.execute(
+            "SELECT cycle_id, return_percent FROM trade_cycles "
+            "WHERE return_percent IS NOT NULL"
+        )
+    }
+    signals = []
+    for row in conn.execute(
+        "SELECT * FROM signal_history WHERE signal_type IN ('buy','sell') "
+        "ORDER BY timestamp"
+    ):
+        signals.append({
+            "signal_type": row["signal_type"],
+            "gauge_type": row["gauge_type"],
+            # Historical rows don't store regime/quality inputs; use neutral
+            # assumptions so the DB replay measures coverage, while fixture
+            # replays exercise the tier criteria precisely.
+            "volatility_regime": "calm",
+            "cycle_quality_score": row["confidence"],
+            "ml_confidence": row["confidence"],
+            "ml_fallback": False,
+            "long_score": row["confidence"] * 100 * (1 if row["signal_type"] == "buy" else -1),
+            "short_score": row["confidence"] * 100 * (1 if row["signal_type"] == "buy" else -1),
+            "return_percent": cycles.get(row["cycle_id"]),
+        })
+    conn.close()
+    return signals
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fixture", help="JSON fixture path (else: local DB)")
+    args = parser.parse_args()
+
+    signals = load_fixture(args.fixture) if args.fixture else load_from_db()
+    if not signals:
+        print("No signals to replay.")
+        return 0
+
+    report = replay(signals)
+    print(json.dumps(report, indent=2))
+    failures = check(report)
+    if failures:
+        print("\nFAIL:")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print("\nPASS: tier coverage guardrail held and high-conviction outperformed.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

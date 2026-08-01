@@ -58,6 +58,7 @@ fun SignalStoryCard(
                         color = signalColor, fontWeight = FontWeight.Bold)
                     Text(gaugeLabel, style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface)
+                    signal.convictionTier?.let { ConvictionTierBadge(it) }
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Filled.Close, contentDescription = "Close")
@@ -93,6 +94,7 @@ private fun SimpleSummary(signal: SignalData, holdTimeText: String) {
         if (signal.gapType != null) add("📊 Gap detected: ${signal.gapType}")
         if (signal.liquidityScore < 0.5f) add("💧 Low liquidity environment")
         if (signal.macroOverrideApplied) add("⚠️ Macro override was applied")
+        if (signal.isHighConviction) add("⭐ High-conviction signal — all confirmation checks passed")
         add("📈 Confidence: ${"%.1f".format(signal.confidence)}%")
     }
     bullets.forEach { bullet ->
@@ -164,6 +166,11 @@ private fun ExpertDetails(signal: SignalData) {
         "Gap Type"       to (signal.gapType ?: "None"),
         "Liquidity"      to "%.3f".format(signal.liquidityScore),
         "Macro Override" to if (signal.macroOverrideApplied) "Applied" else "Not applied",
+        "Conviction"     to when (signal.convictionTier) {
+            "high_conviction" -> "High-Conviction"
+            "opportunity"     -> "Opportunity"
+            else              -> "—"
+        },
         "Cycle ID"       to (signal.cycleId?.take(8) ?: "—"),
         "Signal ID"      to signal.id.take(8),
         "Timestamp"      to signal.timestamp
@@ -184,6 +191,39 @@ private fun ExpertDetails(signal: SignalData) {
                 color = NovaWarningYellow
             )
         }
+    }
+    if (signal.convictionReasons.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(8.dp))
+        SectionTitle("Conviction Analysis")
+        signal.convictionReasons.forEach { reason ->
+            Text(reason, style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                modifier = Modifier.padding(vertical = 2.dp))
+        }
+    }
+}
+
+/** Small pill badge indicating the signal's conviction tier. */
+@Composable
+fun ConvictionTierBadge(tier: String, modifier: Modifier = Modifier) {
+    val isHigh = tier == "high_conviction"
+    val label = if (isHigh) "⭐ HIGH-CONVICTION" else "OPPORTUNITY"
+    val bg = if (isHigh) NovaWarningYellow.copy(alpha = 0.20f)
+             else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (isHigh) NovaWarningYellow
+             else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+    Surface(
+        modifier = modifier.padding(top = 4.dp),
+        shape = MaterialTheme.shapes.small,
+        color = bg
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = fg,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
     }
 }
 

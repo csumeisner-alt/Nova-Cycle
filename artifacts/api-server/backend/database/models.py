@@ -132,6 +132,12 @@ class SignalHistory(Base):
     liquidity_score = Column(Float, nullable=True)
     macro_override_applied = Column(Boolean, nullable=False, default=False)
 
+    # ── Conviction tier ('opportunity' | 'high_conviction'; NULL for rows
+    #    recorded before tiering existed) ─────────────────────────────────────
+    conviction_tier = Column(String(24), nullable=True)
+    # JSON-encoded list of plain-language reason strings
+    conviction_reasons = Column(Text, nullable=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Trade Cycles
@@ -187,6 +193,10 @@ class FilteredSignal(Base):
     cycle_id = Column(String(64), nullable=True)
     session_type = Column(String(16), nullable=False, default="regular")
 
+    # Conviction tier carried over from the underlying signal (nullable for
+    # rows recorded before tiering existed).
+    conviction_tier = Column(String(24), nullable=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Model Metadata
@@ -234,3 +244,7 @@ class DeviceToken(Base):
 
     # When False, skip push notifications for extended-hours signals.
     extended_hours_notifications = Column(Boolean, nullable=False, default=True)
+
+    # When True, only high-conviction signals trigger push notifications.
+    # Default False preserves each device's current behavior (all signals).
+    high_conviction_only = Column(Boolean, nullable=False, default=False)

@@ -128,6 +128,15 @@ fun SettingsScreen(
                 Text("Extended-Hours Notifications", style = MaterialTheme.typography.bodyMedium)
                 Switch(checked = settings.extendedHoursNotifications, onCheckedChange = { viewModel.updateExtendedHoursNotifications(it) })
             }
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("High-Conviction Signals Only", style = MaterialTheme.typography.bodyMedium)
+                    Text("Only notify for signals that pass all confirmation checks",
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+                Switch(checked = settings.highConvictionOnly, onCheckedChange = { viewModel.updateHighConvictionOnly(it) })
+            }
         }
 
         SettingsSection("Backend API") {

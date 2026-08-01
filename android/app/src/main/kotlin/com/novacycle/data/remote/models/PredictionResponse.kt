@@ -34,6 +34,10 @@ data class PredictionResponse(
     @Json(name = "volatility_regime") val volatilityRegime: String? = null,
     @Json(name = "liquidity_class") val liquidityClass: String? = null,
     @Json(name = "confidence_momentum") val confidenceMomentum: Float = 0f,
+    /** "opportunity" | "high_conviction" | null for neutral signals. */
+    @Json(name = "conviction_tier") val convictionTier: String? = null,
+    /** Plain-language explanation of the conviction tier decision. */
+    @Json(name = "conviction_reasons") val convictionReasons: List<String> = emptyList(),
     @Json(name = "session_type") val sessionType: String? = null,
     @Json(name = "is_extended_hours") val isExtendedHours: Boolean = false,
     @Json(name = "note") val note: String? = null,

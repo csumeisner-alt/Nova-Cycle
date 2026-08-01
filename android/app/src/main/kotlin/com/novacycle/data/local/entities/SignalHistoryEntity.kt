@@ -22,5 +22,9 @@ data class SignalHistoryEntity(
     @ColumnInfo(name = "is_extended_hours") val isExtendedHours: Boolean = false,
     @ColumnInfo(name = "gap_type") val gapType: String? = null,
     @ColumnInfo(name = "liquidity_score") val liquidityScore: Float = 1f,
-    @ColumnInfo(name = "macro_override_applied") val macroOverrideApplied: Boolean = false
+    @ColumnInfo(name = "macro_override_applied") val macroOverrideApplied: Boolean = false,
+    /** "opportunity" | "high_conviction" | null for pre-tiering rows. */
+    @ColumnInfo(name = "conviction_tier") val convictionTier: String? = null,
+    /** JSON-encoded list of reason strings (kept opaque in the cache). */
+    @ColumnInfo(name = "conviction_reasons") val convictionReasons: String? = null
 )

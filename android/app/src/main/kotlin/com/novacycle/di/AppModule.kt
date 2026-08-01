@@ -77,6 +77,16 @@ object AppModule {
         }
     }
 
+    /**
+     * v2 → v3: signal_history gains nullable conviction-tier columns.
+     */
+    val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE signal_history ADD COLUMN conviction_tier TEXT")
+            db.execSQL("ALTER TABLE signal_history ADD COLUMN conviction_reasons TEXT")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideNovaCycleDatabase(
@@ -86,7 +96,7 @@ object AppModule {
         NovaCycleDatabase::class.java,
         "novacycle_db"
     )
-        .addMigrations(MIGRATION_1_2)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
         .fallbackToDestructiveMigration() // Last-resort safety net for unknown versions
         .build()
 

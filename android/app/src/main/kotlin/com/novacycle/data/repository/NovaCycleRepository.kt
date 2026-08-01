@@ -110,7 +110,11 @@ open class NovaCycleRepository @Inject constructor(
                 isExtendedHours = r.isExtendedHours,
                 gapType = r.gapType,
                 liquidityScore = r.liquidityScore,
-                macroOverrideApplied = r.macroOverrideApplied
+                macroOverrideApplied = r.macroOverrideApplied,
+                convictionTier = r.convictionTier,
+                // Reason sentences never contain newlines; store newline-joined.
+                convictionReasons = r.convictionReasons
+                    .takeIf { it.isNotEmpty() }?.joinToString("\n")
             )
         }
         signalDao.deleteByTicker(ticker)
@@ -132,7 +136,10 @@ open class NovaCycleRepository @Inject constructor(
                 isExtendedHours = e.isExtendedHours,
                 gapType = e.gapType,
                 liquidityScore = e.liquidityScore,
-                macroOverrideApplied = e.macroOverrideApplied
+                macroOverrideApplied = e.macroOverrideApplied,
+                convictionTier = e.convictionTier,
+                convictionReasons = e.convictionReasons
+                    ?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
             )
         }
     }
@@ -275,6 +282,7 @@ open class NovaCycleRepository @Inject constructor(
     ): Result<Unit> = runCatching {
         val (minBuy, minSell) = computeEffectiveThresholds(settings)
         val extHours = settings?.extendedHoursNotifications ?: true
+        val highConvictionOnly = settings?.highConvictionOnly ?: false
         apiService.registerDeviceToken(
             RegisterDeviceRequest(
                 token = token,
@@ -282,10 +290,12 @@ open class NovaCycleRepository @Inject constructor(
                 minBuyThreshold = minBuy,
                 minSellThreshold = minSell,
                 extendedHoursNotifications = extHours,
+                highConvictionOnly = highConvictionOnly,
             )
         )
         Log.d("NovaCycleRepository", "Device token registered: ${token.take(20)}... " +
-            "(buyThreshold=${"%.2f".format(minBuy)}, sellThreshold=${"%.2f".format(minSell)}, extHours=$extHours)")
+            "(buyThreshold=${"%.2f".format(minBuy)}, sellThreshold=${"%.2f".format(minSell)}, " +
+            "extHours=$extHours, highConvictionOnly=$highConvictionOnly)")
     }
 
     /**

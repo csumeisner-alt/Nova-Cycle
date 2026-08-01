@@ -39,6 +39,9 @@ class RegisterDeviceRequest(BaseModel):
     min_buy_threshold: float = 0.70
     min_sell_threshold: float = 0.70
     extended_hours_notifications: bool = True
+    # When True, only high-conviction signals notify this device.
+    # Default False keeps existing behavior (all signals).
+    high_conviction_only: bool = False
 
     @field_validator("min_buy_threshold", "min_sell_threshold")
     @classmethod
@@ -82,6 +85,7 @@ async def register_device(
         existing.min_buy_threshold = body.min_buy_threshold
         existing.min_sell_threshold = body.min_sell_threshold
         existing.extended_hours_notifications = body.extended_hours_notifications
+        existing.high_conviction_only = body.high_conviction_only
         logger.info("FCM token refreshed for device: %s", body.device_name or "unknown")
     else:
         session.add(DeviceToken(
@@ -92,6 +96,7 @@ async def register_device(
             min_buy_threshold=body.min_buy_threshold,
             min_sell_threshold=body.min_sell_threshold,
             extended_hours_notifications=body.extended_hours_notifications,
+            high_conviction_only=body.high_conviction_only,
         ))
         logger.info("FCM token registered for device: %s", body.device_name or "unknown")
 

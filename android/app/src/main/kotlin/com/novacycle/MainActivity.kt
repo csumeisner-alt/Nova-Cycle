@@ -281,6 +281,7 @@ class MainActivity : ComponentActivity() {
                         prefs[SettingsViewModel.KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
                     ),
                     extendedHoursNotifications = prefs[SettingsViewModel.KEY_EXTENDED_NOTIF] ?: true,
+                    highConvictionOnly = prefs[SettingsViewModel.KEY_HIGH_CONVICTION_ONLY] ?: false,
                     apiBaseUrl = ApiUrlResolver.resolve(
                         prefs[SettingsViewModel.KEY_API_BASE_URL],
                         com.novacycle.BuildConfig.API_BASE_URL

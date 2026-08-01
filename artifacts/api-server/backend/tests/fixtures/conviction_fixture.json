@@ -1,0 +1,16 @@
+{
+  "signals": [
+    {"signal_type": "buy",  "gauge_type": "long",  "volatility_regime": "calm",     "cycle_quality_score": 0.85, "ml_confidence": 0.90, "ml_fallback": false, "long_score": 78,  "short_score": 45,  "return_percent": 1.8},
+    {"signal_type": "buy",  "gauge_type": "long",  "volatility_regime": "trending", "cycle_quality_score": 0.80, "ml_confidence": 0.85, "ml_fallback": false, "long_score": 72,  "short_score": 30,  "return_percent": 1.2},
+    {"signal_type": "sell", "gauge_type": "short", "volatility_regime": "calm",     "cycle_quality_score": 0.75, "ml_confidence": 0.15, "ml_fallback": false, "long_score": -50, "short_score": -65, "return_percent": 0.9},
+    {"signal_type": "buy",  "gauge_type": "long",  "volatility_regime": "calm",     "cycle_quality_score": 0.55, "ml_confidence": 0.60, "ml_fallback": false, "long_score": 71,  "short_score": -5,  "return_percent": -0.6},
+    {"signal_type": "buy",  "gauge_type": "short", "volatility_regime": "compressed","cycle_quality_score": 0.62, "ml_confidence": 0.70, "ml_fallback": false, "long_score": 40,  "short_score": 62,  "return_percent": -0.3},
+    {"signal_type": "sell", "gauge_type": "short", "volatility_regime": "macro_shock","cycle_quality_score": 0.50, "ml_confidence": 0.40, "ml_fallback": false, "long_score": -20, "short_score": -61, "return_percent": 0.2},
+    {"signal_type": "buy",  "gauge_type": "long",  "volatility_regime": "calm",     "cycle_quality_score": 0.70, "ml_confidence": 0.55, "ml_fallback": true,  "long_score": 73,  "short_score": 20,  "return_percent": -0.4},
+    {"signal_type": "neutral","gauge_type": "long","volatility_regime": "calm",     "cycle_quality_score": 0.50, "ml_confidence": 0.50, "ml_fallback": false, "long_score": 10,  "short_score": 5,   "return_percent": null},
+    {"signal_type": "buy",  "gauge_type": "long",  "volatility_regime": "calm",     "cycle_quality_score": 0.82, "ml_confidence": 0.88, "ml_fallback": false, "long_score": 80,  "short_score": 55,  "return_percent": 2.1},
+    {"signal_type": "sell", "gauge_type": "long",  "volatility_regime": "trending", "cycle_quality_score": 0.78, "ml_confidence": 0.10, "ml_fallback": false, "long_score": -75, "short_score": -40, "return_percent": 1.1},
+    {"signal_type": "buy",  "gauge_type": "short", "volatility_regime": "calm",     "cycle_quality_score": 0.58, "ml_confidence": 0.62, "ml_fallback": false, "long_score": 15,  "short_score": 63,  "return_percent": 0.1},
+    {"signal_type": "buy",  "gauge_type": "long",  "volatility_regime": "calm",     "cycle_quality_score": 0.64, "ml_confidence": 0.66, "ml_fallback": false, "long_score": 72,  "short_score": 12,  "return_percent": -0.2}
+  ]
+}

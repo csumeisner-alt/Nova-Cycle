@@ -182,6 +182,10 @@ fun DualGaugeWidget(
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f),
                 textAlign = TextAlign.Center
             )
+            gaugeState.convictionTier?.let { tier ->
+                Spacer(modifier = Modifier.height(4.dp))
+                ConvictionTierBadge(tier)
+            }
         }
     }
 }

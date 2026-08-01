@@ -21,5 +21,8 @@ data class SignalResponse(
     @Json(name = "is_extended_hours") val isExtendedHours: Boolean = false,
     @Json(name = "gap_type") val gapType: String? = null,
     @Json(name = "liquidity_score") val liquidityScore: Float = 1f,
-    @Json(name = "macro_override_applied") val macroOverrideApplied: Boolean = false
+    @Json(name = "macro_override_applied") val macroOverrideApplied: Boolean = false,
+    /** "opportunity" | "high_conviction" | null for pre-tiering rows. */
+    @Json(name = "conviction_tier") val convictionTier: String? = null,
+    @Json(name = "conviction_reasons") val convictionReasons: List<String> = emptyList()
 )
