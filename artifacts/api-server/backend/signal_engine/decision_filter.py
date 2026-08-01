@@ -231,6 +231,8 @@ class DecisionFilter:
             if signal not in ("buy", "sell"):
                 return {
                     "allowed": True,
+                    "is_candidate": False,
+                    "candidate_signal": None,
                     "final_signal": signal,
                     "priority_boost": 0.0,
                     "cycle_quality_score": 0.5,
@@ -330,6 +332,8 @@ class DecisionFilter:
             signal = str(signal_type).lower().strip()
             return {
                 "allowed": True,
+                "is_candidate": False,
+                "candidate_signal": None,
                 "final_signal": signal if signal in ("buy", "sell") else "neutral",
                 "priority_boost": 0.0,
                 "cycle_quality_score": 0.5,
@@ -514,7 +518,10 @@ class DecisionFilter:
             penalty += min(0.10, max(0.0, min_quality - cycle_quality_score))
             reasons.append("low cycle quality")
 
-        # Block SELL during strong positive continuation gaps unless momentum flips
+        # A strong positive continuation gap suppresses an actionable SELL,
+        # but the raw gauge direction is informational: surface it as a
+        # candidate so the operator can see the underlying pressure without
+        # executing against a momentum-driven move.
         if gap_percent > float(settings.MACRO_GAP_THRESHOLD):
             if confidence_momentum < 0:
                 reasons.append("strong positive gap but confidence momentum flipped")
@@ -527,7 +534,9 @@ class DecisionFilter:
                     confidence_short,
                     confidence_momentum,
                     filter_flags,
-                    "SELL blocked: strong positive continuation gap without momentum flip.",
+                    "SELL candidate: strong positive continuation gap — not executable, but direction is noted.",
+                    is_candidate=True,
+                    candidate_signal="sell",
                 )
 
         reason = "SELL allowed."
@@ -568,9 +577,25 @@ class DecisionFilter:
         reason: str,
         decision_penalty: float = 0.0,
         conviction_tier_cap: Optional[str] = None,
+        is_candidate: bool = False,
+        candidate_signal: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """
+        Build a blocked-signal result.
+
+        ``is_candidate=True`` marks a soft block: the raw gauge crossed its
+        threshold in the given direction, but current conditions make the
+        signal unsuitable to act on.  The direction is surfaced to the API
+        caller as ``candidate_signal`` so the UI can display it as an
+        informational hint rather than silently suppressing it.
+
+        Safety-critical blocks (data-quality degraded, macro shock for BUY,
+        extremely low liquidity) must always use ``is_candidate=False``.
+        """
         return {
             "allowed": False,
+            "is_candidate": is_candidate,
+            "candidate_signal": candidate_signal if is_candidate else None,
             "final_signal": "neutral",
             "priority_boost": 0.0,
             "cycle_quality_score": cycle_quality_score,
@@ -602,6 +627,8 @@ class DecisionFilter:
     ) -> Dict[str, Any]:
         return {
             "allowed": True,
+            "is_candidate": False,
+            "candidate_signal": None,
             "final_signal": final_signal,
             "priority_boost": priority_boost,
             "cycle_quality_score": cycle_quality_score,

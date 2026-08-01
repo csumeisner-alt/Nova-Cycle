@@ -58,7 +58,11 @@ fun SignalStoryCard(
                         color = signalColor, fontWeight = FontWeight.Bold)
                     Text(gaugeLabel, style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface)
-                    signal.convictionTier?.let { ConvictionTierBadge(it) }
+                    if (signal.isCandidate) {
+                        CandidateBadge(direction = signal.signalType)
+                    } else {
+                        signal.convictionTier?.let { ConvictionTierBadge(it) }
+                    }
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Filled.Close, contentDescription = "Close")
@@ -90,6 +94,7 @@ fun SignalStoryCard(
 private fun SimpleSummary(signal: SignalData, holdTimeText: String) {
     SectionTitle("Summary")
     val bullets = buildList {
+        if (signal.isCandidate) add("⚡ Candidate signal — directional hint only, not executable")
         if (signal.isExtendedHours) add("⚡ Extended-hours session signal")
         if (signal.gapType != null) add("📊 Gap detected: ${signal.gapType}")
         if (signal.liquidityScore < 0.5f) add("💧 Low liquidity environment")
@@ -166,10 +171,11 @@ private fun ExpertDetails(signal: SignalData) {
         "Gap Type"       to (signal.gapType ?: "None"),
         "Liquidity"      to "%.3f".format(signal.liquidityScore),
         "Macro Override" to if (signal.macroOverrideApplied) "Applied" else "Not applied",
-        "Conviction"     to when (signal.convictionTier) {
-            "high_conviction" -> "High-Conviction"
-            "opportunity"     -> "Opportunity"
-            else              -> "—"
+        "Conviction"     to when {
+            signal.isCandidate                    -> "Candidate (not executable)"
+            signal.convictionTier == "high_conviction" -> "High-Conviction"
+            signal.convictionTier == "opportunity"     -> "Opportunity"
+            else                                  -> "—"
         },
         "Cycle ID"       to (signal.cycleId?.take(8) ?: "—"),
         "Signal ID"      to signal.id.take(8),
@@ -219,6 +225,30 @@ fun ConvictionTierBadge(tier: String, modifier: Modifier = Modifier) {
     ) {
         Text(
             label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = fg,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
+    }
+}
+
+/**
+ * Badge shown when a signal is a candidate — the raw gauge crossed its
+ * threshold but current conditions make it non-executable.
+ */
+@Composable
+fun CandidateBadge(direction: String, modifier: Modifier = Modifier) {
+    val dirLabel = direction.uppercase()
+    val bg = NovaWarningYellow.copy(alpha = 0.12f)
+    val fg = NovaWarningYellow.copy(alpha = 0.85f)
+    Surface(
+        modifier = modifier.padding(top = 4.dp),
+        shape = MaterialTheme.shapes.small,
+        color = bg
+    ) {
+        Text(
+            "⚡ $dirLabel CANDIDATE",
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             color = fg,

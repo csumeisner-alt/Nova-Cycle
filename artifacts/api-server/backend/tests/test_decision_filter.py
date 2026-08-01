@@ -101,15 +101,72 @@ def test_buy_prioritized_after_positive_continuation_gap(df):
     assert result["priority_boost"] > 0.0
 
 
-def test_sell_blocked_during_strong_positive_gap_without_flip(df):
+def test_sell_becomes_candidate_during_strong_positive_gap_without_flip(df):
+    """SELL blocked by a positive continuation gap is surfaced as a candidate,
+    not silently discarded, so the UI can show the underlying directional pressure."""
     latest_candle = {"gap_type": "gap_up", "gap_percent": 1.5}
     history = [
         {"long_buy_confidence": 0.5, "short_buy_confidence": 0.5},
         {"long_buy_confidence": 0.5, "short_buy_confidence": 0.55},
     ]
     result = _evaluate(df, "sell", latest_candle=latest_candle, confidence_history=history)
+    # The executable signal is still neutral — no storage, no notification.
     assert result["final_signal"] == "neutral"
-    assert "strong positive continuation gap" in result["reason"]
+    # But the candidate flag exposes the raw direction informally.
+    assert result["is_candidate"] is True
+    assert result["candidate_signal"] == "sell"
+    assert "candidate" in result["reason"].lower() or "strong positive" in result["reason"].lower()
+
+
+def test_sell_candidate_not_set_when_momentum_flips(df):
+    """When momentum flips, the SELL is fully executable — no candidate flag."""
+    latest_candle = {"gap_type": "gap_up", "gap_percent": 1.5}
+    history = [
+        {"long_buy_confidence": 0.5, "short_buy_confidence": 0.55},
+        {"long_buy_confidence": 0.5, "short_buy_confidence": 0.45},
+    ]
+    result = _evaluate(df, "sell", latest_candle=latest_candle, confidence_history=history)
+    assert result["final_signal"] == "sell"
+    assert result["is_candidate"] is False
+    assert result["candidate_signal"] is None
+
+
+def test_safety_blocks_are_not_candidates(df):
+    """Safety-critical blocks (macro_shock, extremely low liquidity, data quality) must
+    never set is_candidate=True — they are hard stops, not informational hints."""
+    # macro_shock BUY
+    indicators = {"latest": {"vix_regime": "EXTREME", "atr_compression_score": 0.3, "trend_strength_index": 0.5}}
+    r = _evaluate(df, "buy", indicators=indicators)
+    assert r["final_signal"] == "neutral"
+    assert r["is_candidate"] is False
+
+    # extremely low liquidity BUY
+    r2 = _evaluate(df, "buy", liquidity_score=0.1)
+    assert r2["final_signal"] == "neutral"
+    assert r2["is_candidate"] is False
+
+    # data quality degraded
+    r3 = _evaluate(df, "buy", data_quality_degraded=True)
+    assert r3["final_signal"] == "neutral"
+    assert r3["is_candidate"] is False
+
+
+def test_allowed_signals_always_have_is_candidate_false(df):
+    """Signals that pass all filters must never set is_candidate=True."""
+    result = _evaluate(df, "buy")
+    assert result["is_candidate"] is False
+    assert result["candidate_signal"] is None
+
+    result2 = _evaluate(df, "sell")
+    assert result2["is_candidate"] is False
+    assert result2["candidate_signal"] is None
+
+
+def test_neutral_passthrough_has_is_candidate_false(df):
+    """Neutral inputs have no candidate concept."""
+    result = _evaluate(df, "neutral")
+    assert result["is_candidate"] is False
+    assert result["candidate_signal"] is None
 
 
 def test_sell_allowed_during_strong_positive_gap_when_momentum_flips(df):

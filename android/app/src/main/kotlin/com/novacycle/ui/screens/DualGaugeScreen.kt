@@ -50,6 +50,8 @@ fun DualGaugeScreen(
         displaySignal     = longPred?.displaySignal ?: "NEUTRAL / HOLD",
         isFallback        = longPred == null || longPred.note != null,
         convictionTier    = longPred?.convictionTier,
+        isCandidate       = longPred?.isCandidate ?: false,
+        candidateSignal   = longPred?.candidateSignal,
         gaugePercent      = if (longPred == null || longPred.note != null) 0
                             else (((longPred.score + 100f) / 2f).toInt().coerceIn(0, 100)),
         gaugeType         = "long",
@@ -66,6 +68,8 @@ fun DualGaugeScreen(
         displaySignal     = shortPred?.displaySignal ?: "NEUTRAL / HOLD",
         isFallback        = shortPred == null || shortPred.note != null,
         convictionTier    = shortPred?.convictionTier,
+        isCandidate       = shortPred?.isCandidate ?: false,
+        candidateSignal   = shortPred?.candidateSignal,
         gaugePercent      = if (shortPred == null || shortPred.note != null) 0
                             else (((shortPred.score + 100f) / 2f).toInt().coerceIn(0, 100)),
         gaugeType         = "short",

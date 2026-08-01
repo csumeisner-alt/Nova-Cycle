@@ -826,6 +826,8 @@ async def predict_long(
             data_quality_degraded=dq_degraded,
         )
         final_signal = decision["final_signal"]
+        is_candidate = decision.get("is_candidate", False)
+        candidate_signal = decision.get("candidate_signal")
         notify_confidence = min(
             1.0,
             max(
@@ -836,9 +838,13 @@ async def predict_long(
             ),
         )
 
-        # Conviction tier (label only — never suppresses the signal)
+        # Conviction tier (label only — never suppresses the signal).
+        # Candidates are evaluated against the raw direction but capped at
+        # opportunity; they are never stored or notified, so the tier is
+        # purely informational display metadata.
+        conviction_signal = candidate_signal if is_candidate else final_signal
         conviction = _conviction.evaluate(
-            signal_type=final_signal,
+            signal_type=conviction_signal,
             gauge_type="long",
             volatility_regime=decision.get("volatility_regime", "calm"),
             cycle_quality_score=decision.get("cycle_quality_score", 0.5),
@@ -846,8 +852,11 @@ async def predict_long(
             ml_fallback=ml_fallback,
             long_score=result["score"],
             short_score=_last_short_score,
-            tier_cap=decision.get("conviction_tier_cap"),
-            tier_cap_reason=decision.get("reason"),
+            tier_cap="opportunity" if is_candidate else decision.get("conviction_tier_cap"),
+            tier_cap_reason=(
+                "Signal is a candidate — directional hint only, not executable."
+                if is_candidate else decision.get("reason")
+            ),
         )
 
         # Persist confidence history
@@ -860,7 +869,9 @@ async def predict_long(
                                 short_sell=_last_short_sell_conf,
                                 session_type=session_type, is_extended=is_extended)
 
-        # Persist signal if actionable, then push notification in background
+        # Persist signal if actionable, then push notification in background.
+        # Candidates are NOT stored (to avoid false BUY→SELL cycles) and do
+        # NOT trigger push notifications.
         if final_signal in ("buy", "sell"):
             await _store_signal(
                 session, ticker,
@@ -886,6 +897,8 @@ async def predict_long(
         return {
             "score": result["score"],
             "signal": final_signal,
+            "is_candidate": is_candidate,
+            "candidate_signal": candidate_signal,
             "confidence": result["confidence"],
             **normalize_gauge_output(result["score"]),
             "indicator_breakdown": result.get("breakdown", {}),
@@ -900,8 +913,10 @@ async def predict_long(
             "volatility_regime": decision.get("volatility_regime", "calm"),
             "liquidity_class": decision.get("liquidity_class", "normal"),
             "confidence_momentum": decision.get("confidence_momentum", 0.0),
-            "conviction_tier": conviction["tier"],
-            "conviction_reasons": conviction["reasons"],
+            "conviction_tier": conviction["tier"] if not is_candidate else None,
+            "conviction_reasons": conviction["reasons"] if not is_candidate else [],
+            "candidate_conviction_tier": conviction["tier"] if is_candidate else None,
+            "candidate_conviction_reasons": conviction["reasons"] if is_candidate else [],
             "data_quality_degraded": dq_degraded,
             "data_quality_reason": dq_reason,
             "timestamp": datetime.utcnow().isoformat(),
@@ -1095,6 +1110,8 @@ async def predict_short(
             data_quality_degraded=dq_degraded,
         )
         final_signal = decision["final_signal"]
+        is_candidate = decision.get("is_candidate", False)
+        candidate_signal = decision.get("candidate_signal")
         notify_confidence = min(
             1.0,
             max(
@@ -1105,9 +1122,13 @@ async def predict_short(
             ),
         )
 
-        # Conviction tier (label only — never suppresses the signal)
+        # Conviction tier (label only — never suppresses the signal).
+        # Candidates are evaluated against the raw direction but capped at
+        # opportunity; they are never stored or notified, so the tier is
+        # purely informational display metadata.
+        conviction_signal = candidate_signal if is_candidate else final_signal
         conviction = _conviction.evaluate(
-            signal_type=final_signal,
+            signal_type=conviction_signal,
             gauge_type="short",
             volatility_regime=decision.get("volatility_regime", "calm"),
             cycle_quality_score=decision.get("cycle_quality_score", 0.5),
@@ -1115,8 +1136,11 @@ async def predict_short(
             ml_fallback=ml_fallback,
             long_score=_last_long_score,
             short_score=result["score"],
-            tier_cap=decision.get("conviction_tier_cap"),
-            tier_cap_reason=decision.get("reason"),
+            tier_cap="opportunity" if is_candidate else decision.get("conviction_tier_cap"),
+            tier_cap_reason=(
+                "Signal is a candidate — directional hint only, not executable."
+                if is_candidate else decision.get("reason")
+            ),
         )
 
         # Persist confidence history
@@ -1130,7 +1154,9 @@ async def predict_short(
                                 short_buy=short_buy_conf, short_sell=short_sell_conf,
                                 session_type=session_type, is_extended=is_extended)
 
-        # Persist signal if actionable, then push notification in background
+        # Persist signal if actionable, then push notification in background.
+        # Candidates are NOT stored (to avoid false BUY→SELL cycles) and do
+        # NOT trigger push notifications.
         if final_signal in ("buy", "sell"):
             await _store_signal(
                 session, ticker,
@@ -1156,6 +1182,8 @@ async def predict_short(
         return {
             "score": result["score"],
             "signal": final_signal,
+            "is_candidate": is_candidate,
+            "candidate_signal": candidate_signal,
             "confidence": result["confidence"],
             # Downgrade display_signal to HOLD when the macro override forced
             # the filtered signal neutral — the bias label must never
@@ -1179,8 +1207,10 @@ async def predict_short(
             "volatility_regime": decision.get("volatility_regime", "calm"),
             "liquidity_class": decision.get("liquidity_class", "normal"),
             "confidence_momentum": decision.get("confidence_momentum", 0.0),
-            "conviction_tier": conviction["tier"],
-            "conviction_reasons": conviction["reasons"],
+            "conviction_tier": conviction["tier"] if not is_candidate else None,
+            "conviction_reasons": conviction["reasons"] if not is_candidate else [],
+            "candidate_conviction_tier": conviction["tier"] if is_candidate else None,
+            "candidate_conviction_reasons": conviction["reasons"] if is_candidate else [],
             "data_quality_degraded": dq_degraded,
             "data_quality_reason": dq_reason,
             "session_type": session_type,

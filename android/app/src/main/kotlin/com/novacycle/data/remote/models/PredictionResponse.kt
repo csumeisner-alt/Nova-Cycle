@@ -38,6 +38,21 @@ data class PredictionResponse(
     @Json(name = "conviction_tier") val convictionTier: String? = null,
     /** Plain-language explanation of the conviction tier decision. */
     @Json(name = "conviction_reasons") val convictionReasons: List<String> = emptyList(),
+    /**
+     * True when the decision filter blocked this signal as a soft (non-safety-critical) block.
+     * The raw gauge direction is available as [candidateSignal]. Candidates are never stored in
+     * signal history and never trigger push notifications — they are informational only.
+     */
+    @Json(name = "is_candidate") val isCandidate: Boolean = false,
+    /**
+     * The raw gauge direction ("buy" or "sell") when [isCandidate] is true; null otherwise.
+     * Use this to display the underlying pressure even when the signal is not executable.
+     */
+    @Json(name = "candidate_signal") val candidateSignal: String? = null,
+    /** "opportunity" | null — conviction tier for the candidate direction (informational only). */
+    @Json(name = "candidate_conviction_tier") val candidateConvictionTier: String? = null,
+    /** Plain-language explanation of why the candidate was not promoted to executable. */
+    @Json(name = "candidate_conviction_reasons") val candidateConvictionReasons: List<String> = emptyList(),
     @Json(name = "session_type") val sessionType: String? = null,
     @Json(name = "is_extended_hours") val isExtendedHours: Boolean = false,
     @Json(name = "note") val note: String? = null,

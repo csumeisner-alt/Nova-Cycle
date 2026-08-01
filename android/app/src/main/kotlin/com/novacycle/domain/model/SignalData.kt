@@ -22,10 +22,18 @@ data class SignalData(
     val macroOverrideApplied: Boolean = false,
     /** "opportunity" | "high_conviction" | null for pre-tiering signals. */
     val convictionTier: String? = null,
-    val convictionReasons: List<String> = emptyList()
+    val convictionReasons: List<String> = emptyList(),
+    /**
+     * True when the decision filter soft-blocked this signal as a candidate.
+     * The signal direction is real but not yet executable — display as an
+     * informational hint rather than an actionable trade alert.
+     * Candidates are never stored in signal history and never push-notify.
+     */
+    val isCandidate: Boolean = false
 ) {
     val isBuy: Boolean get() = signalType.lowercase() == "buy"
     val isSell: Boolean get() = signalType.lowercase() == "sell"
     val isLongGauge: Boolean get() = gaugeType.lowercase() == "long"
     val isHighConviction: Boolean get() = convictionTier == "high_conviction"
+    val isOpportunity: Boolean get() = convictionTier == "opportunity" && !isCandidate
 }

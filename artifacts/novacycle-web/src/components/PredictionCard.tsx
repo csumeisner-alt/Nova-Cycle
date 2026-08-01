@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronDown, ChevronUp, Star } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronDown, ChevronUp, Star, Zap } from 'lucide-react';
 import { confidenceZone } from '@/lib/confidenceZone';
 import { useState } from 'react';
 
@@ -12,6 +12,19 @@ export type PredictionDisplay = {
   data_quality_reason?: string;
   conviction_tier?: 'opportunity' | 'high_conviction' | null;
   conviction_reasons?: string[];
+  /**
+   * True when the decision filter soft-blocked the raw gauge direction.
+   * The signal is informational only — not executable, never stored in
+   * history, never push-notified.
+   */
+  is_candidate?: boolean;
+  /**
+   * The raw gauge direction when is_candidate is true ("buy" or "sell").
+   * Null for normal (non-candidate) responses.
+   */
+  candidate_signal?: 'buy' | 'sell' | null;
+  /** Conviction tier for the candidate direction (always "opportunity" or null). */
+  candidate_conviction_tier?: 'opportunity' | null;
 };
 
 function ConvictionBadge({ tier, name }: { tier: NonNullable<PredictionDisplay['conviction_tier']>; name: string }) {
@@ -27,6 +40,25 @@ function ConvictionBadge({ tier, name }: { tier: NonNullable<PredictionDisplay['
     >
       {isHigh && <Star className="w-3 h-3 fill-current" />}
       <span>{isHigh ? 'HIGH-CONVICTION' : 'OPPORTUNITY'}</span>
+    </span>
+  );
+}
+
+/**
+ * Badge shown when a signal is a candidate — raw gauge crossed its threshold
+ * in the given direction but current conditions make it non-executable.
+ * Candidates are never stored in history and never push-notify.
+ */
+function CandidateBadge({ direction, name }: { direction: string; name: string }) {
+  const dirLabel = direction.toUpperCase();
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono border text-amber-400/80 bg-amber-400/8 border-amber-400/25"
+      data-testid={`badge-candidate-${name}`}
+      title="This signal passed the raw gauge but was soft-blocked by the decision filter. It is informational only — not an executable signal."
+    >
+      <Zap className="w-3 h-3" />
+      <span>{dirLabel} CANDIDATE</span>
     </span>
   );
 }
@@ -126,11 +158,23 @@ export function PredictionCard({ name, label }: { name: string; label: string })
           TREND: {trend}
         </span>
       </div>
-      {data?.conviction_tier && (
+      {data?.is_candidate && data?.candidate_signal ? (
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <CandidateBadge direction={data.candidate_signal} name={name} />
+          </div>
+          <p
+            className="text-[11px] font-mono text-amber-400/60 leading-relaxed"
+            data-testid={`text-candidate-note-${name}`}
+          >
+            Direction noted — not executable. Strong continuation gap prevents action.
+          </p>
+        </div>
+      ) : data?.conviction_tier ? (
         <div className="flex items-center gap-2" title={(data.conviction_reasons ?? []).join(' ')}>
           <ConvictionBadge tier={data.conviction_tier} name={name} />
         </div>
-      )}
+      ) : null}
       <div className="h-2 w-full rounded-full bg-white/5 overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-500 ${zone.bar}`}

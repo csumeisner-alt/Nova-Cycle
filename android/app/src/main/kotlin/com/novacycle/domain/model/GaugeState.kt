@@ -25,6 +25,15 @@ data class GaugeState(
     val isFallback: Boolean = false,
     /** "opportunity" | "high_conviction" | null when the signal is neutral */
     val convictionTier: String? = null,
+    /**
+     * True when the decision filter soft-blocked the raw gauge signal.
+     * The needle still shows directional pressure, but the signal is not
+     * executable — the UI should render a CANDIDATE badge instead of an
+     * OPPORTUNITY / HIGH-CONVICTION badge.
+     */
+    val isCandidate: Boolean = false,
+    /** Raw direction exposed by a candidate block ("buy"/"sell"); null otherwise. */
+    val candidateSignal: String? = null,
     /** Directional gauge position: raw score -100..100 mapped to 0..100. */
     val gaugePercent: Int = ((score + 100f) / 2f).toInt().coerceIn(0, 100)
 ) {
