@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,7 +42,7 @@ data class BottomNavItem(
 
 private val bottomNavItems = listOf(
     BottomNavItem(Routes.DUAL_GAUGE,         "Gauge",      Icons.Filled.Speed),
-    BottomNavItem(Routes.FILTERED_CHART,     "Chart",      Icons.Filled.ShowChart),
+    BottomNavItem(Routes.FILTERED_CHART,     "Chart",      Icons.AutoMirrored.Filled.ShowChart),
     BottomNavItem(Routes.CONFIDENCE_HISTORY, "Confidence", Icons.Filled.Timeline),
     BottomNavItem(Routes.INDICATOR_LIST,     "Indicators", Icons.Filled.BarChart),
     BottomNavItem(Routes.SETTINGS,           "Settings",   Icons.Filled.Settings)
