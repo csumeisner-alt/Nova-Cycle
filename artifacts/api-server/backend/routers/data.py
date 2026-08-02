@@ -845,6 +845,7 @@ async def get_macro_safety(
             vix_staleness_hours = round(age_hours, 1)
         vix_feed_status = await check_vix_staleness(db)
         vix_is_stale = bool(vix_feed_status.get("stale"))
+        vix_trading_day_lag = vix_feed_status.get("lag_trading_days")
 
         long_score = float(pred._last_long_score)
         suppresses_buy = long_score < LONG_STRONG_BEAR
@@ -887,6 +888,7 @@ async def get_macro_safety(
             "vix_data_missing": vix_data_missing,
             "vix_is_stale": vix_is_stale,
             "vix_staleness_hours": vix_staleness_hours,
+            "vix_trading_day_lag": vix_trading_day_lag,
             "long_score": long_score,
             "override_active": suppresses_buy or suppresses_sell,
             "suppresses_short_buy": suppresses_buy,

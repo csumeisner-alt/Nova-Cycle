@@ -857,8 +857,17 @@ private fun MacroSafetyDetailSheet(
                     )
                     if (safety.vixStalenessHours != null) {
                         DetailRow(
-                            label = "VIX data age",
-                            value = "${safety.vixStalenessHours.toInt()} h"
+                            label = "VIX data freshness",
+                            value = when {
+                                safety.vixIsStale ->
+                                    "${safety.vixTradingDayLag ?: "?"} trading days behind"
+                                safety.vixTradingDayLag == 0 ->
+                                    "Current through latest market day"
+                                safety.vixTradingDayLag != null ->
+                                    "${safety.vixTradingDayLag} trading days behind"
+                                else ->
+                                    "Current through latest market day"
+                            }
                         )
                     }
 

@@ -180,6 +180,7 @@ class TestMacroSafetyEndpointThresholds:
         # Top-level fields operators rely on
         for field in ("long_score", "suppresses_short_buy", "suppresses_short_sell", "reason"):
             assert field in body, f"Missing operator field: {field}"
+        assert "vix_trading_day_lag" in body
 
     async def test_friday_vix_is_not_marked_stale_over_weekend(self, macro_client):
         """Daily VIX data should use trading-day lag, not calendar-hour age."""
@@ -190,3 +191,4 @@ class TestMacroSafetyEndpointThresholds:
         # runs over the weekend, the VOO/VIX trading-day comparison should not
         # turn the expected calendar gap into a false stale warning.
         assert body["vix_is_stale"] is False
+        assert body["vix_trading_day_lag"] == 0

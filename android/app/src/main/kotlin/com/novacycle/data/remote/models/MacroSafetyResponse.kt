@@ -27,10 +27,12 @@ data class MacroSafetyResponse(
     @Json(name = "last_override_applied_at") val lastOverrideAppliedAt: String? = null,
     /** True when the database has no VIX rows at all. */
     @Json(name = "vix_data_missing") val vixDataMissing: Boolean = false,
-    /** True when the latest VIX row is older than 48 hours (stale daily data). */
+    /** True when VIX is behind VOO by more than the allowed trading-day lag. */
     @Json(name = "vix_is_stale") val vixIsStale: Boolean = false,
-    /** Age of the latest stored VIX candle in hours; null when no VIX row exists. */
-    @Json(name = "vix_staleness_hours") val vixStalenessHours: Float? = null
+    /** Raw elapsed age for diagnostics; weekends and holidays are included. */
+    @Json(name = "vix_staleness_hours") val vixStalenessHours: Float? = null,
+    /** Number of VOO trading days by which VIX trails, or null when unavailable. */
+    @Json(name = "vix_trading_day_lag") val vixTradingDayLag: Int? = null
 )
 
 @JsonClass(generateAdapter = true)
