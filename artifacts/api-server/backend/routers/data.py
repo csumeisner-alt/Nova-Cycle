@@ -818,6 +818,7 @@ async def get_macro_safety(
         )
         from reliability_engine import _classify_vix_regime
         from database.models import SignalHistory
+        from ingestion.pipeline import check_vix_staleness
 
         # Latest VIX close → regime
         res = await db.execute(
@@ -832,17 +833,18 @@ async def get_macro_safety(
 
         # ── VIX data-quality flags ────────────────────────────────────────
         # vix_data_missing: no VIX row in the database at all.
-        # vix_is_stale: a row exists but it is older than 48 h (covers
-        #   weekends; a healthy daily ingest should never exceed ~36 h).
-        # vix_staleness_hours: age of the latest VIX row in hours; None
-        #   when no row exists.
+        # vix_is_stale: uses VIX-vs-VOO trading-day lag, so a Friday daily
+        # close remains fresh over the weekend. This must match /healthz.
+        # vix_staleness_hours: raw elapsed age for informational display; it
+        #   is not itself a freshness decision because weekends are expected.
         vix_data_missing = vix_close is None
         vix_staleness_hours: Optional[float] = None
         vix_is_stale = False
         if vix and vix.timestamp:
             age_hours = (datetime.utcnow() - vix.timestamp).total_seconds() / 3600
             vix_staleness_hours = round(age_hours, 1)
-            vix_is_stale = age_hours > 48.0
+        vix_feed_status = await check_vix_staleness(db)
+        vix_is_stale = bool(vix_feed_status.get("stale"))
 
         long_score = float(pred._last_long_score)
         suppresses_buy = long_score < LONG_STRONG_BEAR

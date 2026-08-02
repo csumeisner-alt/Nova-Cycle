@@ -14,3 +14,9 @@ VIX is an index: preserve zero-volume candles, validate intra-bar OHLC consisten
 **Why:** Legitimate VIX regime jumps were quarantined as equity-feed spikes, leaving macro history incomplete even though the vendor supplied the dates.
 
 **How to apply:** Keep the VIX-specific validation exception narrow to historical and targeted VIX ingestion; retain normal spike and volume validation for VOO and SPX futures.
+
+Daily VIX freshness must be measured by lagging VOO trading days, not a fixed calendar-hour threshold. A Friday close can be more than 48 elapsed hours old on Sunday while still being the latest valid market observation.
+
+**Why:** The macro-safety endpoint independently used a 48-hour rule and falsely warned Android users that VIX was stale over the weekend even though health reported zero trading-day lag.
+
+**How to apply:** Keep raw elapsed hours as informational only; use the shared trading-day staleness result for `vix_is_stale` and warning decisions.
