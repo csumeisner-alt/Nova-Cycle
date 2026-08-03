@@ -4,6 +4,7 @@ import { PredictionCard } from '@/components/PredictionCard';
 import { PerformanceDashboard } from '@/components/PerformanceDashboard';
 import { TierTrackRecordPanel } from '@/components/TierTrackRecordPanel';
 import { SignalHistoryPanel } from '@/components/SignalHistoryPanel';
+import { TrainingStuckBanner } from '@/components/TrainingStuckBanner';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { useState, useEffect } from 'react';
 
@@ -1024,6 +1025,7 @@ function Dashboard() {
 
   return (
     <div className="relative">
+      <TrainingStuckBanner />
       <div className="sticky top-0 z-40 w-full border-b border-white/5 bg-background/80 backdrop-blur-md">
         <div className="mx-auto max-w-7xl px-6">
           <div className="flex items-center space-x-1 py-2 font-mono text-sm">
