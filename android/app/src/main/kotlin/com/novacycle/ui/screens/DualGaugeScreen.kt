@@ -56,7 +56,9 @@ fun DualGaugeScreen(
                             else (((longPred.score + 100f) / 2f).toInt().coerceIn(0, 100)),
         gaugeType         = "long",
         ticker            = uiState.selectedTicker,
-        isLoading         = uiState.isLoading && uiState.longPrediction == null
+        isLoading         = uiState.isLoading && uiState.longPrediction == null,
+        modelState        = longPred?.modelState,
+        predictionReliable = longPred?.predictionReliable ?: true
     )
     val shortPred = uiState.shortPrediction
     val shortGaugeState = GaugeState(
@@ -74,7 +76,9 @@ fun DualGaugeScreen(
                             else (((shortPred.score + 100f) / 2f).toInt().coerceIn(0, 100)),
         gaugeType         = "short",
         ticker            = uiState.selectedTicker,
-        isLoading         = uiState.isLoading && uiState.shortPrediction == null
+        isLoading         = uiState.isLoading && uiState.shortPrediction == null,
+        modelState        = shortPred?.modelState,
+        predictionReliable = shortPred?.predictionReliable ?: true
     )
 
     Box(

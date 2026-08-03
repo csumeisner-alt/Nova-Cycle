@@ -57,5 +57,24 @@ data class PredictionResponse(
     @Json(name = "is_extended_hours") val isExtendedHours: Boolean = false,
     @Json(name = "note") val note: String? = null,
     @Json(name = "timestamp") val timestamp: String = "",
-    @Json(name = "ticker") val ticker: String = "VOO"
+    @Json(name = "ticker") val ticker: String = "VOO",
+    /**
+     * Explicit model availability semantics. Values:
+     *   "healthy"          — model trained and prediction is reliable.
+     *   "model_unavailable"— model file missing or failed to load; output is
+     *                        a neutral 0.5 fallback.
+     *   "training_stuck"   — repeated consecutive retraining failures; running
+     *                        on a stale model checkpoint.
+     *   "stale_rolled_back"— last retrain regressed and was rolled back; model
+     *                        is older than the most recent training attempt.
+     * Null when the field was not present in an older backend response.
+     */
+    @Json(name = "model_state") val modelState: String? = null,
+    /**
+     * False when the prediction should be presented as degraded rather than as
+     * a normal signal (i.e. when model_state is anything other than "healthy").
+     * Defaults to true so older backend responses without this field are
+     * treated as reliable.
+     */
+    @Json(name = "prediction_reliable") val predictionReliable: Boolean = true
 )

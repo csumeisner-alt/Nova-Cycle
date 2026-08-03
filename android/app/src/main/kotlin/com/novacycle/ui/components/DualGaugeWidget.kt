@@ -1,13 +1,16 @@
 package com.novacycle.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
@@ -190,7 +193,47 @@ fun DualGaugeWidget(
                 Spacer(modifier = Modifier.height(4.dp))
                 CandidateBadge(direction = gaugeState.candidateSignal)
             }
+            // Model degraded / training-stuck banner.
+            // Only shown when the prediction is not a no-data fallback but the
+            // model itself is in a degraded state — so the user is not misled
+            // into treating a stale signal as a healthy recommendation.
+            if (!gaugeState.predictionReliable) {
+                Spacer(modifier = Modifier.height(6.dp))
+                ModelDegradedBanner(modelState = gaugeState.modelState)
+            }
         }
+    }
+}
+
+/**
+ * Compact inline banner rendered inside the gauge widget when the underlying
+ * model is in a degraded state (training-stuck or stale rollback).
+ *
+ * Uses a muted red tint so it is unmistakable without overwhelming the gauge.
+ */
+@Composable
+private fun ModelDegradedBanner(modelState: String?) {
+    val message = when (modelState) {
+        "training_stuck"    -> "⚠ Model degraded — repeated retrain failures. Do not rely on this signal."
+        "stale_rolled_back" -> "⚠ Model stale — last retrain failed and was rolled back. Reliability reduced."
+        "model_unavailable" -> "⚠ Model unavailable — showing a neutral fallback, not a real prediction."
+        else                -> "⚠ Prediction unreliable — model is in a degraded state."
+    }
+    val bannerRed = Color(0xFFD32F2F)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(bannerRed.copy(alpha = 0.12f))
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+        Text(
+            text      = message,
+            style     = MaterialTheme.typography.labelSmall,
+            color     = bannerRed,
+            textAlign = TextAlign.Center,
+            modifier  = Modifier.fillMaxWidth()
+        )
     }
 }
 

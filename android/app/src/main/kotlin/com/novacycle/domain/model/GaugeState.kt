@@ -35,7 +35,22 @@ data class GaugeState(
     /** Raw direction exposed by a candidate block ("buy"/"sell"); null otherwise. */
     val candidateSignal: String? = null,
     /** Directional gauge position: raw score -100..100 mapped to 0..100. */
-    val gaugePercent: Int = ((score + 100f) / 2f).toInt().coerceIn(0, 100)
+    val gaugePercent: Int = ((score + 100f) / 2f).toInt().coerceIn(0, 100),
+    /**
+     * Explicit model availability state from the backend:
+     *   "healthy"           — prediction is from a freshly-trained model.
+     *   "model_unavailable" — model file missing; output is a neutral fallback.
+     *   "training_stuck"    — repeated retraining failures; stale checkpoint.
+     *   "stale_rolled_back" — last retrain regressed and was rolled back.
+     * Null when the backend did not include the field (treat as healthy).
+     */
+    val modelState: String? = null,
+    /**
+     * False when the output should be presented as degraded rather than as a
+     * normal signal. UI must show an unmistakable degraded banner.
+     * Defaults to true so gauges built without this field look normal.
+     */
+    val predictionReliable: Boolean = true
 ) {
     val isBuy: Boolean get() = signal.lowercase() == "buy"
     val isSell: Boolean get() = signal.lowercase() == "sell"

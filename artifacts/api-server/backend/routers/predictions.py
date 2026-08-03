@@ -903,9 +903,16 @@ async def predict_long(
                                 short_sell=_last_short_sell_conf,
                                 session_type=session_type, is_extended=is_extended)
 
+        # Compute model reliability once — used both for notification gating
+        # and as part of the response payload.
+        model_reliability = _model_reliability("long_trend", ml_fallback)
+
         # Persist signal if actionable, then push notification in background.
         # Candidates are NOT stored (to avoid false BUY→SELL cycles) and do
         # NOT trigger push notifications.
+        # Notifications are also suppressed when the model is training-stuck or
+        # stale (prediction_reliable=False) — a degraded model must not send
+        # alerts that look like healthy buy/sell signals.
         if final_signal in ("buy", "sell"):
             await _store_signal(
                 session, ticker,
@@ -917,16 +924,23 @@ async def predict_long(
                 conviction_tier=conviction["tier"],
                 conviction_reasons=conviction["reasons"],
             )
-            asyncio.create_task(_notify_all_devices_bg(
-                signal_type=final_signal,
-                gauge_type="long",
-                confidence=notify_confidence,
-                is_extended=is_extended,
-                gap_type=str(latest.get("gap_type", "none")),
-                liquidity_score=1.0,
-                score=result["score"],
-                conviction_tier=conviction["tier"],
-            ))
+            if model_reliability["prediction_reliable"]:
+                asyncio.create_task(_notify_all_devices_bg(
+                    signal_type=final_signal,
+                    gauge_type="long",
+                    confidence=notify_confidence,
+                    is_extended=is_extended,
+                    gap_type=str(latest.get("gap_type", "none")),
+                    liquidity_score=1.0,
+                    score=result["score"],
+                    conviction_tier=conviction["tier"],
+                ))
+            else:
+                logger.warning(
+                    "notification_suppressed_model_degraded signal=%s gauge=long "
+                    "model_state=%s",
+                    final_signal, model_reliability["model_state"],
+                )
 
         return {
             "score": result["score"],
@@ -938,7 +952,7 @@ async def predict_long(
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
             "ml_fallback": ml_fallback,
-            **_model_reliability("long_trend", ml_fallback),
+            **model_reliability,
             "liquidity_score": 1.0,
             "gap_type": str(latest.get("gap_type", "none")),
             "macro_override_applied": False,
@@ -1189,9 +1203,16 @@ async def predict_short(
                                 short_buy=short_buy_conf, short_sell=short_sell_conf,
                                 session_type=session_type, is_extended=is_extended)
 
+        # Compute model reliability once — used both for notification gating
+        # and as part of the response payload.
+        model_reliability = _model_reliability("short_trend", ml_fallback)
+
         # Persist signal if actionable, then push notification in background.
         # Candidates are NOT stored (to avoid false BUY→SELL cycles) and do
         # NOT trigger push notifications.
+        # Notifications are also suppressed when the model is training-stuck or
+        # stale (prediction_reliable=False) — a degraded model must not send
+        # alerts that look like healthy buy/sell signals.
         if final_signal in ("buy", "sell"):
             await _store_signal(
                 session, ticker,
@@ -1203,16 +1224,23 @@ async def predict_short(
                 conviction_tier=conviction["tier"],
                 conviction_reasons=conviction["reasons"],
             )
-            asyncio.create_task(_notify_all_devices_bg(
-                signal_type=final_signal,
-                gauge_type="short",
-                confidence=notify_confidence,
-                is_extended=is_extended,
-                gap_type=gap_type,
-                liquidity_score=liquidity_score,
-                score=result["score"],
-                conviction_tier=conviction["tier"],
-            ))
+            if model_reliability["prediction_reliable"]:
+                asyncio.create_task(_notify_all_devices_bg(
+                    signal_type=final_signal,
+                    gauge_type="short",
+                    confidence=notify_confidence,
+                    is_extended=is_extended,
+                    gap_type=gap_type,
+                    liquidity_score=liquidity_score,
+                    score=result["score"],
+                    conviction_tier=conviction["tier"],
+                ))
+            else:
+                logger.warning(
+                    "notification_suppressed_model_degraded signal=%s gauge=short "
+                    "model_state=%s",
+                    final_signal, model_reliability["model_state"],
+                )
 
         return {
             "score": result["score"],
@@ -1231,7 +1259,7 @@ async def predict_short(
             "ml_confidence": ml_confidence,
             "ml_neutral_probability": ml_neutral_probability,
             "ml_fallback": ml_fallback,
-            **_model_reliability("short_trend", ml_fallback),
+            **model_reliability,
             "liquidity_score": liquidity_score,
             "gap_type": gap_type,
             "gap_momentum": gap_momentum,
