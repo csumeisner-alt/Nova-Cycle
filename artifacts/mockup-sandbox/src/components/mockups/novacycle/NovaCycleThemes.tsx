@@ -224,8 +224,7 @@ function ObservatoryUI({ taps, setTaps, selectedTheme, onSelectTheme }: any) {
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.6, ease: "easeOut" }}
                 className="absolute w-1.5 h-1.5 rounded-full blur-[1px]"
-                style={{ backgroundColor: currentTheme.primary, boxShadow: `0 0 10px ${currentTheme.primary}` }}
-                pointerEvents="none"
+                style={{ backgroundColor: currentTheme.primary, boxShadow: `0 0 10px ${currentTheme.primary}`, pointerEvents: "none" }}
               />
             ))}
           </AnimatePresence>
