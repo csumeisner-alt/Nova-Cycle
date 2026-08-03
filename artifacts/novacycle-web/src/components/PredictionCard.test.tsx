@@ -207,6 +207,43 @@ describe('PredictionCard – data-quality warning banner', () => {
   });
 });
 
+// ─── model reliability warning ──────────────────────────────────────────────
+
+describe('PredictionCard – model reliability warning', () => {
+  it('uses a compact collapsed warning for an unreliable model', async () => {
+    mockPredictResponse({
+      prediction_reliable: false,
+      model_state: 'training_stuck',
+    });
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-model-state-long')).toBeInTheDocument(),
+    );
+
+    expect(screen.getByTestId('banner-model-state-long')).toHaveTextContent('MODEL DEGRADED · STALE MODEL');
+    expect(screen.queryByTestId('text-model-state-detail-long')).not.toBeInTheDocument();
+  });
+
+  it('reveals the full model reliability explanation when clicked', async () => {
+    mockPredictResponse({
+      prediction_reliable: false,
+      model_state: 'training_stuck',
+    });
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('banner-model-state-long')).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /toggle model reliability detail/i }));
+
+    expect(screen.getByTestId('text-model-state-detail-long')).toHaveTextContent(
+      'repeated retraining failures',
+    );
+  });
+});
+
 // ─── cross_bar_spike quarantine banner ──────────────────────────────────────
 
 describe('PredictionCard – cross_bar_spike quarantine banner', () => {

@@ -33,6 +33,12 @@ export type PredictionDisplay = {
   prediction_reliable?: boolean;
 };
 
+const MODEL_STATE_SUMMARIES: Record<string, string> = {
+  model_unavailable: 'MODEL UNAVAILABLE',
+  training_stuck: 'MODEL DEGRADED · STALE MODEL',
+  stale_rolled_back: 'MODEL STALE · ROLLED BACK',
+};
+
 const MODEL_STATE_LABELS: Record<string, string> = {
   model_unavailable: 'MODEL UNAVAILABLE — neutral fallback, not a real prediction.',
   training_stuck:
@@ -85,6 +91,7 @@ function TrendArrow({ trend }: { trend: PredictionDisplay['trend'] }) {
 
 export function PredictionCard({ name, label }: { name: string; label: string }) {
   const [showReason, setShowReason] = useState(false);
+  const [showModelDetails, setShowModelDetails] = useState(false);
 
   const { data, isLoading, isError } = useQuery<PredictionDisplay>({
     queryKey: ['predict', name],
@@ -196,15 +203,39 @@ export function PredictionCard({ name, label }: { name: string; label: string })
           data-testid={`bar-confidence-${name}`}
         />
       </div>
-      {data?.prediction_reliable === false && data?.model_state && MODEL_STATE_LABELS[data.model_state] && (
+      {data?.prediction_reliable === false &&
+        data?.model_state &&
+        MODEL_STATE_LABELS[data.model_state] &&
+        MODEL_STATE_SUMMARIES[data.model_state] && (
         <div
-          className="rounded-md border border-red-400/30 bg-red-400/5 px-3 py-2"
+          className="rounded-md border border-red-400/30 bg-red-400/5"
           data-testid={`banner-model-state-${name}`}
         >
-          <span className="flex items-center gap-1.5 text-xs font-mono font-medium text-red-400">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            {MODEL_STATE_LABELS[data.model_state]}
-          </span>
+          <button
+            type="button"
+            onClick={() => setShowModelDetails((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-red-400"
+            aria-expanded={showModelDetails}
+            aria-label={`Toggle model reliability detail for ${label}`}
+          >
+            <span className="flex min-w-0 items-center gap-1.5 text-[10px] font-mono font-medium tracking-wide">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              <span className="truncate">{MODEL_STATE_SUMMARIES[data.model_state]}</span>
+            </span>
+            {showModelDetails ? (
+              <ChevronUp className="h-3 w-3 shrink-0" />
+            ) : (
+              <ChevronDown className="h-3 w-3 shrink-0" />
+            )}
+          </button>
+          {showModelDetails && (
+            <p
+              className="border-t border-red-400/20 px-2.5 py-2 text-[11px] font-mono leading-relaxed text-red-200/75"
+              data-testid={`text-model-state-detail-${name}`}
+            >
+              {MODEL_STATE_LABELS[data.model_state]}
+            </p>
+          )}
         </div>
       )}
       {degraded && (
