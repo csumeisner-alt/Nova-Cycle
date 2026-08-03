@@ -230,22 +230,60 @@ class TestMissedRallyScan:
         assert find_missed_rallies_in_candles([]) is None
 
     def test_multiple_distinct_rallies_are_all_found(self):
+        # First rally: base at bar 0 (t=0), crosses +0.5% at bar 2 (t=10min).
+        # Suppression window = bars 0..11 (MISSED_RALLY_BARS=12), so next
+        # eligible start is bar 12 (t=60min).
+        # Second rally: base at bar 12 (t=60min), crosses +0.5% at bar 14 (t=70min).
         candles = [
             (BASE + timedelta(minutes=5 * i), 100.0)
             for i in range(2)
         ]
         candles.extend([
-            (BASE + timedelta(minutes=10), 100.5),
+            (BASE + timedelta(minutes=10), 100.5),      # bar 2: first rally crosses
             *[
                 (BASE + timedelta(minutes=5 * i), 100.0)
                 for i in range(3, 14)
             ],
-            (BASE + timedelta(minutes=5 * 14), 100.5),
+            (BASE + timedelta(minutes=5 * 14), 100.5),  # bar 14: second rally crosses
         ])
 
         hits = find_all_missed_rallies_in_candles(candles)
 
-        assert hits == [BASE, BASE + timedelta(minutes=15)]
+        # The full 12-bar horizon from bar 0 suppresses bars 1-11; the second
+        # rally starts at bar 12 (t=60min), not bar 3 (t=15min).
+        assert hits == [BASE, BASE + timedelta(minutes=60)]
+
+    def test_monotonic_rise_counted_once_per_horizon(self):
+        """A continuously rising sequence must be counted at most once per
+        12-bar horizon, not once per candle.
+
+        Before the fix (next_allowed_index = j), a monotonic >0.3%/bar series
+        fired for almost every bar: bar j became the new start, immediately
+        found the same rise within 12 bars, and counted another hit.  After
+        the fix (next_allowed_index = i + MISSED_RALLY_BARS), only
+        ceil(n / 12) starts are emitted.
+        """
+        # 36 candles, each rising 0.1% — any 4-bar window crosses the 0.3%
+        # threshold.  Without the fix: ~30+ hits.  With the fix: 3 hits
+        # (at bars 0, 12, 24) — one per horizon.
+        n = 36
+        candles = [
+            (BASE + timedelta(minutes=5 * i), 100.0 * (1.001 ** i))
+            for i in range(n)
+        ]
+
+        hits = find_all_missed_rallies_in_candles(candles)
+
+        # Allow a small margin: exactly ceil(n / MISSED_RALLY_BARS) hits, ±1
+        from performance_engine import MISSED_RALLY_BARS
+        expected_max = (n + MISSED_RALLY_BARS - 1) // MISSED_RALLY_BARS
+        assert len(hits) <= expected_max + 1, (
+            f"Monotonic rise produced {len(hits)} hits (expected ≤ {expected_max + 1}). "
+            "This likely means the horizon suppression window is still using j "
+            "instead of i + MISSED_RALLY_BARS."
+        )
+        # Must still find at least one rally (the rise is real).
+        assert len(hits) >= 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────

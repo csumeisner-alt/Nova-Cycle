@@ -297,7 +297,15 @@ def find_all_missed_rallies_in_candles(
             rise = (candles[j][1] - base) / base * 100.0
             if rise > MISSED_RALLY_RISE_PERCENT:
                 hits.append(candles[i][0])
-                next_allowed_index = j
+                # Suppress the full evaluation horizon (MISSED_RALLY_BARS rows
+                # from the start bar i), not just from the crossing bar j.
+                # Using j caused a single monotonic rise to fire once per bar:
+                # every candle j became the new start, then immediately found
+                # the same continuing rise within 12 bars and counted another
+                # "distinct" rally.  Advancing by the full window ensures that
+                # once a rally episode starts at i, no new episode is
+                # evaluated until the horizon has fully passed.
+                next_allowed_index = i + MISSED_RALLY_BARS
                 break
     return hits
 

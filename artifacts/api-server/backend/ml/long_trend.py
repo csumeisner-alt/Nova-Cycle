@@ -200,8 +200,15 @@ class LongTrendModel:
         )
         vix_missing = indicators.get("vix_missing", pd.Series(dtype=bool))
 
-        # Volume 20-day rolling avg
-        vol_avg20 = volume.rolling(20).mean()
+        # Volume 20-day rolling avg.
+        # When pre-computed temporal columns are present (set by train() before
+        # the meaningful-move filter is applied) use them directly so the
+        # inference path (iloc-based) and the training path (filtered subset)
+        # both see the same vol_avg20 value for a given timestamp.
+        if "_vol_avg20" in df.columns:
+            vol_avg20 = df["_vol_avg20"]
+        else:
+            vol_avg20 = volume.rolling(20).mean()
 
         # ── Additive features (vectorized, in-memory) ─────────────────────────
         open_col = df["open"] if "open" in df.columns else close
@@ -272,27 +279,45 @@ class LongTrendModel:
                     else 1.0
                 )
 
-                # Recent returns
-                if i >= 5:
+                # Recent returns.
+                # Use pre-computed columns (training path: values come from the
+                # full, unfiltered df so iloc offsets correctly span real trading
+                # days).  Fall back to iloc-based computation on the inference
+                # path (build_latest_features calls this on the full series,
+                # where i-5 really is 5 trading days ago).
+                if "_return_5d" in df.columns:
+                    _v = df["_return_5d"].iloc[i]
+                    ret5 = float(_v) if pd.notna(_v) else 0.0
+                elif i >= 5:
                     c5 = float(df["close"].iloc[i - 5])
                     ret5 = (c - c5) / c5 if c5 != 0 else 0.0
                 else:
                     ret5 = 0.0
 
-                if i >= 10:
+                if "_return_10d" in df.columns:
+                    _v = df["_return_10d"].iloc[i]
+                    ret10 = float(_v) if pd.notna(_v) else 0.0
+                elif i >= 10:
                     c10 = float(df["close"].iloc[i - 10])
                     ret10 = (c - c10) / c10 if c10 != 0 else 0.0
                 else:
                     ret10 = 0.0
 
-                if i >= 20:
+                if "_return_20d" in df.columns:
+                    _v = df["_return_20d"].iloc[i]
+                    ret20 = float(_v) if pd.notna(_v) else 0.0
+                elif i >= 20:
                     c20 = float(df["close"].iloc[i - 20])
                     ret20 = (c - c20) / c20 if c20 != 0 else 0.0
                 else:
                     ret20 = 0.0
 
                 # Volume ratio
-                vol_a = float(vol_avg20.iloc[i]) if i < len(vol_avg20) else 0.0
+                if "_vol_avg20" in df.columns:
+                    _va = df["_vol_avg20"].iloc[i]
+                    vol_a = float(_va) if pd.notna(_va) else 0.0
+                else:
+                    vol_a = float(vol_avg20.iloc[i]) if i < len(vol_avg20) else 0.0
                 vol_r = float(volume.iloc[i])
                 vol_ratio = (vol_r / vol_a) if vol_a > 0 else 1.0
 
@@ -382,10 +407,27 @@ class LongTrendModel:
             if "is_extended_hours" in df.columns:
                 df = df[df["is_extended_hours"] == False].copy()
 
-            # Build labels from meaningful forward moves.  Small returns are
-            # market noise for this horizon and are excluded rather than
-            # teaching the classifier that +0.1% and +8% are equivalent wins.
+            # Pre-compute temporally-correct return and volume features on the
+            # FULL, UNFILTERED df BEFORE the meaningful-move filter is applied.
+            # This is the root-cause fix for repeated OOS quality gate failures:
+            # without this, build_features() falls back to iloc-based lookbacks
+            # on the filtered subset (which is non-contiguous after removing
+            # noise rows), so `iloc[i-5]` spans the 5th *labeled* row ago rather
+            # than 5 *trading days* ago.  That can invert the sign of the return
+            # features relative to the inference path (where the full unfiltered
+            # df is passed), creating a train/inference mismatch and teaching the
+            # model the wrong direction.  The _return_* and _vol_avg20 columns
+            # survive the meaningful-move filter and are consumed by
+            # build_features() when present.
             df = df.copy()
+            df["_return_5d"]  = df["close"].pct_change(5)
+            df["_return_10d"] = df["close"].pct_change(10)
+            df["_return_20d"] = df["close"].pct_change(20)
+            if "volume" in df.columns:
+                df["_vol_avg20"] = df["volume"].rolling(20).mean()
+            else:
+                df["_vol_avg20"] = 0.0
+
             horizon = int(getattr(settings, "LONG_LABEL_HORIZON_DAYS", 21))
             threshold = float(
                 getattr(settings, "LONG_MEANINGFUL_MOVE_THRESHOLD", 0.02)
