@@ -266,16 +266,36 @@ def find_missed_rallies_in_candles(
     Given (timestamp, close) 5-min candles inside one HOLD gap, return the
     timestamp where a >0.3% rise within 12 bars began, or None.
     """
+    hits = find_all_missed_rallies_in_candles(candles)
+    return hits[0] if hits else None
+
+
+def find_all_missed_rallies_in_candles(
+    candles: List[Tuple[datetime, float]],
+) -> List[datetime]:
+    """Return distinct rally starts in a HOLD gap.
+
+    A qualifying rally suppresses new starts for the same 12-bar evaluation
+    horizon. This prevents a steadily rising sequence from being counted once
+    for every candle while still allowing separate rally episodes later in the
+    same signal-free gap.
+    """
     n = len(candles)
+    hits: List[datetime] = []
+    next_allowed_index = 0
     for i in range(n):
+        if i < next_allowed_index:
+            continue
         base = candles[i][1]
         if not base:
             continue
         for j in range(i + 1, min(i + 1 + MISSED_RALLY_BARS, n)):
             rise = (candles[j][1] - base) / base * 100.0
             if rise > MISSED_RALLY_RISE_PERCENT:
-                return candles[i][0]
-    return None
+                hits.append(candles[i][0])
+                next_allowed_index = j
+                break
+    return hits
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,7 +308,8 @@ async def detect_missed_rallies(
     """
     Scan filtered BUY/SELL history for HOLD gaps (start→first BUY, and each
     SELL→next BUY) and check whether VOO 5-min price rose >0.3% within any
-    12-bar span inside the gap. Each qualifying gap counts once.
+    12-bar span inside the gap. Each distinct rally episode counts once;
+    the returned rate remains the fraction of gaps containing at least one.
     """
     since = datetime.utcnow() - _parse_window(window)
     try:
@@ -303,26 +324,27 @@ async def detect_missed_rallies(
         )
         rows = result.scalars().all()
         if not rows:
-            # No trade signals at all: there are no HOLD gaps between
-            # actionable signals, so missed rallies are undefined — report
-            # zeros instead of scanning the whole window as one gap.
-            return {"count": 0, "timestamps": [], "rate": 0.0}
-
-        # Build HOLD gaps: [window start → first buy], [each sell → next buy]
-        gaps: List[Tuple[datetime, Optional[datetime]]] = []
-        gap_open: Optional[datetime] = since
-        for r in rows:
-            if r.signal_type == "buy":
-                if gap_open is not None:
-                    gaps.append((gap_open, r.timestamp))
-                    gap_open = None
-            elif r.signal_type == "sell":
-                if gap_open is None:
-                    gap_open = r.timestamp
-        if gap_open is not None:
-            gaps.append((gap_open, None))
+            # A signal-free window is itself one HOLD gap.  Returning zero
+            # here hides the most important failure mode: the market rallied
+            # while the signal pipeline produced nothing at all.
+            gaps: List[Tuple[datetime, Optional[datetime]]] = [(since, None)]
+        else:
+            # Build HOLD gaps: [window start → first buy], [each sell → next buy]
+            gaps = []
+            gap_open: Optional[datetime] = since
+            for r in rows:
+                if r.signal_type == "buy":
+                    if gap_open is not None:
+                        gaps.append((gap_open, r.timestamp))
+                        gap_open = None
+                elif r.signal_type == "sell":
+                    if gap_open is None:
+                        gap_open = r.timestamp
+            if gap_open is not None:
+                gaps.append((gap_open, None))
 
         timestamps: List[datetime] = []
+        gaps_with_rallies = 0
         for start, end in gaps:
             conds = [
                 VooCandle.ticker == ticker,
@@ -338,15 +360,16 @@ async def detect_missed_rallies(
             )
             candles = [(ts, float(close)) for ts, close in result.all()
                        if close is not None]
-            hit = find_missed_rallies_in_candles(candles)
-            if hit is not None:
-                timestamps.append(hit)
+            hits = find_all_missed_rallies_in_candles(candles)
+            if hits:
+                gaps_with_rallies += 1
+                timestamps.extend(hits)
 
         gap_count = len(gaps)
         return {
             "count": len(timestamps),
             "timestamps": timestamps,
-            "rate": (len(timestamps) / gap_count) if gap_count else 0.0,
+            "rate": (gaps_with_rallies / gap_count) if gap_count else 0.0,
         }
     except Exception as exc:
         logger.error("detect_missed_rallies error: %s", exc)

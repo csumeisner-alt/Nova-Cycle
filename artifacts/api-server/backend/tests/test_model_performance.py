@@ -17,6 +17,7 @@ from performance_engine import (
     compute_cumulative_pnl,
     compute_streaks,
     filter_cycles_by_confidence,
+    find_all_missed_rallies_in_candles,
     find_missed_rallies_in_candles,
     get_model_performance,
 )
@@ -228,6 +229,24 @@ class TestMissedRallyScan:
     def test_empty(self):
         assert find_missed_rallies_in_candles([]) is None
 
+    def test_multiple_distinct_rallies_are_all_found(self):
+        candles = [
+            (BASE + timedelta(minutes=5 * i), 100.0)
+            for i in range(2)
+        ]
+        candles.extend([
+            (BASE + timedelta(minutes=10), 100.5),
+            *[
+                (BASE + timedelta(minutes=5 * i), 100.0)
+                for i in range(3, 14)
+            ],
+            (BASE + timedelta(minutes=5 * 14), 100.5),
+        ])
+
+        hits = find_all_missed_rallies_in_candles(candles)
+
+        assert hits == [BASE, BASE + timedelta(minutes=15)]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DB-backed integration tests
@@ -385,6 +404,24 @@ class TestGetModelPerformance:
             await session.commit()
             result = await get_model_performance(session, window="30d")
         assert result["missed_rallies"]["count"] == 0
+
+    async def test_missed_rally_detected_when_no_signals_exist(self, db):
+        """A signal-free rally must be visible instead of silently reported as zero."""
+        async with db() as session:
+            rally_start = _recent(1)
+            session.add_all([
+                _candle5(rally_start + timedelta(minutes=5 * i), 100.0)
+                for i in range(3)
+            ] + [
+                _candle5(rally_start + timedelta(minutes=15), 100.5),
+            ])
+            await session.commit()
+            result = await get_model_performance(session, window="30d")
+
+        assert result["summary"]["total_trades"] == 0
+        assert result["missed_rallies"]["count"] == 1
+        assert result["missed_rallies"]["timestamps"]
+        assert result["missed_rallies"]["rate"] == 1.0
 
 
 class TestEndpoint:
