@@ -50,6 +50,7 @@ class GetSignalsUseCase @Inject constructor(
         liquidityScore = liquidityScore,
         macroOverrideApplied = macroOverrideApplied,
         convictionTier = convictionTier,
-        convictionReasons = convictionReasons
+        convictionReasons = convictionReasons,
+        modelState = modelState
     )
 }

@@ -26,5 +26,7 @@ data class SignalHistoryEntity(
     /** "opportunity" | "high_conviction" | null for pre-tiering rows. */
     @ColumnInfo(name = "conviction_tier") val convictionTier: String? = null,
     /** JSON-encoded list of reason strings (kept opaque in the cache). */
-    @ColumnInfo(name = "conviction_reasons") val convictionReasons: String? = null
+    @ColumnInfo(name = "conviction_reasons") val convictionReasons: String? = null,
+    /** Model reliability when stored; null for pre-column rows (unknown). */
+    @ColumnInfo(name = "model_state") val modelState: String? = null
 )

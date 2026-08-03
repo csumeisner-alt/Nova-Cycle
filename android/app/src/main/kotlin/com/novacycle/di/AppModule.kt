@@ -87,6 +87,16 @@ object AppModule {
         }
     }
 
+    /**
+     * v3 → v4: signal_history gains the nullable model_state column
+     * ("healthy" | "model_unavailable" | "training_stuck" | "stale_rolled_back").
+     */
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE signal_history ADD COLUMN model_state TEXT")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideNovaCycleDatabase(
@@ -96,7 +106,7 @@ object AppModule {
         NovaCycleDatabase::class.java,
         "novacycle_db"
     )
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
         .fallbackToDestructiveMigration() // Last-resort safety net for unknown versions
         .build()
 

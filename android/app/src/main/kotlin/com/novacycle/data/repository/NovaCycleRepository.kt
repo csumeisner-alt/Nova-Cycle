@@ -131,7 +131,8 @@ open class NovaCycleRepository @Inject constructor(
                 convictionTier = r.convictionTier,
                 // Reason sentences never contain newlines; store newline-joined.
                 convictionReasons = r.convictionReasons
-                    .takeIf { it.isNotEmpty() }?.joinToString("\n")
+                    .takeIf { it.isNotEmpty() }?.joinToString("\n"),
+                modelState = r.modelState
             )
         }
         signalDao.deleteByTicker(ticker)
@@ -156,7 +157,8 @@ open class NovaCycleRepository @Inject constructor(
                 macroOverrideApplied = e.macroOverrideApplied,
                 convictionTier = e.convictionTier,
                 convictionReasons = e.convictionReasons
-                    ?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+                    ?.split("\n")?.filter { it.isNotBlank() } ?: emptyList(),
+                modelState = e.modelState
             )
         }
     }

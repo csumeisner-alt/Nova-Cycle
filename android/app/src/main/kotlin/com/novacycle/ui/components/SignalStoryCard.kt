@@ -63,6 +63,9 @@ fun SignalStoryCard(
                     } else {
                         signal.convictionTier?.let { ConvictionTierBadge(it) }
                     }
+                    if (signal.isDegradedModel) {
+                        DegradedModelBadge()
+                    }
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Filled.Close, contentDescription = "Close")
@@ -99,6 +102,7 @@ private fun SimpleSummary(signal: SignalData, holdTimeText: String) {
         if (signal.gapType != null) add("📊 Gap detected: ${signal.gapType}")
         if (signal.liquidityScore < 0.5f) add("💧 Low liquidity environment")
         if (signal.macroOverrideApplied) add("⚠️ Macro override was applied")
+        if (signal.isDegradedModel) add("🛑 Stored while the model was degraded — treat with caution")
         if (signal.isHighConviction) add("⭐ High-conviction signal — all confirmation checks passed")
         add("📈 Confidence: ${"%.1f".format(signal.confidence * 100f)}%")
     }
@@ -171,6 +175,7 @@ private fun ExpertDetails(signal: SignalData) {
         "Gap Type"       to (signal.gapType ?: "None"),
         "Liquidity"      to "%.3f".format(signal.liquidityScore),
         "Macro Override" to if (signal.macroOverrideApplied) "Applied" else "Not applied",
+        "Model State"    to (signal.modelState ?: "Unknown (pre-tracking)"),
         "Conviction"     to when {
             signal.isCandidate                    -> "Candidate (not executable)"
             signal.convictionTier == "high_conviction" -> "High-Conviction"
@@ -228,6 +233,27 @@ fun ConvictionTierBadge(tier: String, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             color = fg,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
+    }
+}
+
+/**
+ * Badge shown when a stored signal was generated under a non-healthy model
+ * state (training-stuck, stale rollback, or model unavailable).
+ */
+@Composable
+fun DegradedModelBadge(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.padding(top = 4.dp),
+        shape = MaterialTheme.shapes.small,
+        color = NovaSellRed.copy(alpha = 0.15f)
+    ) {
+        Text(
+            "⚠ DEGRADED MODEL",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = NovaSellRed,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
         )
     }

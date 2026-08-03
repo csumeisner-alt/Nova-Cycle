@@ -181,7 +181,8 @@ class FilteredChartViewModel @Inject constructor(
         confidence = confidence,
         sessionType = sessionType,
         convictionTier = convictionTier,
-        convictionReasons = convictionReasons
+        convictionReasons = convictionReasons,
+        modelState = modelState
     )
 
     companion object {

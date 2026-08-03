@@ -29,11 +29,19 @@ data class SignalData(
      * informational hint rather than an actionable trade alert.
      * Candidates are never stored in signal history and never push-notify.
      */
-    val isCandidate: Boolean = false
+    val isCandidate: Boolean = false,
+    /**
+     * Model reliability when the signal was stored:
+     * "healthy" | "model_unavailable" | "training_stuck" | "stale_rolled_back".
+     * Null for rows recorded before tracking existed (unknown, not degraded).
+     */
+    val modelState: String? = null
 ) {
     val isBuy: Boolean get() = signalType.lowercase() == "buy"
     val isSell: Boolean get() = signalType.lowercase() == "sell"
     val isLongGauge: Boolean get() = gaugeType.lowercase() == "long"
     val isHighConviction: Boolean get() = convictionTier == "high_conviction"
     val isOpportunity: Boolean get() = convictionTier == "opportunity" && !isCandidate
+    /** True when the signal was stored under a non-healthy model state. */
+    val isDegradedModel: Boolean get() = modelState != null && modelState != "healthy"
 }

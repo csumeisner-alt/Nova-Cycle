@@ -138,6 +138,11 @@ class SignalHistory(Base):
     # JSON-encoded list of plain-language reason strings
     conviction_reasons = Column(Text, nullable=True)
 
+    # ── Model reliability at storage time ('healthy' | 'model_unavailable' |
+    #    'training_stuck' | 'stale_rolled_back'; NULL for rows recorded before
+    #    this column existed) ─────────────────────────────────────────────────
+    model_state = Column(String(32), nullable=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Trade Cycles

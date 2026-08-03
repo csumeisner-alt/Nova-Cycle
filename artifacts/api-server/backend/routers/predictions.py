@@ -532,7 +532,8 @@ async def _store_signal(session: AsyncSession, ticker: str, signal_type: str,
                         is_extended: bool, gap_type: str, liquidity_score: float,
                         macro_override: bool, cycle_id: Optional[str] = None,
                         conviction_tier: Optional[str] = None,
-                        conviction_reasons: Optional[list] = None):
+                        conviction_reasons: Optional[list] = None,
+                        model_state: Optional[str] = None):
     """Persist signal event to signal_history table."""
     import json as _json
     entry = SignalHistory(
@@ -551,6 +552,7 @@ async def _store_signal(session: AsyncSession, ticker: str, signal_type: str,
         conviction_reasons=(
             _json.dumps(conviction_reasons) if conviction_reasons else None
         ),
+        model_state=model_state,
     )
     session.add(entry)
     await session.commit()
@@ -923,6 +925,7 @@ async def predict_long(
                 liquidity_score=1.0, macro_override=False,
                 conviction_tier=conviction["tier"],
                 conviction_reasons=conviction["reasons"],
+                model_state=model_reliability["model_state"],
             )
             if model_reliability["prediction_reliable"]:
                 asyncio.create_task(_notify_all_devices_bg(
@@ -1223,6 +1226,7 @@ async def predict_short(
                 macro_override=macro_override_applied,
                 conviction_tier=conviction["tier"],
                 conviction_reasons=conviction["reasons"],
+                model_state=model_reliability["model_state"],
             )
             if model_reliability["prediction_reliable"]:
                 asyncio.create_task(_notify_all_devices_bg(
@@ -1411,6 +1415,7 @@ async def signal_history(
             "macro_override_applied": r.macro_override_applied,
             "conviction_tier": r.conviction_tier,
             "conviction_reasons": _parse_reasons(r.conviction_reasons),
+            "model_state": r.model_state,
         }
         for r in rows
     ]
@@ -1504,6 +1509,7 @@ async def filtered_signal_history(
                 "is_extended_hours": sig.is_extended_hours,
                 "conviction_tier": sig.conviction_tier,
                 "conviction_reasons": _parse_reasons(sig.conviction_reasons),
+                "model_state": sig.model_state,
             })
         elif sig.signal_type == "sell" and pending_buy is not None:
             cycle_id = str(uuid.uuid4())
@@ -1522,6 +1528,7 @@ async def filtered_signal_history(
                 "is_extended_hours": sig.is_extended_hours,
                 "conviction_tier": sig.conviction_tier,
                 "conviction_reasons": _parse_reasons(sig.conviction_reasons),
+                "model_state": sig.model_state,
             })
             pending_buy = None
 

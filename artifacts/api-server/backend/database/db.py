@@ -57,6 +57,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_device_tokens()
     await _migrate_conviction_columns()
+    await _migrate_model_state_column()
 
 
 async def _add_missing_columns(table: str, new_cols: dict) -> None:
@@ -103,6 +104,13 @@ async def _migrate_conviction_columns() -> None:
     })
     await _add_missing_columns("filtered_signals", {
         "conviction_tier": "VARCHAR(24)",
+    })
+
+
+async def _migrate_model_state_column() -> None:
+    """Backfill the model_state column on signal_history (NULL = unknown/pre-column)."""
+    await _add_missing_columns("signal_history", {
+        "model_state": "VARCHAR(32)",
     })
 
 

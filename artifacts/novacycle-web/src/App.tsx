@@ -3,6 +3,7 @@ import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangl
 import { PredictionCard } from '@/components/PredictionCard';
 import { PerformanceDashboard } from '@/components/PerformanceDashboard';
 import { TierTrackRecordPanel } from '@/components/TierTrackRecordPanel';
+import { SignalHistoryPanel } from '@/components/SignalHistoryPanel';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { useState, useEffect } from 'react';
 
@@ -813,6 +814,7 @@ function StatusDashboard() {
              <VooPriceStrip />
              <PredictionsPanel />
              <TierTrackRecordPanel />
+             <SignalHistoryPanel />
 
             {!isLoading && !isError && health && <RetrainStatusPanel health={health} />}
 
