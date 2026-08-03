@@ -25,6 +25,20 @@ export type PredictionDisplay = {
   candidate_signal?: 'buy' | 'sell' | null;
   /** Conviction tier for the candidate direction (always "opportunity" or null). */
   candidate_conviction_tier?: 'opportunity' | null;
+  /**
+   * Explicit model availability semantics: a neutral result from a stale or
+   * training-stuck model must never look like a healthy recommendation.
+   */
+  model_state?: 'healthy' | 'model_unavailable' | 'training_stuck' | 'stale_rolled_back';
+  prediction_reliable?: boolean;
+};
+
+const MODEL_STATE_LABELS: Record<string, string> = {
+  model_unavailable: 'MODEL UNAVAILABLE — neutral fallback, not a real prediction.',
+  training_stuck:
+    'MODEL DEGRADED — repeated retraining failures; running on a stale model. Do not treat this as a reliable signal.',
+  stale_rolled_back:
+    'MODEL STALE — last retrain failed and was rolled back. Signal reliability is reduced.',
 };
 
 function ConvictionBadge({ tier, name }: { tier: NonNullable<PredictionDisplay['conviction_tier']>; name: string }) {
@@ -182,6 +196,17 @@ export function PredictionCard({ name, label }: { name: string; label: string })
           data-testid={`bar-confidence-${name}`}
         />
       </div>
+      {data?.prediction_reliable === false && data?.model_state && MODEL_STATE_LABELS[data.model_state] && (
+        <div
+          className="rounded-md border border-red-400/30 bg-red-400/5 px-3 py-2"
+          data-testid={`banner-model-state-${name}`}
+        >
+          <span className="flex items-center gap-1.5 text-xs font-mono font-medium text-red-400">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            {MODEL_STATE_LABELS[data.model_state]}
+          </span>
+        </div>
+      )}
       {degraded && (
         <div
           className="rounded-md border border-amber-400/30 bg-amber-400/5 px-3 py-2 space-y-1"

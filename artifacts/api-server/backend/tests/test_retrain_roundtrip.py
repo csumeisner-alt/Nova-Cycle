@@ -99,7 +99,7 @@ class TestRetrainRoundTrip:
         assert fresh.load_model() is True
         assert int(fresh.scaler.n_features_in_) == N_FEATURES == len(SHORT_FEATURES)
 
-        X, _w = fresh.build_features(df, {})
+        X, _w, _pos = fresh.build_features(df, {})
         assert X.shape[1] == N_FEATURES
         preds = [fresh.predict(X[i]) for i in range(0, len(X), 20)]
         assert all(0.0 <= p <= 1.0 for p in preds)

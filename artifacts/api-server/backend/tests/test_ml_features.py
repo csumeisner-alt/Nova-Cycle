@@ -189,7 +189,7 @@ class TestModelPipelines:
 
     def test_short_feature_matrix_width(self):
         df = _fivemin_df()
-        X, w = ShortTrendModel().build_features(df, {})
+        X, w, pos = ShortTrendModel().build_features(df, {})
         assert X.shape[1] == N_FEATURES == len(SHORT_FEATURES)
         assert len(w) == len(X)
         assert np.isfinite(X).all()

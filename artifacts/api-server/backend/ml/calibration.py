@@ -239,6 +239,31 @@ def walk_forward_evaluate(
     )
     brier = float(np.mean((probs - labels) ** 2))
 
+    # ── Rare-event metrics ────────────────────────────────────────────────
+    # For an alert model whose positive label is a minority event, raw and
+    # even balanced accuracy can look fine while the model never usefully
+    # fires.  Precision/recall at the decision threshold plus PR-AUC
+    # (average precision) measure what the user experiences: when the model
+    # says "rally", how often is it right, and how many real rallies does it
+    # catch?  precision_lift_vs_base_rate > 1 means an alert is more likely
+    # correct than a random guess at the base rate.
+    fp = float(((predictions == 1) & (labels == 0)).sum())
+    fn = float(((predictions == 0) & (labels == 1)).sum())
+    event_precision = tp / (tp + fp) if (tp + fp) > 0 else None
+    event_recall = tp / (tp + fn) if (tp + fn) > 0 else None
+    pr_auc = None
+    if positives and negatives:
+        try:
+            from sklearn.metrics import average_precision_score
+            pr_auc = float(average_precision_score(labels, probs))
+        except Exception:
+            pr_auc = None
+    precision_lift = (
+        event_precision / positive_rate
+        if event_precision is not None and positive_rate > 0
+        else None
+    )
+
     metrics = {
         "evaluated": True,
         "method": "purged_walk_forward",
@@ -254,6 +279,10 @@ def walk_forward_evaluate(
         "accuracy_lift_vs_majority": accuracy - majority_baseline,
         "oos_balanced_accuracy": balanced_accuracy,
         "oos_brier_score": brier,
+        "event_precision": event_precision,
+        "event_recall": event_recall,
+        "pr_auc": pr_auc,
+        "precision_lift_vs_base_rate": precision_lift,
         "reliability_bins": _reliability_bins(probs, labels),
         "folds": fold_stats,
     }

@@ -22,8 +22,10 @@ Architecture (equivalent to 128→64→32→1 Keras dense net):
   MLPClassifier(hidden_layer_sizes=(128, 64, 32), activation='relu',
                 solver='adam', max_iter=200)
 
-Target:
-  y = 1 if return_1h > 0.003 else 0   [0.3% move in next hour]
+Target (shared rally-event definition — see rally_event.py):
+  y = 1 if max(close[t+1 : t+12]) / close[t] - 1 > 0.003 else 0
+  i.e. the price reaches +0.3% at ANY point within the next hour, matching
+  the missed-rally detector and the alert the user actually wants.
 
 Time-decay:
   Weight = (0.5 if extended else 1.0) × exp(-LAMBDA_SHORT × age_in_minutes)
@@ -44,6 +46,7 @@ from config import settings
 from ml import features as ml_features
 from ml import calibration as ml_calibration
 from ml.model_health import check_model_degeneracy
+from rally_event import RALLY_HORIZON_BARS, rally_event_labels
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +83,11 @@ FEATURE_NAMES = [
 
 N_FEATURES = len(FEATURE_NAMES)
 
-# Label horizon in 5-min bars: the target is the return over the NEXT 12 bars
-# (1 hour). Walk-forward evaluation must purge at least this many rows between
-# each training window and its test window, or training labels leak test-window
-# prices.
-LABEL_HORIZON_BARS = 12
+# Label horizon in 5-min bars: the label covers the NEXT 12 bars (1 hour).
+# Walk-forward evaluation must purge at least this many rows between each
+# training window and its test window, or training labels leak test-window
+# prices.  Single source of truth: rally_event.RALLY_HORIZON_BARS.
+LABEL_HORIZON_BARS = RALLY_HORIZON_BARS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Leakage audit (enforced by tests/test_short_leakage.py)
@@ -257,7 +260,7 @@ class ShortTrendModel:
         indicators: dict,
         liquidity_score: float = 1.0,
         gap_percent: float = 0.0,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Build feature matrix from 5-min candle DataFrame.
 
@@ -268,10 +271,15 @@ class ShortTrendModel:
           Weight = base_weight × exp(-LAMBDA_SHORT × age_in_minutes)
 
         Returns:
-            (X: np.ndarray [n, N_FEATURES], weights: np.ndarray [n])
+            (X: np.ndarray [n, N_FEATURES], weights: np.ndarray [n],
+             valid_pos: np.ndarray [n] — positional indices into df of the
+             rows that produced a feature row.  Callers building labels MUST
+             index labels with valid_pos rather than slicing positionally,
+             or a skipped mid-series row silently misaligns X and y.)
         """
         rows = []
         weights = []
+        valid_pos = []
 
         now = pd.Timestamp.utcnow().tz_localize(None)
 
@@ -401,6 +409,7 @@ class ShortTrendModel:
                     float(liq_compression.iloc[i]),
                 ]
                 rows.append(feature_row)
+                valid_pos.append(i)
 
                 base_w = 0.5 if is_ext else 1.0
                 age_min = max(0.0, (now - ts_naive).total_seconds() / 60.0)
@@ -412,9 +421,17 @@ class ShortTrendModel:
                 continue
 
         if not rows:
-            return np.array([]).reshape(0, N_FEATURES), np.array([])
+            return (
+                np.array([]).reshape(0, N_FEATURES),
+                np.array([]),
+                np.array([], dtype=np.int64),
+            )
 
-        return np.array(rows, dtype=np.float32), np.array(weights, dtype=np.float32)
+        return (
+            np.array(rows, dtype=np.float32),
+            np.array(weights, dtype=np.float32),
+            np.array(valid_pos, dtype=np.int64),
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Training
@@ -424,8 +441,8 @@ class ShortTrendModel:
         """
         Train the MLPClassifier.
 
-        Target:
-          y = 1 if (Close[t+12] - Close[t]) / Close[t] > 0.003 else 0
+        Target (shared rally-event definition, rally_event.py):
+          y = 1 if max(Close[t+1 : t+12]) / Close[t] - 1 > 0.003 else 0
 
         Saves scaler + model to ml/models/short_trend_model.pkl.
 
@@ -433,14 +450,16 @@ class ShortTrendModel:
             {"accuracy": float, "val_accuracy": float}
         """
         try:
-            BARS_1H = LABEL_HORIZON_BARS
             df = df.copy()
-            df["future_close"] = df["close"].shift(-BARS_1H)
-            df.dropna(subset=["future_close"], inplace=True)
-            df["label"] = ((df["future_close"] - df["close"]) / df["close"] > 0.003).astype(int)
+            df["label"] = rally_event_labels(df["close"])
+            df.dropna(subset=["label"], inplace=True)
+            df["label"] = df["label"].astype(int)
 
-            X, sample_weights = self.build_features(df, indicators)
-            y = df["label"].values[: len(X)]
+            X, sample_weights, valid_pos = self.build_features(df, indicators)
+            # Index labels by the positions that actually produced feature
+            # rows — a positional slice would misalign X and y whenever
+            # build_features skips a mid-series row.
+            y = df["label"].values[valid_pos]
 
             if len(X) < 100:
                 logger.warning(
@@ -475,7 +494,7 @@ class ShortTrendModel:
                             .fillna(1)  # unknown strings → NORMAL
                             .astype(np.int32)
                         )
-                        vix_regime_for_wf = vr_aligned.values[:len(X)]
+                        vix_regime_for_wf = vr_aligned.values[valid_pos]
                     elif isinstance(vix_regime_raw, str):
                         # Scalar string regime: broadcast to all rows
                         code = _VIX_REGIME_CODE.get(str(vix_regime_raw).upper(), 1)
@@ -709,7 +728,7 @@ class ShortTrendModel:
     ) -> Optional[np.ndarray]:
         """Build the feature vector for the most recent 5-min bar."""
         try:
-            X, _ = self.build_features(df, indicators, liquidity_score, gap_percent)
+            X, _, _ = self.build_features(df, indicators, liquidity_score, gap_percent)
             if len(X) == 0:
                 return None
             return X[-1:].astype(np.float32)

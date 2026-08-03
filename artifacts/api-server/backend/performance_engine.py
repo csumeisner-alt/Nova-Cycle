@@ -37,9 +37,13 @@ from reliability_engine import (
 
 logger = logging.getLogger(__name__)
 
-# Short-trend model target: >0.3% rise within 12 five-minute bars
-MISSED_RALLY_RISE_PERCENT = 0.3
-MISSED_RALLY_BARS = 12
+# Shared rally-event definition (rally_event.py): >0.3% rise within 12
+# five-minute bars.  The short model trains on the SAME event, so a missed
+# rally here is exactly an event the model was supposed to predict.
+from rally_event import RALLY_HORIZON_BARS, RALLY_RISE_PERCENT
+
+MISSED_RALLY_RISE_PERCENT = RALLY_RISE_PERCENT
+MISSED_RALLY_BARS = RALLY_HORIZON_BARS
 
 # Confidence bands (fractions 0..1)
 CONFIDENCE_BANDS = {

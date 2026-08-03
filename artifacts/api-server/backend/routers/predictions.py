@@ -35,6 +35,40 @@ from signal_engine.normalization import (
 from config import settings
 from ingestion.fetcher import ohlc_validation_issue
 
+
+def _model_reliability(model_name: str, ml_fallback: bool) -> dict:
+    """Explicit prediction-availability semantics for one model.
+
+    A neutral result from a stale or training-stuck model must never look
+    like a healthy recommendation.  Returns:
+      model_state: "healthy" | "model_unavailable" | "training_stuck"
+                   | "stale_rolled_back"
+      prediction_reliable: False when the caller should present the output
+                   as degraded rather than as a normal signal.
+    """
+    state = "healthy"
+    reliable = True
+    try:
+        from ml.training_status import (
+            get_training_status,
+            CONSECUTIVE_FAILURE_ALERT_THRESHOLD,
+        )
+        status = (get_training_status() or {}).get(model_name, {})
+        failures = int(status.get("consecutive_failures") or 0)
+        if failures >= CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
+            state = "training_stuck"
+            reliable = False
+        elif status.get("rolled_back") and status.get("success") is False:
+            state = "stale_rolled_back"
+            reliable = False
+    except Exception:
+        # Reliability reporting must never break prediction itself.
+        pass
+    if ml_fallback:
+        state = "model_unavailable"
+        reliable = False
+    return {"model_state": state, "prediction_reliable": reliable}
+
 import pandas as pd
 import numpy as np
 
@@ -904,6 +938,7 @@ async def predict_long(
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
             "ml_fallback": ml_fallback,
+            **_model_reliability("long_trend", ml_fallback),
             "liquidity_score": 1.0,
             "gap_type": str(latest.get("gap_type", "none")),
             "macro_override_applied": False,
@@ -1196,6 +1231,7 @@ async def predict_short(
             "ml_confidence": ml_confidence,
             "ml_neutral_probability": ml_neutral_probability,
             "ml_fallback": ml_fallback,
+            **_model_reliability("short_trend", ml_fallback),
             "liquidity_score": liquidity_score,
             "gap_type": gap_type,
             "gap_momentum": gap_momentum,

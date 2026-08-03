@@ -14,3 +14,10 @@ uri = "file://android/app/build/outputs/apk/release/app-release.apk"
 type = "unspecified"
 title = "NovaCycle final release APK — commit 0e58a8"
 description = "Release-variant APK built locally from the newest merged NovaCycle source and verified with apksigner. Package com.novacycle, version 1.5 (versionCode 6). This is not a debug APK. It uses a fresh local release signature because the CI signing key is unavailable; Android may require uninstalling the older installation before installing it. SHA-256: 594c3ea375a53b264f9691d6888690222fedb48622a65ccf6eac7297b6445f89"
+
+[[outputs]]
+id = "GLeSbkqVW8RpC3TcUckR7"
+uri = "file://attached_assets/novacycle-app-debug.apk"
+type = "unspecified"
+title = "NovaCycle Android app (debug build)"
+description = "Locally built debug APK with the latest fixes. Note: it's debug-signed, so it cannot update an existing CI-signed install — uninstall the old app first (this clears its local data) before installing this one."

@@ -45,9 +45,9 @@ def test_features_are_causal_truncation_invariance():
     df = _make_5min_df()
     model = ShortTrendModel()
 
-    X_full, _ = model.build_features(df, indicators={})
+    X_full, _, _ = model.build_features(df, indicators={})
     cut = len(df) - 100
-    X_trunc, _ = model.build_features(df.iloc[:cut], indicators={})
+    X_trunc, _, _ = model.build_features(df.iloc[:cut], indicators={})
 
     assert len(X_trunc) == cut
     np.testing.assert_allclose(
@@ -96,7 +96,7 @@ def test_walk_forward_uses_label_horizon_embargo():
             return np.column_stack([np.full(len(X), 0.5), np.full(len(X), 0.5)])
 
     model = ShortTrendModel()
-    X, w = model.build_features(df, indicators={})
+    X, w, _ = model.build_features(df, indicators={})
     y = np.zeros(len(X), dtype=int)
     y[::3] = 1
     metrics, _, _ = cal.walk_forward_evaluate(
@@ -143,7 +143,7 @@ def test_train_reports_honest_oos_accuracy(isolated_model_dir):
     assert report is not None and report["evaluated"] is True
 
     # Live inference: non-degenerate probabilities across recent bars
-    X, _ = m.build_features(df, indicators={})
+    X, _, _ = m.build_features(df, indicators={})
     scaled = m.scaler.transform(X[-50:])
     probs = m.model.predict_proba(scaled)[:, 1]
     assert np.all((probs >= 0.0) & (probs <= 1.0))

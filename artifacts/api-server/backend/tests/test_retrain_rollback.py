@@ -488,7 +488,7 @@ class TestPredictReloadsRestoredModel:
         model.train(df_good, {})
         good_bytes = short_path.read_bytes()
 
-        X, _ = model.build_features(df_good, {})
+        X, _, _ = model.build_features(df_good, {})
         x = X[-1:]
         good_pred = model.predict(x)
 

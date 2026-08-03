@@ -154,6 +154,31 @@ def _restore_model_file(model_path: Path, backup_path: Optional[Path], model_nam
         return False
 
 
+def _short_event_gate_failed(short_result: dict) -> Optional[str]:
+    """Return a failure reason when the short-model candidate fails the
+    rare-event quality gate, or None when it passes.
+
+    Gate: on purged walk-forward OOS data, PR-AUC (average precision) must
+    exceed the event base rate — a random scorer's PR-AUC equals the base
+    rate, so anything at or below it has no ranking power for the rally
+    event.  When walk-forward could not be evaluated (not enough rows) the
+    gate does not apply; the regression comparison still runs.
+    """
+    wf = short_result.get("walk_forward") or {}
+    if not wf.get("evaluated"):
+        return None
+    pr_auc = wf.get("pr_auc")
+    base_rate = wf.get("positive_rate")
+    if pr_auc is None or base_rate is None or base_rate <= 0:
+        return None
+    if float(pr_auc) <= float(base_rate):
+        return (
+            f"OOS PR-AUC {float(pr_auc):.4f} does not beat the event base "
+            f"rate {float(base_rate):.4f} (no ranking power for rally events)"
+        )
+    return None
+
+
 class ModelTrainer:
     """Trains and periodically retrains the NovaCycle ML models."""
 
@@ -382,6 +407,23 @@ class ModelTrainer:
                     success=False,
                     error="Degenerate model: "
                     + (short_result.get("degeneracy_reason") or "predictions do not vary"),
+                    rolled_back=restored,
+                )
+            elif _short_event_gate_failed(short_result):
+                # Rare-event quality gate: the short model is an alert model
+                # for a minority event, so majority-style accuracy is not
+                # enough.  Require the purged walk-forward PR-AUC to beat the
+                # event base rate (the PR-AUC of a random scorer).  A candidate
+                # that cannot rank rally bars above non-rally bars OOS must
+                # not replace the active model.
+                reason = _short_event_gate_failed(short_result)
+                logger.error("Short-trend event quality gate: %s", reason)
+                restored = _restore_model_file(SHORT_MODEL_PATH, short_backup, "short_trend")
+                record_training_result(
+                    "short_trend",
+                    success=False,
+                    error=f"Event quality gate: {reason}",
+                    accuracy=short_result.get("accuracy", 0.0),
                     rolled_back=restored,
                 )
             else:
