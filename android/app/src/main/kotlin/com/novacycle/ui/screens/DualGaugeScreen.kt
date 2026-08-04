@@ -96,18 +96,32 @@ fun DualGaugeScreen(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // ── Controls row ──────────────────────────────────────────────
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End
+            // ── Dashboard refresh ─────────────────────────────────────────
+            // Use a labeled, full-width action instead of an icon-only control
+            // so the action is easier to discover and its loading state is
+            // immediately clear on a small phone screen.
+            OutlinedButton(
+                onClick = { viewModel.refreshAll() },
+                enabled = !uiState.isLoading,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
             ) {
-                IconButton(onClick = { viewModel.refreshAll() }) {
-                    Icon(
-                        imageVector      = Icons.Filled.Refresh,
-                        contentDescription = "Refresh",
-                        tint             = MaterialTheme.colorScheme.primary
+                if (uiState.isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
                     )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("Refreshing dashboard…")
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = null
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Refresh dashboard")
                 }
             }
 
