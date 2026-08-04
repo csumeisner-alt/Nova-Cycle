@@ -5,8 +5,8 @@ generated = []
 id = "6KmVxvqeeZLomgSlW7JP2"
 uri = "file://android/app/build/outputs/apk/debug/app-debug.apk"
 type = "unspecified"
-title = "NovaCycle newest APK — commit cf82a1f"
-description = "Direct local build from the newest merged NovaCycle source. Debug-signed but verified installable APK; package com.novacycle, version 1.5 (versionCode 6). If Android says it cannot update the existing app, uninstall the older APK first, then install this one. SHA-256: 2fa30d836fe861a32ad9503967fe1c40b0d3e8b32f4372babf26aedfc4c4939a"
+title = "NovaCycle newest debug APK"
+description = "Built from the latest workspace source on August 4, 2026. Version 1.5 (versionCode 6). SHA-256: d65e58425857bb7c828571fbf1316648baedc836e06d62f77ec70b27c3320c2a"
 
 [[outputs]]
 id = "oizl9RI4sz0F2M9hnSQJO"
