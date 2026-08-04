@@ -44,7 +44,7 @@ isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "pnpm --filter @workspace/api-client-react run typecheck && pnpm --filter @workspace/novacycle-web run typecheck"
+args = "pnpm --filter @workspace/api-client-react run typecheck && pnpm --filter @workspace/novacycle-web run typecheck && pnpm --filter @workspace/mockup-sandbox run typecheck"
 
 [agent]
 stack = "PNPM_WORKSPACE"
