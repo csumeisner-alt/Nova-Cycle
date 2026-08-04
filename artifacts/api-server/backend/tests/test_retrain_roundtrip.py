@@ -54,7 +54,14 @@ def _fivemin_df(n=400):
 @pytest.fixture
 def isolated_model_paths(tmp_path, monkeypatch):
     """Redirect both models' pickle paths and calibration files so tests
-    never touch the real ml/models directory."""
+    never touch the real ml/models directory.
+
+    Also patches get_last_successful_accuracy_metric to return
+    "purged_walk_forward_oos" so that load_model() clears baseline mode after
+    a successful train() call.  (train() writes the pkl but does not call
+    record_training_result; the gate-pass check would otherwise read the real
+    training_status.json and find the pre-gate "train" metric.)
+    """
     from ml import calibration as cal
 
     long_path = tmp_path / "long_trend_model.pkl"
@@ -68,6 +75,11 @@ def isolated_model_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(cal, "MODEL_DIR", tmp_path)
     monkeypatch.setattr(cal, "CALIBRATOR_PATH", tmp_path / "long_trend_calibrator.pkl")
     monkeypatch.setattr(cal, "REPORT_PATH", tmp_path / "long_trend_calibration.json")
+
+    # Simulate a gate-passing training history so load_model() clears baseline.
+    monkeypatch.setattr(
+        lt, "get_last_successful_accuracy_metric", lambda _: "purged_walk_forward_oos"
+    )
 
     return long_path, short_path
 

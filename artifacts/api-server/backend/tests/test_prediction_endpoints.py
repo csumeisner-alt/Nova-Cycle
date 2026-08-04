@@ -119,10 +119,34 @@ async def client(tmp_path):
         await engine.dispose()
 
 
+@pytest.fixture
+def gate_passing_long_status(tmp_path, monkeypatch):
+    """Set up training_status so the long_trend_model singleton exits baseline mode.
+
+    The committed pkl on disk is the pre-OOS-gate rollback artifact; its
+    last_success_accuracy_metric is 'train', which causes load_model() to enter
+    baseline mode.  This fixture simulates a post-gate environment (last success
+    recorded with 'purged_walk_forward_oos') for tests that need to verify real
+    long-model predictions rather than baseline behaviour.
+    """
+    import ml.training_status as ts_mod
+    from ml.training_status import record_training_result
+    import routers.predictions as preds_mod
+
+    monkeypatch.setattr(ts_mod, "STATUS_PATH", tmp_path / "e2e_training_status.json")
+    record_training_result(
+        "long_trend", success=True, accuracy=0.74,
+        accuracy_metric="purged_walk_forward_oos",
+    )
+    # Force the singleton to reload on its next predict call so it picks up
+    # the new status file instead of its import-time baseline_mode=True state.
+    monkeypatch.setattr(preds_mod._long_model, "_loaded_mtime", None)
+
+
 class TestPredictionEndpointsE2E:
     """Committed models + seeded candles must yield real, non-fallback scores."""
 
-    async def test_predict_long_returns_real_confidence(self, client):
+    async def test_predict_long_returns_real_confidence(self, client, gate_passing_long_status):
         resp = await client.post("/api/predict_long", params={"ticker": "VOO"})
         assert resp.status_code == 200
         body = resp.json()
@@ -152,7 +176,7 @@ class TestPredictionEndpointsE2E:
         body = resp.json()
         assert body["ticker"] == "VOO"
 
-    async def test_full_sequence_no_fallbacks_recorded(self, client):
+    async def test_full_sequence_no_fallbacks_recorded(self, client, gate_passing_long_status):
         """The healthz fallback counters must not grow during a healthy run."""
         from routers.predictions import _ml_fallback_stats
 

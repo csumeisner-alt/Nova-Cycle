@@ -36,6 +36,7 @@ from config import settings
 from ml import features as ml_features
 from ml import calibration as ml_calibration
 from ml.model_health import check_model_degeneracy
+from ml.training_status import get_last_successful_accuracy_metric
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,11 @@ class LongTrendModel:
         self._calibrator_mtime: Optional[float] = None
         self.calibration_base_rate: Optional[float] = None
         self._calibration_report_mtime: Optional[float] = None
+        # True when no gate-passing trained model is available; the long signal
+        # is served from a calibrated majority-class base rate instead.
+        self._baseline_mode: bool = False
+        # Set by predict() on each call; lets predict_long detect a silent 0.5.
+        self.last_prediction_was_fallback: bool = False
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     def _maybe_reload(self) -> None:
@@ -142,6 +148,30 @@ class LongTrendModel:
 
         A missing or invalid calibration report deliberately returns 0.5 so
         legacy models and neutral fallbacks retain the old behavior.
+        """
+        self._maybe_reload()
+        return self.calibration_base_rate or 0.5
+
+    def is_baseline_mode(self) -> bool:
+        """True when no gate-passing trained model is available.
+
+        The long signal falls back to a calibrated majority-class base rate
+        (get_baseline_probability()) instead of a trained-model prediction.
+        Baseline mode is set when:
+          - the on-disk pkl is the legacy 15-feature model (OOS lift ≈ −29 pp),
+          - no pkl file exists on disk, or
+          - the pkl failed to load.
+        Baseline mode clears automatically when a gate-passing 19-feature model
+        is promoted to disk and detected by the mtime-based reload path.
+        """
+        self._maybe_reload()
+        return self._baseline_mode
+
+    def get_baseline_probability(self) -> float:
+        """Return the calibrated majority-class base rate (≈0.73 for VOO/21d/2%).
+
+        Sourced from the calibration report's ``positive_rate`` field at runtime;
+        never hardcoded.  Falls back to 0.5 when no report is available.
         """
         self._maybe_reload()
         return self.calibration_base_rate or 0.5
@@ -764,6 +794,24 @@ class LongTrendModel:
 
         Returns:
             True if loaded successfully, False otherwise.
+
+        Baseline-mode logic:
+          - No pkl file → _baseline_mode = True, model = None.
+          - Legacy 15-feature pkl (OOS lift ≈ −29 pp) → treated as no trained
+            edge; _baseline_mode = True, model = None. The file is left on disk
+            so a future gate-passing retrain can overwrite it.
+          - Wrong feature count (not 15, not 19) → model = None (existing
+            behaviour); _baseline_mode = True for honesty.
+          - Load error → _baseline_mode = True.
+          - 19-feature pkl loaded, but last recorded successful training used a
+            pre-gate metric ("train" instead of "purged_walk_forward_oos") →
+            _baseline_mode = True, model = None.  This catches the rollback
+            artifact: a model that was trained before the OOS gate existed and
+            has never cleared the lift check.  Clears automatically when a
+            future gate-passing retrain records accuracy_metric=
+            "purged_walk_forward_oos" and overwrites the pkl.
+          - 19-feature pkl loaded and last successful metric is
+            "purged_walk_forward_oos" → _baseline_mode = False.
         """
         try:
             if MODEL_PATH.exists():
@@ -776,32 +824,66 @@ class LongTrendModel:
                     and int(n_in) == 15
                     and type(model).__module__.split(".")[0] == "xgboost"
                 )
-                if n_in is not None and int(n_in) != len(FEATURE_NAMES) and not is_legacy_xgb:
+                if is_legacy_xgb:
+                    # Legacy model has −29 pp OOS lift; do not serve it.
+                    # Leave the pkl on disk — a promoted model will overwrite it.
                     logger.warning(
-                        "ml_model_stale model=long_trend expected_features=%d "
-                        "found=%d action=discard_await_retrain",
+                        "ml_model_baseline_mode model=long_trend expected_features=%d "
+                        "found=%d reason=legacy_model_no_oos_edge "
+                        "action=calibrated_base_rate",
                         len(FEATURE_NAMES), int(n_in),
                     )
                     self.model = None
                     self._model_feature_count = None
+                    self._baseline_mode = True
                     self._model_loaded = True
                     return False
-                if is_legacy_xgb:
+                if n_in is not None and int(n_in) != len(FEATURE_NAMES):
                     logger.warning(
-                        "ml_model_legacy model=long_trend expected_features=%d "
-                        "found=%d action=serve_prefix_and_retrain",
+                        "ml_model_stale model=long_trend expected_features=%d "
+                        "found=%d action=baseline_await_retrain",
                         len(FEATURE_NAMES), int(n_in),
                     )
+                    self.model = None
+                    self._model_feature_count = None
+                    self._baseline_mode = True
+                    self._model_loaded = True
+                    return False
+                # Gate-pass check: verify the pkl was trained by a run that
+                # cleared the OOS lift gate.  The training status carries
+                # `last_success_accuracy_metric`; anything other than
+                # "purged_walk_forward_oos" means the "last good" model predates
+                # the gate and has never been validated against it.
+                last_metric = get_last_successful_accuracy_metric("long_trend")
+                if last_metric != "purged_walk_forward_oos":
+                    logger.warning(
+                        "ml_model_baseline_mode model=long_trend "
+                        "last_success_metric=%s "
+                        "reason=pre_gate_artifact_never_cleared_oos_lift "
+                        "action=calibrated_base_rate",
+                        last_metric,
+                    )
+                    self.model = None
+                    self._model_feature_count = None
+                    self._baseline_mode = True
+                    self._model_loaded = True
+                    return False
                 self.model = model
+                self._baseline_mode = False
                 self._model_loaded = True
                 logger.info("Long-trend model loaded from %s", MODEL_PATH)
                 return True
             else:
-                logger.info("No long-trend model file found at %s", MODEL_PATH)
+                logger.info(
+                    "No long-trend model file found at %s — baseline mode active",
+                    MODEL_PATH,
+                )
+                self._baseline_mode = True
                 self._model_loaded = True  # Prevent repeated load attempts
                 return False
         except Exception as exc:
             logger.error("Error loading long-trend model: %s", exc)
+            self._baseline_mode = True
             self._model_loaded = True
             return False
 

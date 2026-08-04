@@ -67,9 +67,17 @@ data class PredictionResponse(
      *                        on a stale model checkpoint.
      *   "stale_rolled_back"— last retrain regressed and was rolled back; model
      *                        is older than the most recent training attempt.
+     *   "baseline_mode"    — no trained model passes the OOS quality gate;
+     *                        long signal uses the calibrated majority-class base
+     *                        rate (~73% bull bias) instead of a trained model.
+     *                        predictionReliable is always false in this state.
      * Null when the field was not present in an older backend response.
      */
     @Json(name = "model_state") val modelState: String? = null,
+    /** "trained" when a gate-passing model is active; "baseline" when the long
+     *  signal falls back to the calibrated majority-class base rate. Absent on
+     *  short-trend responses and older backend versions. */
+    @Json(name = "long_signal_mode") val longSignalMode: String? = null,
     /**
      * False when the prediction should be presented as degraded rather than as
      * a normal signal (i.e. when model_state is anything other than "healthy").

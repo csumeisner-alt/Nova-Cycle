@@ -29,14 +29,18 @@ export type PredictionDisplay = {
    * Explicit model availability semantics: a neutral result from a stale or
    * training-stuck model must never look like a healthy recommendation.
    */
-  model_state?: 'healthy' | 'model_unavailable' | 'training_stuck' | 'stale_rolled_back';
+  model_state?: 'healthy' | 'model_unavailable' | 'training_stuck' | 'stale_rolled_back' | 'baseline_mode';
   prediction_reliable?: boolean;
+  /** "trained" when a gate-passing model is active; "baseline" when the signal
+   *  falls back to the calibrated majority-class base rate (~73% bull bias). */
+  long_signal_mode?: 'trained' | 'baseline';
 };
 
 const MODEL_STATE_SUMMARIES: Record<string, string> = {
   model_unavailable: 'MODEL UNAVAILABLE',
   training_stuck: 'MODEL DEGRADED · STALE MODEL',
   stale_rolled_back: 'MODEL STALE · ROLLED BACK',
+  baseline_mode: 'BASELINE MODE · NO TRAINED EDGE',
 };
 
 const MODEL_STATE_LABELS: Record<string, string> = {
@@ -45,6 +49,8 @@ const MODEL_STATE_LABELS: Record<string, string> = {
     'MODEL DEGRADED — repeated retraining failures; running on a stale model. Do not treat this as a reliable signal.',
   stale_rolled_back:
     'MODEL STALE — last retrain failed and was rolled back. Signal reliability is reduced.',
+  baseline_mode:
+    'BASELINE MODE — no trained model passes the OOS quality gate. Showing calibrated base rate (~73% bull bias). This is not a trained directional prediction.',
 };
 
 function ConvictionBadge({ tier, name }: { tier: NonNullable<PredictionDisplay['conviction_tier']>; name: string }) {

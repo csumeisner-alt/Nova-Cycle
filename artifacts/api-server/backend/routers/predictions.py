@@ -737,6 +737,9 @@ async def predict_long(
                 "score": 0, "signal": "neutral", "confidence": 0.5,
                 "indicator_breakdown": {}, "ml_confidence": 0.5,
                 "ml_fallback": True,
+                "long_signal_mode": "baseline",
+                "model_state": "baseline_mode",
+                "prediction_reliable": False,
                 "liquidity_score": 1.0, "gap_type": "none",
                 "macro_override_applied": False,
                 **dict(NEUTRAL_DEFAULTS),
@@ -752,6 +755,9 @@ async def predict_long(
                 "score": 0, "signal": "neutral", "confidence": 0.5,
                 "indicator_breakdown": {}, "ml_confidence": 0.5,
                 "ml_fallback": True,
+                "long_signal_mode": "baseline",
+                "model_state": "baseline_mode",
+                "prediction_reliable": False,
                 "liquidity_score": 1.0, "gap_type": "none",
                 "macro_override_applied": False,
                 **dict(NEUTRAL_DEFAULTS),
@@ -782,6 +788,9 @@ async def predict_long(
                     "score": 0, "signal": "neutral", "confidence": 0.5,
                     "indicator_breakdown": {}, "ml_confidence": 0.5,
                     "ml_fallback": True,
+                    "long_signal_mode": "baseline",
+                    "model_state": "baseline_mode",
+                    "prediction_reliable": False,
                     "liquidity_score": 1.0, "gap_type": "none",
                     "macro_override_applied": False,
                     **dict(NEUTRAL_DEFAULTS),
@@ -803,26 +812,44 @@ async def predict_long(
 
         # Build features and run ML model
         ml_fallback = False
+        long_signal_mode = "trained"
         try:
             features = _long_model.build_latest_features(daily_df, indicators)
             if features is None:
-                ml_confidence = 0.5
+                # Feature build returned nothing — fall back to calibrated base rate.
+                ml_confidence = _long_model.get_baseline_probability()
                 ml_fallback = True
+                long_signal_mode = "baseline"
                 _record_ml_fallback("long_trend", "insufficient data for features")
-            elif _long_model.is_neutral_fallback():
-                # Model missing/stale/failed to load — predict() would silently
-                # return 0.5, so flag it explicitly instead.
-                ml_confidence = 0.5
+            elif _long_model.is_baseline_mode():
+                # No gate-passing trained model on disk (missing pkl or legacy
+                # 15-feature pkl with −29 pp OOS lift).  Serve the calibrated
+                # majority-class base rate — honest and data-derived — rather
+                # than a stale model that actively inverts the signal.
+                ml_confidence = _long_model.get_baseline_probability()
                 ml_fallback = True
+                long_signal_mode = "baseline"
+                _record_ml_fallback(
+                    "long_trend",
+                    "baseline mode: no trained model passes OOS gate",
+                )
+            elif _long_model.is_neutral_fallback():
+                # Model object is None for a reason other than baseline mode
+                # (e.g. a corrupt pkl that failed to deserialise).
+                ml_confidence = _long_model.get_baseline_probability()
+                ml_fallback = True
+                long_signal_mode = "baseline"
                 _record_ml_fallback("long_trend", "model unavailable (missing, stale, or failed to load)")
             else:
                 ml_confidence = float(_long_model.predict(features))
                 if getattr(_long_model, "last_prediction_was_fallback", False):
                     ml_fallback = True
+                    long_signal_mode = "baseline"
                     _record_ml_fallback("long_trend", "predict() error fallback (see model logs)")
         except Exception as e:
-            ml_confidence = 0.5  # Default to neutral if prediction errors out
+            ml_confidence = _long_model.get_baseline_probability()
             ml_fallback = True
+            long_signal_mode = "baseline"
             _record_ml_fallback("long_trend", f"prediction error: {e}")
 
         # Compute gauge score (age_in_days=0 = latest candle, full weight)
@@ -909,6 +936,15 @@ async def predict_long(
         # and as part of the response payload.
         model_reliability = _model_reliability("long_trend", ml_fallback)
 
+        # Baseline mode overrides model_state so every consumer (dashboard,
+        # Android, healthz) sees "baseline_mode" rather than "model_unavailable".
+        # prediction_reliable stays False so notifications are suppressed and
+        # the UI shows a degraded badge — a no-edge baseline must not look like
+        # a healthy trained-model signal.
+        if long_signal_mode == "baseline":
+            model_reliability["model_state"] = "baseline_mode"
+            model_reliability["prediction_reliable"] = False
+
         # Persist signal if actionable, then push notification in background.
         # Candidates are NOT stored (to avoid false BUY→SELL cycles) and do
         # NOT trigger push notifications.
@@ -955,6 +991,7 @@ async def predict_long(
             "indicator_breakdown": result.get("breakdown", {}),
             "ml_confidence": ml_confidence,
             "ml_fallback": ml_fallback,
+            "long_signal_mode": long_signal_mode,
             **model_reliability,
             "liquidity_score": 1.0,
             "gap_type": str(latest.get("gap_type", "none")),

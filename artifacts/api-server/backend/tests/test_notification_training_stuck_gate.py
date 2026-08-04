@@ -80,8 +80,21 @@ async def client(tmp_path):
 
 @pytest.fixture
 def isolated_status(tmp_path, monkeypatch):
-    """Point the real training_status module at an isolated tmp JSON file."""
+    """Point the real training_status module at an isolated tmp JSON file.
+
+    Also resets the long_trend_model singleton's _loaded_mtime so it reloads
+    from disk on the next predict_long call, picking up the new status file.
+    The mtime is restored by monkeypatch on teardown so later tests are not
+    affected.
+    """
+    import routers.predictions as preds_mod
+
     monkeypatch.setattr(ts, "STATUS_PATH", tmp_path / "training_status.json")
+    # Force reload: the singleton may already be in baseline_mode because it
+    # was loaded at import time against the real status file.  Resetting
+    # _loaded_mtime causes _maybe_reload() to re-run load_model() on the next
+    # predict call, where it will see the (now-patched) tmp status file.
+    monkeypatch.setattr(preds_mod._long_model, "_loaded_mtime", None)
 
 
 @pytest.fixture
@@ -141,6 +154,12 @@ class TestNotificationsSuppressedWhileTrainingStuck:
     async def test_predict_long_buy_signal_does_not_notify(
         self, client, isolated_status, notify_recorder, force_buy_signal
     ):
+        # First record a gate-passing success so the model is not in baseline
+        # mode, then force the stuck state via consecutive failures.
+        record_training_result(
+            "long_trend", success=True, accuracy=0.72,
+            accuracy_metric="purged_walk_forward_oos",
+        )
         _force_training_stuck("long_trend")
 
         resp = await client.post("/api/predict_long", params={"ticker": "VOO"})
@@ -189,13 +208,26 @@ class TestNotificationsResumeAfterRecovery:
     async def test_predict_long_notifies_after_recovery(
         self, client, isolated_status, notify_recorder, force_buy_signal
     ):
+        import routers.predictions as preds_mod
+
+        # Establish a prior gate-pass, then force stuck.
+        record_training_result(
+            "long_trend", success=True, accuracy=0.72,
+            accuracy_metric="purged_walk_forward_oos",
+        )
         _force_training_stuck("long_trend")
         # While stuck: no notification.
         await client.post("/api/predict_long", params={"ticker": "VOO"})
         assert notify_recorder == []
 
-        # Recovery: a successful retrain resets consecutive_failures.
-        record_training_result("long_trend", success=True, accuracy=0.71)
+        # Recovery: a successful retrain resets consecutive_failures AND
+        # records a gate-passing metric so baseline mode stays clear.
+        record_training_result(
+            "long_trend", success=True, accuracy=0.71,
+            accuracy_metric="purged_walk_forward_oos",
+        )
+        # Force the singleton to reload so it picks up the updated status.
+        preds_mod._long_model._loaded_mtime = None
 
         resp = await client.post("/api/predict_long", params={"ticker": "VOO"})
         body = resp.json()

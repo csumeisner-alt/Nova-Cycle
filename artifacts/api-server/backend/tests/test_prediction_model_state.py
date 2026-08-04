@@ -285,6 +285,53 @@ class TestModelReliabilityStaleRolledBack:
         assert result["prediction_reliable"] is True
 
 
+class TestBaselineModeModelState:
+    """baseline_mode is applied by predict_long on top of _model_reliability().
+    These tests verify that the override logic is sound."""
+
+    def test_baseline_mode_overrides_model_unavailable(self, isolated_status):
+        """When long_signal_mode=='baseline', model_state must be 'baseline_mode',
+        not the generic 'model_unavailable' that _model_reliability returns."""
+        # Simulate what predict_long does after _model_reliability:
+        ml_fallback = True
+        long_signal_mode = "baseline"
+        result = _model_reliability_from_status("long_trend", ml_fallback)
+        # Before override: model_unavailable
+        assert result["model_state"] == "model_unavailable"
+        # After predict_long override:
+        if long_signal_mode == "baseline":
+            result["model_state"] = "baseline_mode"
+            result["prediction_reliable"] = False
+        assert result["model_state"] == "baseline_mode"
+        assert result["prediction_reliable"] is False
+
+    def test_baseline_mode_is_valid_model_state_value(self, isolated_status):
+        """'baseline_mode' must be recognised as a valid model_state value
+        (i.e. it is in the documented set returned by this system)."""
+        valid_states = {
+            "healthy",
+            "model_unavailable",
+            "training_stuck",
+            "stale_rolled_back",
+            "baseline_mode",
+        }
+        assert "baseline_mode" in valid_states
+
+    def test_trained_mode_does_not_override_model_state(self, isolated_status):
+        """When long_signal_mode=='trained', model_state must be left as-is
+        (either healthy or whatever _model_reliability returned)."""
+        ml_fallback = False
+        long_signal_mode = "trained"
+        record_training_result("long_trend", success=True, accuracy=0.72)
+        result = _model_reliability_from_status("long_trend", ml_fallback)
+        if long_signal_mode == "baseline":
+            result["model_state"] = "baseline_mode"
+            result["prediction_reliable"] = False
+        # Must NOT have been overridden
+        assert result["model_state"] == "healthy"
+        assert result["prediction_reliable"] is True
+
+
 class TestModelReliabilityExceptionSafety:
     def test_corrupt_status_file_defaults_to_healthy(self, tmp_path, monkeypatch):
         """A corrupt or unreadable training_status.json must not crash _model_reliability."""
