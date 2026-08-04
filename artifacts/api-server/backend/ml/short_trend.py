@@ -451,9 +451,20 @@ class ShortTrendModel:
         """
         try:
             df = df.copy()
+
+            # Snapshot dataset dimensions for the calibration report *before*
+            # any row filtering so the report always describes the full input.
+            _ds_total_candles = len(df)
+            try:
+                _ds_date_start = str(df.index[0].date()) if len(df) > 0 else None
+                _ds_date_end   = str(df.index[-1].date()) if len(df) > 0 else None
+            except Exception:
+                _ds_date_start = _ds_date_end = None
+
             df["label"] = rally_event_labels(df["close"])
             df.dropna(subset=["label"], inplace=True)
             df["label"] = df["label"].astype(int)
+            _ds_labeled_rows = len(df)  # rows that carry a 0/1 label
 
             X, sample_weights, valid_pos = self.build_features(df, indicators)
             # Index labels by the positions that actually produced feature
@@ -553,7 +564,14 @@ class ShortTrendModel:
                         calibration_summary.get("reason"),
                     )
                 ml_calibration.save_calibration_report(
-                    calibration_summary, "short_trend"
+                    calibration_summary,
+                    "short_trend",
+                    dataset_meta={
+                        "total_candles": _ds_total_candles,
+                        "labeled_rows": _ds_labeled_rows,
+                        "date_start": _ds_date_start,
+                        "date_end": _ds_date_end,
+                    },
                 )
                 positive_rate = calibration_summary.get("positive_rate")
                 if positive_rate is not None:

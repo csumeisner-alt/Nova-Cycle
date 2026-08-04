@@ -17,4 +17,5 @@
 - [Long-model validation and VIX ingestion](long-model-validation-and-vix.md) — forward labels must use future prices; accept only positive OOS lift; VIX needs index-specific spike handling
 - [Rally-event unification](rally-event-unification.md) — one shared rally label for training/eval/reporting; PR-AUC-vs-base-rate gate; feature builders must return kept positions
 - [Long-trend return alignment bug](long-trend-return-alignment.md) — train/inference mismatch: return features must be pre-computed on full df before meaningful-move filter or sign inversion causes -0.30 OOS lift
+- [Calibration report staleness](calibration-report-staleness.md) — stale-flag contract for reports; test fixtures must patch cal.MODEL_DIR or suites overwrite real ml/models files
 - [Missed-rally monitoring](missed-rally-monitoring.md) — signal-free windows still need independent rally detection instead of silently reporting zero

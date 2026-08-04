@@ -181,6 +181,146 @@ def test_report_persistence_roundtrip(tmp_paths):
     assert "generated_at" in report
 
 
+def test_report_includes_dataset_meta_when_provided(tmp_paths):
+    """dataset_meta is stored under 'dataset' key; missing it on older reports
+    is safe (callers use .get)."""
+    meta = {
+        "total_candles": 2521,
+        "labeled_rows": 1633,
+        "date_start": "2017-01-03",
+        "date_end": "2026-08-06",
+    }
+    cal.save_calibration_report(
+        {"evaluated": False, "reason": "test"},
+        dataset_meta=meta,
+    )
+    report = cal.get_calibration_report()
+    assert "dataset" in report, "dataset key must be present when dataset_meta was supplied"
+    assert report["dataset"]["total_candles"] == 2521
+    assert report["dataset"]["labeled_rows"] == 1633
+    assert report["dataset"]["date_start"] == "2017-01-03"
+    assert report["dataset"]["date_end"] == "2026-08-06"
+
+
+def test_report_without_dataset_meta_has_no_dataset_key(tmp_paths):
+    """Omitting dataset_meta must not inject an empty 'dataset' key — older
+    callers that do not pass metadata must not be broken."""
+    cal.save_calibration_report({"evaluated": True, "oos_accuracy": 0.57})
+    report = cal.get_calibration_report()
+    assert "dataset" not in report, (
+        "dataset key must be absent when no dataset_meta was passed"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stale-state contract
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_fresh_save_is_not_stale(tmp_paths):
+    """Every report written by save_calibration_report must have stale=False,
+    regardless of what was in the metrics dict passed to it."""
+    cal.save_calibration_report({"evaluated": False, "reason": "not enough rows (50)"})
+    report = cal.get_calibration_report()
+    assert report is not None
+    assert report.get("stale") is False, "fresh save must set stale=False"
+    assert "stale_note" not in report, "fresh save must not carry stale_note"
+    assert "marked_stale_at" not in report, "fresh save must not carry marked_stale_at"
+
+
+def test_fresh_save_clears_stale_even_if_metrics_contain_it(tmp_paths):
+    """If the caller accidentally passes a dict that contains stale=True
+    (e.g. copied from a previous report), save_calibration_report must
+    override it to False."""
+    cal.save_calibration_report({
+        "stale": True,
+        "stale_note": "should be cleared",
+        "marked_stale_at": "1970-01-01T00:00:00+00:00",
+        "evaluated": False,
+    })
+    report = cal.get_calibration_report()
+    assert report["stale"] is False
+    assert "stale_note" not in report
+    assert "marked_stale_at" not in report
+
+
+def test_mark_stale_sets_flag_note_and_timestamp(tmp_paths):
+    """mark_calibration_report_stale must set stale=True, stale_note, and a
+    marked_stale_at ISO timestamp, and leave existing fields intact."""
+    cal.save_calibration_report({"evaluated": False, "reason": "test"})
+    ok = cal.mark_calibration_report_stale(
+        note="DB has 2521 candles; report was built on 101 rows."
+    )
+    assert ok is True
+    report = cal.get_calibration_report()
+    assert report["stale"] is True
+    assert report["stale_note"] == "DB has 2521 candles; report was built on 101 rows."
+    assert "marked_stale_at" in report
+    # Prior content must be preserved
+    assert report.get("evaluated") is False
+    assert report.get("reason") == "test"
+    # is_calibration_report_stale() convenience wrapper
+    assert cal.is_calibration_report_stale() is True
+
+
+def test_mark_stale_attaches_dataset_meta(tmp_paths):
+    """dataset_meta passed to mark_calibration_report_stale is stored under
+    the 'dataset' key (same contract as save_calibration_report)."""
+    cal.save_calibration_report({"evaluated": False})
+    cal.mark_calibration_report_stale(
+        note="stale",
+        dataset_meta={"total_candles": 2521, "labeled_rows": 1633},
+    )
+    report = cal.get_calibration_report()
+    assert report["stale"] is True
+    assert report["dataset"]["total_candles"] == 2521
+    assert report["dataset"]["labeled_rows"] == 1633
+
+
+def test_fresh_save_after_stale_clears_it(tmp_paths):
+    """A subsequent save_calibration_report after mark_calibration_report_stale
+    must clear stale and all stale-related fields."""
+    cal.save_calibration_report({"evaluated": False, "reason": "seed"})
+    cal.mark_calibration_report_stale(note="intentionally stale")
+    assert cal.is_calibration_report_stale() is True
+
+    # Simulate a successful retrain writing a fresh report
+    cal.save_calibration_report({"evaluated": True, "oos_accuracy": 0.58})
+    report = cal.get_calibration_report()
+    assert report["stale"] is False
+    assert "stale_note" not in report
+    assert "marked_stale_at" not in report
+    assert cal.is_calibration_report_stale() is False
+
+
+def test_mark_stale_works_when_no_prior_report_exists(tmp_paths):
+    """mark_calibration_report_stale must succeed even when no report file
+    exists yet — it creates a minimal stale-only report."""
+    assert cal.get_calibration_report() is None
+    ok = cal.mark_calibration_report_stale(note="no prior report")
+    assert ok is True
+    report = cal.get_calibration_report()
+    assert report is not None
+    assert report["stale"] is True
+    assert report["stale_note"] == "no prior report"
+    assert "marked_stale_at" in report
+
+
+def test_is_stale_returns_false_for_missing_report(tmp_paths):
+    """is_calibration_report_stale returns False when there is no file — a
+    missing report is not the same as an explicitly stale one."""
+    assert cal.is_calibration_report_stale() is False
+
+
+def test_is_stale_backward_compat_older_reports_without_stale_key(tmp_paths):
+    """Reports written before the stale field was introduced have no 'stale'
+    key.  They must be treated as not stale (False), not as stale."""
+    import pathlib, json as _json
+    path = cal.calibration_report_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"evaluated": True, "oos_accuracy": 0.55}))
+    assert cal.is_calibration_report_stale() is False
+
+
 def test_load_calibrator_ignores_foreign_pickle(tmp_paths):
     with open(cal.CALIBRATOR_PATH, "wb") as f:
         pickle.dump({"not": "a calibrator"}, f)

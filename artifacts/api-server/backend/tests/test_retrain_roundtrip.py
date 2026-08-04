@@ -53,11 +53,22 @@ def _fivemin_df(n=400):
 
 @pytest.fixture
 def isolated_model_paths(tmp_path, monkeypatch):
-    """Redirect both models' pickle paths so tests never touch real models."""
+    """Redirect both models' pickle paths and calibration files so tests
+    never touch the real ml/models directory."""
+    from ml import calibration as cal
+
     long_path = tmp_path / "long_trend_model.pkl"
     short_path = tmp_path / "short_trend_model.pkl"
     monkeypatch.setattr(lt, "MODEL_PATH", long_path)
+    monkeypatch.setattr(lt, "MODEL_DIR", tmp_path)
     monkeypatch.setattr(st, "MODEL_PATH", short_path)
+    monkeypatch.setattr(st, "MODEL_DIR", tmp_path)
+
+    # Redirect calibration report / calibrator writes away from real ml/models/
+    monkeypatch.setattr(cal, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(cal, "CALIBRATOR_PATH", tmp_path / "long_trend_calibrator.pkl")
+    monkeypatch.setattr(cal, "REPORT_PATH", tmp_path / "long_trend_calibration.json")
+
     return long_path, short_path
 
 

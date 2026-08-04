@@ -50,11 +50,22 @@ def _sidecar_files(model_path: Path) -> list:
     The long-trend model carries a probability calibrator and its
     walk-forward calibration report; restoring the model without them would
     apply a flagged retrain's calibration to the last known-good model.
+
+    Implementation note: paths are resolved via the path-computing functions
+    (calibrator_path, calibration_report_path) rather than by importing the
+    module-level constants (CALIBRATOR_PATH, REPORT_PATH).  The functions
+    always look up the current value of ml.calibration.MODEL_DIR, so
+    monkeypatching MODEL_DIR in tests automatically redirects sidecar
+    operations to the test's tmp_path — no separate patch of CALIBRATOR_PATH
+    or REPORT_PATH is required (though patching them is also harmless).
     """
     try:
         if model_path.name == "long_trend_model.pkl":
-            from ml.calibration import CALIBRATOR_PATH, REPORT_PATH
-            return [CALIBRATOR_PATH, REPORT_PATH]
+            from ml.calibration import calibrator_path, calibration_report_path
+            return [
+                calibrator_path("long_trend"),
+                calibration_report_path("long_trend"),
+            ]
         if model_path.name == "short_trend_model.pkl":
             from ml.calibration import (
                 _walkforward_report_path,
@@ -151,6 +162,176 @@ def _restore_model_file(model_path: Path, backup_path: Optional[Path], model_nam
         return True
     except Exception as exc:
         logger.error("_restore_model_file error for %s: %s", model_path, exc)
+        return False
+
+
+async def _fetch_daily_candle_meta(db_session: AsyncSession) -> Optional[dict]:
+    """Return current daily VOO candle counts and labeled-row estimate.
+
+    Queries the DB the same way long_trend.train() does so the numbers in the
+    calibration report are directly comparable to what training would see.
+    Never raises.
+    """
+    try:
+        count_result = await db_session.execute(
+            select(
+                func.count(VooCandle.id),
+                func.min(VooCandle.timestamp),
+                func.max(VooCandle.timestamp),
+            ).where(
+                VooCandle.ticker == settings.TICKER,
+                VooCandle.timeframe == "daily",
+                VooCandle.is_extended_hours == False,  # noqa: E712
+            )
+        )
+        total_candles, ts_min, ts_max = count_result.one()
+        if not total_candles:
+            return None
+
+        closes_result = await db_session.execute(
+            select(VooCandle.close).where(
+                VooCandle.ticker == settings.TICKER,
+                VooCandle.timeframe == "daily",
+                VooCandle.is_extended_hours == False,  # noqa: E712
+            ).order_by(VooCandle.timestamp.asc())
+        )
+        closes = [row[0] for row in closes_result]
+
+        horizon, threshold = 21, 0.02
+        labeled = sum(
+            1 for i in range(len(closes) - horizon)
+            if closes[i] and closes[i] > 0 and closes[i + horizon]
+            and abs(closes[i + horizon] / closes[i] - 1.0) >= threshold
+        )
+
+        date_start = str(ts_min)[:10] if ts_min else None
+        date_end = str(ts_max)[:10] if ts_max else None
+        return {
+            "total_candles": int(total_candles),
+            "labeled_rows": labeled,
+            "date_start": date_start,
+            "date_end": date_end,
+            "note": (
+                "VOO daily regular-hours candles; "
+                "labeled = rows where |21-day return| >= 2%"
+            ),
+        }
+    except Exception as exc:
+        logger.error("_fetch_daily_candle_meta error: %s", exc)
+        return None
+
+
+def _extract_report_labeled_rows(report: dict) -> int:
+    """Extract the labeled-row count recorded in a calibration report.
+
+    Prefers ``report["dataset"]["labeled_rows"]``; falls back to parsing
+    the "not enough rows (N)" reason string.  Returns 0 when neither is
+    available.
+    """
+    import re
+
+    dataset = report.get("dataset") or {}
+    try:
+        v = dataset.get("labeled_rows")
+        if v is not None:
+            return int(v)
+    except (TypeError, ValueError):
+        pass
+    m = re.search(r"\((\d+)\)", report.get("reason", ""))
+    return int(m.group(1)) if m else 0
+
+
+async def audit_calibration_report_staleness(
+    db_session: AsyncSession,
+    model_name: str = "long_trend",
+    stale_row_multiple: float = 2.0,
+    min_db_rows_to_flag: int = 500,
+) -> bool:
+    """Detect and repair a misleading calibration report.
+
+    When the DB now holds at least ``stale_row_multiple`` × as many labeled
+    rows as the report was produced with, and the report represents a skipped
+    or failed evaluation (``evaluated=False``), this function calls
+    ``mark_calibration_report_stale`` with current DB counts so operators see
+    accurate metadata.
+
+    Idempotent: if the report is already marked stale with the current DB
+    counts, the function returns False without re-writing the file.
+
+    Always called with ``stale_row_multiple=2.0``, meaning "the DB now has at
+    least twice as many rows as the report claimed" — conservative enough to
+    avoid spurious marks.
+
+    Args:
+        db_session:            Active async SQLAlchemy session.
+        model_name:            Which model's report to audit (default
+                               ``"long_trend"``).
+        stale_row_multiple:    Minimum ratio DB-labeled / report-labeled that
+                               triggers a stale mark.
+        min_db_rows_to_flag:   Only flag when the DB has this many labeled
+                               rows — avoids marking a report stale on a
+                               nearly-empty fresh deployment.
+
+    Returns:
+        True if the report was (re-)marked stale, False otherwise.
+
+    Never raises.
+    """
+    try:
+        from ml.calibration import (
+            get_calibration_report,
+            mark_calibration_report_stale,
+        )
+
+        report = get_calibration_report(model_name)
+        if report is None:
+            return False
+
+        # Only audit reports that represent a skipped/failed evaluation.
+        # A fresh evaluated=True report is intentional — leave it alone.
+        if report.get("evaluated") is True and not report.get("stale"):
+            return False
+
+        current_meta = await _fetch_daily_candle_meta(db_session)
+        if current_meta is None:
+            return False
+
+        current_labeled = current_meta.get("labeled_rows", 0)
+        if current_labeled < min_db_rows_to_flag:
+            return False  # DB itself too small to justify flagging
+
+        report_labeled = _extract_report_labeled_rows(report)
+
+        if report_labeled > 0 and current_labeled < report_labeled * stale_row_multiple:
+            return False  # DB not significantly larger than what the report claimed
+
+        # Idempotent: already stale with these exact counts — nothing to do.
+        if report.get("stale") is True:
+            existing = (report.get("dataset") or {})
+            if (
+                existing.get("labeled_rows") == current_labeled
+                and existing.get("total_candles") == current_meta.get("total_candles")
+            ):
+                return False
+
+        note = (
+            f"Report was produced when the DB had only ~{report_labeled} labeled "
+            f"rows. DB now holds {current_meta['total_candles']} daily candles "
+            f"({current_meta['date_start']} to {current_meta['date_end']}) "
+            f"yielding {current_labeled} meaningful-move labeled rows. "
+            f"Re-run a full retrain to replace this report."
+        )
+        mark_calibration_report_stale(model_name, note=note, dataset_meta=current_meta)
+        logger.info(
+            "audit_calibration_report_staleness: marked %s stale "
+            "(report_labeled=%d → db_labeled=%d)",
+            model_name,
+            report_labeled,
+            current_labeled,
+        )
+        return True
+    except Exception as exc:
+        logger.error("audit_calibration_report_staleness error: %s", exc)
         return False
 
 
@@ -552,6 +733,11 @@ class ModelTrainer:
                 "Models are up-to-date (last trained %d days ago). No retraining needed.",
                 age_days,
             )
+            # When skipping a retrain, audit whether the on-disk calibration
+            # report still accurately describes the current DB.  A stale
+            # "not enough rows" report can persist indefinitely if retraining
+            # never happens; this ensures operators see honest metadata.
+            await audit_calibration_report_staleness(db_session)
             return False
 
     # ──────────────────────────────────────────────────────────────────────────

@@ -59,13 +59,34 @@ def _fivemin_df(n=400, seed=7):
 
 @pytest.fixture
 def isolated_paths(tmp_path, monkeypatch):
-    """Redirect model pickles and training-status JSON away from real files."""
+    """Redirect model pickles, calibration files, and training-status JSON
+    away from the real ml/models directory.
+
+    Previously only lt/st MODEL_PATH were redirected; the calibration report
+    and calibrator pickle were left pointing at the real directory, so every
+    LongTrendModel().train() call wrote into ml/models/.  Now we also patch
+    the ml.calibration module's MODEL_DIR (and its derived constants) so that
+    save_calibration_report, _sidecar_files backups, and all related writes
+    land in tmp_path instead.
+    """
+    from ml import calibration as cal
+
     long_path = tmp_path / "long_trend_model.pkl"
     short_path = tmp_path / "short_trend_model.pkl"
     status_path = tmp_path / "training_status.json"
+
     monkeypatch.setattr(lt, "MODEL_PATH", long_path)
+    monkeypatch.setattr(lt, "MODEL_DIR", tmp_path)
     monkeypatch.setattr(st, "MODEL_PATH", short_path)
+    monkeypatch.setattr(st, "MODEL_DIR", tmp_path)
     monkeypatch.setattr(ts, "STATUS_PATH", status_path)
+
+    # Redirect all calibration writes (reports, calibrator pickles) to tmp_path
+    # so no test in this file can touch the real ml/models directory.
+    monkeypatch.setattr(cal, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(cal, "CALIBRATOR_PATH", tmp_path / "long_trend_calibrator.pkl")
+    monkeypatch.setattr(cal, "REPORT_PATH", tmp_path / "long_trend_calibration.json")
+
     return long_path, short_path
 
 

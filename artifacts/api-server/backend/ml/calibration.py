@@ -386,11 +386,49 @@ def load_calibrator(model_name: str = "long_trend") -> Optional[ProbabilityCalib
         return None
 
 
-def save_calibration_report(metrics: dict, model_name: str = "long_trend") -> None:
+def save_calibration_report(
+    metrics: dict,
+    model_name: str = "long_trend",
+    dataset_meta: Optional[dict] = None,
+) -> None:
+    """Persist a calibration report to disk.
+
+    Every report written by this function carries ``"stale": false``,
+    unconditionally clearing any stale state left by a previous
+    ``mark_calibration_report_stale`` call.  Readers that encounter an older
+    report without the ``"stale"`` key should treat it as not stale.
+
+    Args:
+        metrics:      Walk-forward evaluation metrics (as returned by
+                      ``walk_forward_evaluate``) or a short failure/skip dict.
+                      May contain any keys; ``"stale"``, ``"generated_at"``,
+                      and ``"dataset"`` are always overwritten by this function.
+        model_name:   Model identifier (determines the output filename).
+        dataset_meta: Optional self-describing dataset statistics stored
+                      verbatim under the ``"dataset"`` key so operators can
+                      audit what data the training run actually saw.
+                      Recognised fields (all optional; callers may add extras):
+
+                        total_candles – int, total OHLC rows in the input df
+                        labeled_rows  – int, rows surviving the
+                                        meaningful-move / label filter
+                        date_start    – ISO-8601 string, first candle date
+                        date_end      – ISO-8601 string, last candle date
+
+                      Older reports that predate this field simply omit it;
+                      readers should use ``.get("dataset")`` for safety.
+    """
     try:
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         payload = dict(metrics)
+        # Always mark fresh — clears any stale state from a previous
+        # mark_calibration_report_stale() call.
+        payload["stale"] = False
+        payload.pop("stale_note", None)
+        payload.pop("marked_stale_at", None)
         payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+        if dataset_meta is not None:
+            payload["dataset"] = dict(dataset_meta)
 
         def _write(f):
             json.dump(payload, f, indent=2)
@@ -398,6 +436,74 @@ def save_calibration_report(metrics: dict, model_name: str = "long_trend") -> No
         _atomic_write(calibration_report_path(model_name), _write)
     except Exception as exc:
         logger.error("save_calibration_report error (%s): %s", model_name, exc)
+
+
+def mark_calibration_report_stale(
+    model_name: str = "long_trend",
+    note: str = "",
+    dataset_meta: Optional[dict] = None,
+) -> bool:
+    """Mark an existing calibration report as stale.
+
+    Loads the current report (creating a minimal one if none exists), sets
+    ``"stale": true``, records a ``"marked_stale_at"`` UTC timestamp, and
+    optionally attaches a human-readable ``"stale_note"`` and updated
+    ``"dataset"`` metadata.  The result is re-saved atomically so no consumer
+    ever sees a half-written file.
+
+    A subsequent call to ``save_calibration_report`` will clear the stale flag
+    (``"stale": false``) because every fresh training run writes a clean report.
+
+    Args:
+        model_name:   Model whose report file is updated.
+        note:         Optional human-readable explanation, stored as
+                      ``"stale_note"`` in the report.
+        dataset_meta: Optional updated dataset snapshot stored under
+                      ``"dataset"`` (same field contract as
+                      ``save_calibration_report``).
+
+    Returns:
+        True on success, False if an error prevented the write.
+    """
+    try:
+        existing: dict = get_calibration_report(model_name) or {}
+        existing["stale"] = True
+        existing["marked_stale_at"] = datetime.now(timezone.utc).isoformat()
+        if note:
+            existing["stale_note"] = note
+        elif "stale_note" not in existing:
+            existing["stale_note"] = ""
+        if dataset_meta is not None:
+            existing["dataset"] = dict(dataset_meta)
+
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+        def _write(f):
+            json.dump(existing, f, indent=2)
+        _write.__mode__ = "w"
+        _atomic_write(calibration_report_path(model_name), _write)
+        logger.info(
+            "Calibration report marked stale model=%s note=%r", model_name, note
+        )
+        return True
+    except Exception as exc:
+        logger.error(
+            "mark_calibration_report_stale error (%s): %s", model_name, exc
+        )
+        return False
+
+
+def is_calibration_report_stale(model_name: str = "long_trend") -> bool:
+    """Return True if the on-disk calibration report is explicitly marked stale.
+
+    A missing report or a report without a ``"stale"`` key (written before this
+    field was introduced) is treated as *not* stale, consistent with backward
+    compatibility.
+    """
+    report = get_calibration_report(model_name)
+    if report is None:
+        return False
+    return bool(report.get("stale", False))
 
 
 def _walkforward_report_path(model_name: str) -> Path:

@@ -430,6 +430,18 @@ class LongTrendModel:
             if "is_extended_hours" in df.columns:
                 df = df[df["is_extended_hours"] == False].copy()
 
+            # Snapshot dataset dimensions for the calibration report *before*
+            # any row filtering so the report always describes what the caller
+            # provided, not the post-filter subset.  _ds_labeled_rows is
+            # updated after the meaningful-move filter below.
+            _ds_total_candles = len(df)
+            try:
+                _ds_date_start = str(df.index[0].date()) if len(df) > 0 else None
+                _ds_date_end   = str(df.index[-1].date()) if len(df) > 0 else None
+            except Exception:
+                _ds_date_start = _ds_date_end = None
+            _ds_labeled_rows: int = 0  # updated after meaningful-move filter
+
             # Pre-compute temporally-correct return and volume features on the
             # FULL, UNFILTERED df BEFORE the meaningful-move filter is applied.
             # This is the root-cause fix for repeated OOS quality gate failures:
@@ -498,6 +510,7 @@ class LongTrendModel:
             ].copy()
             df["label"] = (df["forward_return"] >= threshold).astype(int)
             excluded_noise_rows = labeled_rows - len(df)
+            _ds_labeled_rows = len(df)  # rows that carry a 0/1 label (meaningful moves only)
 
             # Trim indicators to match df
             trimmed_indicators = {
@@ -617,7 +630,15 @@ class LongTrendModel:
                         "ml_calibration_skipped model=long_trend reason=%s",
                         calibration_summary.get("reason"),
                     )
-                ml_calibration.save_calibration_report(calibration_summary)
+                ml_calibration.save_calibration_report(
+                    calibration_summary,
+                    dataset_meta={
+                        "total_candles": _ds_total_candles,
+                        "labeled_rows": _ds_labeled_rows,
+                        "date_start": _ds_date_start,
+                        "date_end": _ds_date_end,
+                    },
+                )
             except Exception as exc:
                 logger.error("Long-trend calibration error: %s", exc)
                 calibration_summary = {"calibrated": False, "reason": str(exc)}
