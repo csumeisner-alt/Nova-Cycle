@@ -168,10 +168,24 @@ fun DualGaugeWidget(
         // Secondary context: model confidence with its Weak/Uncertain/Strong
         // zone, plus the recent trend and display bias. Explained by the
         // tappable info sheet on the dashboard.
+        //
+        // In baseline_mode the "confidence" is the calibrated majority-class
+        // base rate, not a trained-model probability — render it as a neutral
+        // gray annotation rather than a zone-coloured trained signal.
         if (!isFallback) {
+            val isBaseline = gaugeState.modelState == "baseline_mode"
             val confidencePercent = gaugeState.confidencePercent.coerceIn(0, 100)
             val confidenceColor = confidenceZoneColor(gaugeState.confidenceZone)
             Spacer(modifier = Modifier.height(4.dp))
+            if (isBaseline) {
+                Text(
+                    text = "~$confidencePercent% base rate · not a trained signal",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+                    textAlign = TextAlign.Center
+                )
+            } else {
             Text(
                 text = "$confidencePercent% confidence · ${gaugeState.confidenceZone.label}",
                 style = MaterialTheme.typography.labelSmall,
@@ -179,6 +193,7 @@ fun DualGaugeWidget(
                 color = confidenceColor,
                 textAlign = TextAlign.Center
             )
+            }
             Text(
                 text = "${trendGlyph(gaugeState.trend)} ${gaugeState.trend.uppercase()} · ${gaugeState.displaySignal}",
                 style = MaterialTheme.typography.labelSmall,
@@ -207,30 +222,36 @@ fun DualGaugeWidget(
 
 /**
  * Compact inline banner rendered inside the gauge widget when the underlying
- * model is in a degraded state (training-stuck or stale rollback).
+ * model is in a degraded state.
  *
- * Uses a muted red tint so it is unmistakable without overwhelming the gauge.
+ * Error states (training-stuck, stale rollback, unavailable) use a muted red
+ * tint.  Baseline mode uses amber — it is a known-good fallback, not a fault,
+ * but the signal still carries no trained edge and must be called out clearly.
  */
 @Composable
 private fun ModelDegradedBanner(modelState: String?) {
+    val isBaseline = modelState == "baseline_mode"
     val message = when (modelState) {
+        "baseline_mode"     -> "BASELINE MODE · NO TRAINED EDGE — calibrated base rate (~73% bull bias), not a trained prediction."
         "training_stuck"    -> "⚠ Model degraded — repeated retrain failures. Do not rely on this signal."
         "stale_rolled_back" -> "⚠ Model stale — last retrain failed and was rolled back. Reliability reduced."
         "model_unavailable" -> "⚠ Model unavailable — showing a neutral fallback, not a real prediction."
         else                -> "⚠ Prediction unreliable — model is in a degraded state."
     }
-    val bannerRed = Color(0xFFD32F2F)
+    // Baseline uses amber (informational), all other degraded states use red (error).
+    val bannerColor = if (isBaseline) Color(0xFFE65100) else Color(0xFFD32F2F)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
-            .background(bannerRed.copy(alpha = 0.12f))
+            .background(bannerColor.copy(alpha = 0.12f))
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
         Text(
             text      = message,
             style     = MaterialTheme.typography.labelSmall,
-            color     = bannerRed,
+            color     = bannerColor,
+            fontWeight = if (isBaseline) FontWeight.Bold else FontWeight.Normal,
             textAlign = TextAlign.Center,
             modifier  = Modifier.fillMaxWidth()
         )

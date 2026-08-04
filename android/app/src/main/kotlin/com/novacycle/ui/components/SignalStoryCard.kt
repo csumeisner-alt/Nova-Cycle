@@ -64,7 +64,7 @@ fun SignalStoryCard(
                         signal.convictionTier?.let { ConvictionTierBadge(it) }
                     }
                     if (signal.isDegradedModel) {
-                        DegradedModelBadge()
+                        DegradedModelBadge(modelState = signal.modelState)
                     }
                 }
                 IconButton(onClick = onDismiss) {
@@ -240,20 +240,27 @@ fun ConvictionTierBadge(tier: String, modifier: Modifier = Modifier) {
 
 /**
  * Badge shown when a stored signal was generated under a non-healthy model
- * state (training-stuck, stale rollback, or model unavailable).
+ * state (training-stuck, stale rollback, model unavailable, or baseline mode).
+ *
+ * Baseline mode uses an amber tint with distinct copy matching the web
+ * dashboard ("BASELINE MODE · NO TRAINED EDGE") — it is a known-good
+ * calibrated fallback, not an error, so it must not look like a red alert.
  */
 @Composable
-fun DegradedModelBadge(modifier: Modifier = Modifier) {
+fun DegradedModelBadge(modelState: String? = null, modifier: Modifier = Modifier) {
+    val isBaseline = modelState == "baseline_mode"
+    val badgeColor = if (isBaseline) Color(0xFFE65100) else NovaSellRed
+    val label = if (isBaseline) "BASELINE MODE · NO TRAINED EDGE" else "⚠ DEGRADED MODEL"
     Surface(
         modifier = modifier.padding(top = 4.dp),
         shape = MaterialTheme.shapes.small,
-        color = NovaSellRed.copy(alpha = 0.15f)
+        color = badgeColor.copy(alpha = 0.15f)
     ) {
         Text(
-            "⚠ DEGRADED MODEL",
+            label,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
-            color = NovaSellRed,
+            color = badgeColor,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
         )
     }

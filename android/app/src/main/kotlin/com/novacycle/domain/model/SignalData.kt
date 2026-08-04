@@ -32,7 +32,8 @@ data class SignalData(
     val isCandidate: Boolean = false,
     /**
      * Model reliability when the signal was stored:
-     * "healthy" | "model_unavailable" | "training_stuck" | "stale_rolled_back".
+     * "healthy" | "model_unavailable" | "training_stuck" | "stale_rolled_back" |
+     * "baseline_mode" (calibrated base-rate fallback, no trained edge).
      * Null for rows recorded before tracking existed (unknown, not degraded).
      */
     val modelState: String? = null

@@ -42,6 +42,10 @@ data class GaugeState(
      *   "model_unavailable" — model file missing; output is a neutral fallback.
      *   "training_stuck"    — repeated retraining failures; stale checkpoint.
      *   "stale_rolled_back" — last retrain regressed and was rolled back.
+     *   "baseline_mode"     — no trained model passes the OOS quality gate;
+     *                         long signal uses the calibrated majority-class
+     *                         base rate (~73% bull bias). predictionReliable
+     *                         is always false in this state.
      * Null when the backend did not include the field (treat as healthy).
      */
     val modelState: String? = null,
