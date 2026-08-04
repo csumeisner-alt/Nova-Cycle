@@ -239,6 +239,17 @@ def walk_forward_evaluate(
     )
     brier = float(np.mean((probs - labels) ** 2))
 
+    # Macro-F1: harmonic mean of per-class F1 scores.  Resistant to class
+    # imbalance because each class contributes equally regardless of size.
+    # Computed before the rare-event block so its value is always present.
+    macro_f1: Optional[float] = None
+    if positives and negatives:
+        try:
+            from sklearn.metrics import f1_score as _f1_score
+            macro_f1 = float(_f1_score(labels, predictions, average="macro", zero_division=0))
+        except Exception:
+            macro_f1 = None
+
     # ── Rare-event metrics ────────────────────────────────────────────────
     # For an alert model whose positive label is a minority event, raw and
     # even balanced accuracy can look fine while the model never usefully
@@ -283,6 +294,7 @@ def walk_forward_evaluate(
         "event_recall": event_recall,
         "pr_auc": pr_auc,
         "precision_lift_vs_base_rate": precision_lift,
+        "macro_f1": macro_f1,
         "reliability_bins": _reliability_bins(probs, labels),
         "folds": fold_stats,
     }

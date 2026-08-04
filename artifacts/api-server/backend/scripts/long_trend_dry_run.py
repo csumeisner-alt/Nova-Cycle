@@ -83,6 +83,15 @@ logger = logging.getLogger("lt_dry_run")
 HORIZONS = [5, 10, 21, 42]
 THRESHOLDS = [0.0, 0.01, 0.02, 0.03]  # 0.0 = sign-only (no noise filter)
 
+# Drawdown-event evaluation: y=1 when the worst intra-horizon drawdown from
+# the entry close exceeds the threshold.  Only future prices used (t+1..t+H).
+# Thresholds chosen to span rare-crisis to moderate-correction frequencies.
+DRAWDOWN_THRESHOLDS = [0.03, 0.05, 0.08]
+
+# Three-state target evaluation horizons (a subset to limit runtime)
+THREE_STATE_HORIZONS = [10, 21]
+THREE_STATE_THRESHOLDS = [0.02, 0.03]
+
 # Feature sets: (name, list of FEATURE_NAMES columns to keep, or None=all)
 FEATURE_SETS = [
     ("all_19",      None),          # current full feature set
@@ -433,6 +442,505 @@ def run_config(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Drawdown-event label builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_drawdown_labels(
+    df_full: pd.DataFrame,
+    horizon: int,
+    drawdown_thresh: float,
+) -> pd.DataFrame:
+    """Return a copy of df_full with drawdown-event labels and forward returns.
+
+    y=1 (drawdown event) when the minimum close price in the next ``horizon``
+    trading days falls at least ``drawdown_thresh`` below today's close.
+
+    Strictly future-only: only close[t+1] … close[t+H] are used.
+    The last ``horizon`` rows are dropped because their future window is
+    incomplete; this is the same purge logic as the direction label.
+
+    Args:
+        df_full:        Enriched VOO frame.
+        horizon:        Number of future trading days to look ahead.
+        drawdown_thresh: Fractional drop required to label an event (e.g. 0.05).
+
+    Returns:
+        DataFrame with ``_future_min_close``, ``_max_drawdown``, ``_label``
+        columns added.  Rows with incomplete future windows (last H rows) are
+        dropped.
+    """
+    df = df_full.copy()
+    # Build future min close vectorised: each column is close shifted k days
+    # into the future (k = 1..H).  This is strictly future — close[t] is not
+    # included.  Rows where any shift produces NaN (last H rows) are dropped.
+    future_cols = pd.concat(
+        [df["close"].shift(-k) for k in range(1, horizon + 1)], axis=1
+    )
+    # skipna=False: any row whose future window is incomplete (last H rows) becomes
+    # NaN and is correctly excluded.  skipna=True (the pandas default) would keep
+    # a partial minimum for rows near the tail, producing labels that look ahead
+    # fewer than H days and underestimate drawdown risk.
+    df["_future_min_close"] = future_cols.min(axis=1, skipna=False)
+    df = df.dropna(subset=["_future_min_close"])
+    df["_max_drawdown"] = df["_future_min_close"] / df["close"] - 1.0
+    df["_label"] = (df["_max_drawdown"] <= -drawdown_thresh).astype(int)
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Three-state label builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_three_state_labels(
+    df_full: pd.DataFrame,
+    horizon: int,
+    threshold: float,
+) -> pd.DataFrame:
+    """Return a copy of df_full with three-state labels.
+
+    Classes:
+        2 = risk-on  : forward_return_H  >  threshold
+        1 = neutral  : |forward_return_H| <= threshold
+        0 = risk-off : forward_return_H  < -threshold
+
+    Uses strictly future prices: close.shift(-H) so no data from time t is
+    included in the label.  Last ``horizon`` rows are dropped.
+
+    Args:
+        df_full:   Enriched VOO frame.
+        horizon:   Forward-return horizon in trading days.
+        threshold: Return band defining the neutral zone.
+
+    Returns:
+        DataFrame with ``_future_close``, ``_fwd_return``, ``_label`` added.
+    """
+    df = df_full.copy()
+    df["_future_close"] = df["close"].shift(-horizon)
+    df = df.dropna(subset=["_future_close"])
+    df["_fwd_return"] = df["_future_close"] / df["close"] - 1.0
+    conditions = [
+        df["_fwd_return"] > threshold,          # risk-on  → 2
+        df["_fwd_return"] < -threshold,         # risk-off → 0
+    ]
+    choices = [2, 0]
+    df["_label"] = np.select(conditions, choices, default=1)  # neutral → 1
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Walk-forward evaluator for three-state (multi-class)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _walk_forward_multiclass(
+    X: np.ndarray,
+    y: np.ndarray,
+    weights: Optional[np.ndarray],
+    model_factory: Callable,
+    n_splits: int = 5,
+    embargo: int = 21,
+) -> dict:
+    """Purged chronological walk-forward for a three-state classifier.
+
+    Splits are identical to the binary walk_forward_evaluate but evaluation
+    uses macro-F1, per-class precision/recall, and OvR balanced accuracy.
+
+    Args:
+        X:             Feature matrix [n, features].
+        y:             Integer class labels [n] — values 0, 1, 2.
+        weights:       Sample weights [n] or None.
+        model_factory: Returns a fresh untrained multi-class classifier.
+        n_splits:      Number of sequential test folds.
+        embargo:       Row gap between train and test (>= label horizon).
+
+    Returns:
+        Metrics dict including ``evaluated``, ``macro_f1``, ``oos_balanced_accuracy``,
+        ``per_class`` breakdown, and ``folds``.
+    """
+    from sklearn.metrics import (
+        f1_score as _f1,
+        precision_recall_fscore_support as _prf,
+        balanced_accuracy_score as _bal_acc,
+    )
+
+    n = len(X)
+    min_train = max(100, embargo * 3)
+    if n < min_train + embargo + n_splits:
+        return {
+            "evaluated": False,
+            "reason": f"not enough rows ({n}) for multiclass walk-forward",
+        }
+
+    test_start = max(min_train + embargo, int(n * 0.5))
+    fold_edges = np.linspace(test_start, n, n_splits + 1, dtype=int)
+
+    oos_preds: list = []
+    oos_labels: list = []
+    fold_stats = []
+
+    for k in range(n_splits):
+        t0, t1 = int(fold_edges[k]), int(fold_edges[k + 1])
+        if t1 <= t0:
+            continue
+        train_end = t0 - embargo
+        if train_end < min_train:
+            continue
+        model = model_factory()
+        w = None
+        if weights is not None and len(weights) == n:
+            w = weights[:train_end].copy()
+            mw = float(w.mean())
+            if mw > 0:
+                w = w / mw
+        model.fit(X[:train_end], y[:train_end], sample_weight=w, verbose=False)
+        preds = model.predict(X[t0:t1])
+        oos_preds.append(preds)
+        oos_labels.append(y[t0:t1])
+        fold_acc = float((preds == y[t0:t1]).mean())
+        fold_stats.append({
+            "fold": k + 1,
+            "train_rows": int(train_end),
+            "test_rows": int(t1 - t0),
+            "accuracy": fold_acc,
+        })
+
+    if not oos_preds:
+        return {"evaluated": False, "reason": "no valid walk-forward folds"}
+
+    all_preds = np.concatenate(oos_preds)
+    all_labels = np.concatenate(oos_labels).astype(int)
+
+    classes = sorted(np.unique(np.concatenate([all_labels, all_preds])).tolist())
+    macro_f1 = float(_f1(all_labels, all_preds, average="macro", zero_division=0))
+    bal_acc = float(_bal_acc(all_labels, all_preds))
+    overall_acc = float((all_preds == all_labels).mean())
+
+    # Per-class precision, recall, F1
+    prec, rec, f1, support = _prf(
+        all_labels, all_preds, labels=classes, average=None, zero_division=0
+    )
+    class_names = {0: "risk_off", 1: "neutral", 2: "risk_on"}
+    per_class = []
+    for i, cls in enumerate(classes):
+        per_class.append({
+            "class": int(cls),
+            "name": class_names.get(cls, str(cls)),
+            "precision": round(float(prec[i]), 4),
+            "recall": round(float(rec[i]), 4),
+            "f1": round(float(f1[i]), 4),
+            "support": int(support[i]),
+        })
+
+    # Class prevalence
+    class_prev = {
+        class_names.get(c, str(c)): round(float((all_labels == c).mean()), 4)
+        for c in classes
+    }
+
+    return {
+        "evaluated": True,
+        "method": "purged_walk_forward_multiclass",
+        "n_splits": len(fold_stats),
+        "embargo_rows": int(embargo),
+        "oos_samples": int(len(all_labels)),
+        "oos_accuracy": round(overall_acc, 4),
+        "oos_balanced_accuracy": round(bal_acc, 4),
+        "macro_f1": round(macro_f1, 4),
+        "class_prevalence": class_prev,
+        "per_class": per_class,
+        "folds": fold_stats,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Drawdown-event configuration runner
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_config_drawdown(
+    df_full: pd.DataFrame,
+    indicators_full: dict,
+    horizon: int,
+    drawdown_thresh: float,
+    feature_cols: Optional[list],
+    model_type: str,
+    label: str,
+) -> dict:
+    """Run one drawdown-event configuration and return a metrics dict.
+
+    Acceptance criterion: PR-AUC > 2× event prevalence AND precision lift > 2.
+    A model below these bars provides no useful early-warning signal.
+
+    No model artifact is written — this is an evaluation-only function.
+    A future candidate must clear the above bar before manual promotion.
+    """
+    df = _build_drawdown_labels(df_full, horizon, drawdown_thresh)
+
+    if len(df) < 150:
+        return {
+            "label": label, "target": "drawdown_event",
+            "horizon": horizon, "drawdown_thresh": drawdown_thresh,
+            "model": model_type, "error": f"too few rows ({len(df)})",
+        }
+
+    # Trim indicators to labeled df
+    trimmed_ind = {
+        k: (v.reindex(df.index) if isinstance(v, pd.Series) else v)
+        for k, v in indicators_full.items()
+    }
+
+    lt = LongTrendModel.__new__(LongTrendModel)
+    lt.model = None
+    X_all, weights, valid_pos = lt.build_features(df, trimmed_ind)
+    y_all = df["_label"].values[valid_pos]
+    # Also keep the future drawdown depths for expected-loss computation
+    drawdown_all = df["_max_drawdown"].values[valid_pos]
+
+    if len(X_all) < 150:
+        return {
+            "label": label, "target": "drawdown_event",
+            "horizon": horizon, "drawdown_thresh": drawdown_thresh,
+            "model": model_type, "error": f"too few feature rows ({len(X_all)})",
+        }
+
+    if feature_cols is not None:
+        col_idx = [FEATURE_NAMES.index(c) for c in feature_cols if c in FEATURE_NAMES]
+        X_all = X_all[:, col_idx]
+
+    # Balance classes; drawdown events are the minority positive class
+    class_counts = np.bincount(y_all.astype(int), minlength=2)
+    class_weights_arr = np.ones(2, dtype=np.float32)
+    for cid, cnt in enumerate(class_counts):
+        if cnt > 0:
+            class_weights_arr[cid] = len(y_all) / (2.0 * cnt)
+    weights = weights * class_weights_arr[y_all.astype(int)]
+    mw = float(weights.mean())
+    if mw > 0:
+        weights = weights / mw
+
+    if model_type == "xgboost":
+        factory = _xgb_factory()
+    else:
+        factory = _logistic_factory()
+
+    embargo = max(horizon, 21)
+    from ml.calibration import walk_forward_evaluate
+    metrics, oos_probs, oos_labels = walk_forward_evaluate(
+        X_all, y_all, weights,
+        model_factory=factory,
+        n_splits=5,
+        embargo=embargo,
+    )
+
+    event_prevalence = float(y_all.mean())
+    majority_baseline = max(event_prevalence, 1.0 - event_prevalence)
+
+    # ── Avoided-drawdown: when model predicts risk-off (prob >= 0.5),
+    # what fraction of actual drawdown events does it catch?  ─────────────
+    avoided_drawdown_pct: Optional[float] = None
+    expected_loss_avoided: Optional[float] = None
+    if metrics.get("evaluated") and len(oos_probs) > 0:
+        oos_pred = (oos_probs >= 0.5).astype(int)
+        actual_events = oos_labels == 1
+        flagged = oos_pred == 1
+        if actual_events.sum() > 0:
+            avoided_drawdown_pct = float((flagged & actual_events).sum() / actual_events.sum())
+        # Expected loss avoided: mean drawdown depth of events the model caught,
+        # vs mean drawdown depth of events it missed (deeper = worse)
+        if len(oos_labels) <= len(drawdown_all):
+            # Align drawdown depths to OOS window (probs/labels come from the
+            # second half of the time series; take the matching tail slice)
+            n_oos = len(oos_labels)
+            oos_drawdowns = drawdown_all[-n_oos:]
+            caught = (flagged & actual_events)
+            missed = (~flagged & actual_events)
+            if caught.sum() > 0 and missed.sum() > 0:
+                expected_loss_avoided = float(
+                    oos_drawdowns[missed].mean() - oos_drawdowns[caught].mean()
+                )
+
+    pr_auc = metrics.get("pr_auc")
+    # PR-AUC lift: ratio of PR-AUC to event prevalence (random classifier = 1×)
+    pr_auc_lift: Optional[float] = (
+        pr_auc / event_prevalence if pr_auc is not None and event_prevalence > 0 else None
+    )
+
+    # Promotion gate (informational — no auto-promotion)
+    passes_gate = (
+        pr_auc_lift is not None and pr_auc_lift >= 2.0
+        and (metrics.get("precision_lift_vs_base_rate") or 0) >= 2.0
+        and metrics.get("evaluated", False)
+    )
+
+    return {
+        "label": label,
+        "target": "drawdown_event",
+        "horizon": horizon,
+        "drawdown_thresh": drawdown_thresh,
+        "model": model_type,
+        "features": ",".join(feature_cols) if feature_cols else "all_19",
+        "n_feature_cols": X_all.shape[1],
+        "n_rows": len(X_all),
+        "event_prevalence": round(event_prevalence, 4),
+        "majority_baseline": round(majority_baseline, 4),
+        **{k: round(v, 4) if isinstance(v, float) else v
+           for k, v in metrics.items()
+           if k not in ("reliability_bins", "folds", "regime_breakdown")},
+        "pr_auc_lift_vs_prevalence": (
+            round(pr_auc_lift, 3) if pr_auc_lift is not None else None
+        ),
+        "avoided_drawdown_recall": (
+            round(avoided_drawdown_pct, 4) if avoided_drawdown_pct is not None else None
+        ),
+        "expected_loss_avoided": (
+            round(expected_loss_avoided, 4) if expected_loss_avoided is not None else None
+        ),
+        "passes_promotion_gate": passes_gate,
+        "promotion_gate": "PR-AUC_lift>=2 AND precision_lift>=2 (no auto-promote)",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Three-state configuration runner
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _xgb_multiclass_factory(n_classes: int = 3) -> Callable:
+    def factory():
+        import xgboost as xgb
+        return xgb.XGBClassifier(
+            n_estimators=200,
+            max_depth=3,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            min_child_weight=5,
+            reg_lambda=2.0,
+            objective="multi:softprob",
+            num_class=n_classes,
+            eval_metric="mlogloss",
+            use_label_encoder=False,
+            random_state=42,
+        )
+    return factory
+
+
+def _logistic_multiclass_factory() -> Callable:
+    def factory():
+        from sklearn.linear_model import LogisticRegression
+
+        class _MultiWrapper:
+            def __init__(self, clf):
+                self._clf = clf
+            def fit(self, X, y, sample_weight=None, verbose=False, **kw):
+                from sklearn.pipeline import make_pipeline
+                from sklearn.preprocessing import StandardScaler
+                self._pipe = make_pipeline(StandardScaler(), self._clf)
+                self._pipe.fit(X, y, logisticregression__sample_weight=sample_weight)
+                return self
+            def predict(self, X):
+                return self._pipe.predict(X)
+
+        clf = LogisticRegression(
+            C=0.1, max_iter=1000, multi_class="multinomial",
+            solver="lbfgs", random_state=42,
+        )
+        return _MultiWrapper(clf)
+    return factory
+
+
+def run_config_three_state(
+    df_full: pd.DataFrame,
+    indicators_full: dict,
+    horizon: int,
+    threshold: float,
+    feature_cols: Optional[list],
+    model_type: str,
+    label: str,
+) -> dict:
+    """Run one three-state (risk-on / neutral / risk-off) configuration.
+
+    Promotion gate: macro-F1 > 0.40 AND each class F1 > 0.25.
+    No model artifact is written — evaluation only.  Human review is required
+    before any candidate is promoted to the live prediction path.
+    """
+    df = _build_three_state_labels(df_full, horizon, threshold)
+
+    if len(df) < 200:
+        return {
+            "label": label, "target": "three_state",
+            "horizon": horizon, "threshold": threshold,
+            "model": model_type, "error": f"too few rows ({len(df)})",
+        }
+
+    trimmed_ind = {
+        k: (v.reindex(df.index) if isinstance(v, pd.Series) else v)
+        for k, v in indicators_full.items()
+    }
+
+    lt = LongTrendModel.__new__(LongTrendModel)
+    lt.model = None
+    X_all, weights, valid_pos = lt.build_features(df, trimmed_ind)
+    y_all = df["_label"].values[valid_pos]  # values: 0, 1, 2
+
+    if len(X_all) < 200:
+        return {
+            "label": label, "target": "three_state",
+            "horizon": horizon, "threshold": threshold,
+            "model": model_type, "error": f"too few feature rows ({len(X_all)})",
+        }
+
+    if feature_cols is not None:
+        col_idx = [FEATURE_NAMES.index(c) for c in feature_cols if c in FEATURE_NAMES]
+        X_all = X_all[:, col_idx]
+
+    # Class-balanced weights (three classes)
+    class_counts = np.bincount(y_all.astype(int), minlength=3)
+    class_weights_arr = np.ones(3, dtype=np.float32)
+    for cid, cnt in enumerate(class_counts):
+        if cnt > 0:
+            class_weights_arr[cid] = len(y_all) / (3.0 * cnt)
+    weights = weights * class_weights_arr[y_all.astype(int)]
+    mw = float(weights.mean())
+    if mw > 0:
+        weights = weights / mw
+
+    if model_type == "xgboost":
+        factory = _xgb_multiclass_factory(n_classes=3)
+    else:
+        factory = _logistic_multiclass_factory()
+
+    embargo = max(horizon, 21)
+    metrics = _walk_forward_multiclass(
+        X_all, y_all, weights,
+        model_factory=factory,
+        n_splits=5,
+        embargo=embargo,
+    )
+
+    # Promotion gate (informational — no auto-promotion)
+    macro_f1 = metrics.get("macro_f1") or 0.0
+    per_class_f1s = [pc["f1"] for pc in (metrics.get("per_class") or [])]
+    passes_gate = (
+        metrics.get("evaluated", False)
+        and macro_f1 > 0.40
+        and all(f > 0.25 for f in per_class_f1s)
+    )
+
+    return {
+        "label": label,
+        "target": "three_state",
+        "horizon": horizon,
+        "threshold": threshold,
+        "model": model_type,
+        "features": ",".join(feature_cols) if feature_cols else "all_19",
+        "n_feature_cols": X_all.shape[1],
+        "n_rows": len(X_all),
+        **{k: v for k, v in metrics.items() if k not in ("folds", "per_class")},
+        "per_class": metrics.get("per_class"),
+        "passes_promotion_gate": passes_gate,
+        "promotion_gate": "macro_F1>0.40 AND each_class_F1>0.25 (no auto-promote)",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Majority-class baseline (trivial: always predict majority)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -452,6 +960,7 @@ def majority_baseline_result(
     majority = max(pos_rate, 1.0 - pos_rate)
     return {
         "label": f"MAJORITY h={horizon} t={threshold:.0%}",
+        "target": "direction",
         "horizon": horizon,
         "threshold": threshold,
         "model": "majority_class",
@@ -462,6 +971,78 @@ def majority_baseline_result(
         "oos_accuracy": round(majority, 4),
         "oos_balanced_accuracy": 0.5,
         "accuracy_lift_vs_majority": 0.0,
+        "evaluated": True,
+    }
+
+
+def majority_baseline_drawdown(
+    df_full: pd.DataFrame, horizon: int, drawdown_thresh: float,
+) -> dict:
+    """Majority-class baseline for the drawdown-event target.
+
+    Always predicts 'no drawdown' (majority class).  Reports PR-AUC = event
+    prevalence, which is the random-classifier floor — any useful model must
+    beat this.
+    """
+    df = _build_drawdown_labels(df_full, horizon, drawdown_thresh)
+    if len(df) == 0:
+        return {}
+    event_rate = float(df["_label"].mean())
+    majority = max(event_rate, 1.0 - event_rate)
+    return {
+        "label": f"MAJORITY-DD h={horizon} dd={drawdown_thresh:.0%}",
+        "target": "drawdown_event",
+        "horizon": horizon,
+        "drawdown_thresh": drawdown_thresh,
+        "model": "majority_class",
+        "features": "—",
+        "n_rows": len(df),
+        "event_prevalence": round(event_rate, 4),
+        "majority_baseline": round(majority, 4),
+        "oos_accuracy": round(majority, 4),
+        "oos_balanced_accuracy": 0.5,
+        "pr_auc": round(event_rate, 4),        # random classifier PR-AUC = prevalence
+        "pr_auc_lift_vs_prevalence": 1.0,      # floor
+        "accuracy_lift_vs_majority": 0.0,
+        "evaluated": True,
+    }
+
+
+def majority_baseline_three_state(
+    df_full: pd.DataFrame, horizon: int, threshold: float,
+) -> dict:
+    """Majority-class baseline for the three-state target.
+
+    Always predicts the most common class.  Macro-F1 is bounded by class
+    imbalance — a useful model must beat 1/3 macro-F1 (random uniform).
+    """
+    df = _build_three_state_labels(df_full, horizon, threshold)
+    if len(df) == 0:
+        return {}
+    y = df["_label"].values
+    majority_cls = int(np.bincount(y.astype(int), minlength=3).argmax())
+    preds = np.full(len(y), majority_cls)
+    from sklearn.metrics import f1_score as _f1, balanced_accuracy_score as _ba
+    macro_f1 = float(_f1(y, preds, average="macro", zero_division=0))
+    bal_acc = float(_ba(y, preds))
+    class_prev = {
+        "risk_off": round(float((y == 0).mean()), 4),
+        "neutral":  round(float((y == 1).mean()), 4),
+        "risk_on":  round(float((y == 2).mean()), 4),
+    }
+    return {
+        "label": f"MAJORITY-3S h={horizon} t={threshold:.0%}",
+        "target": "three_state",
+        "horizon": horizon,
+        "threshold": threshold,
+        "model": "majority_class",
+        "features": "—",
+        "n_rows": len(y),
+        "class_prevalence": class_prev,
+        "oos_accuracy": round(float((preds == y).mean()), 4),
+        "oos_balanced_accuracy": round(bal_acc, 4),
+        "macro_f1": round(macro_f1, 4),
+        "passes_promotion_gate": False,
         "evaluated": True,
     }
 
@@ -752,31 +1333,73 @@ def _fmt(v, width=8):
     return str(v).center(width)
 
 
-def print_results_table(results: list[dict]) -> None:
-    cols = [
-        ("Config / Label",   40, "label"),
-        ("H",                 4, "horizon"),
-        ("T%",                5, "threshold"),
-        ("Model",            10, "model"),
-        ("N",                 6, "n_rows"),
-        ("pos%",              6, "positive_rate"),
-        ("OOS acc",           9, "oos_accuracy"),
-        ("Bal acc",           9, "oos_balanced_accuracy"),
-        ("Lift",              9, "accuracy_lift_vs_majority"),
-        ("Maj base",          9, "majority_baseline"),
-        ("OK?",               6, None),
-    ]
+def print_results_table(results: list[dict], target: str = "direction") -> None:
+    """Print a formatted table for one target type."""
+
+    if target == "direction":
+        cols = [
+            ("Config / Label",   40, "label"),
+            ("H",                 4, "horizon"),
+            ("T%",                5, "threshold"),
+            ("Model",            10, "model"),
+            ("N",                 6, "n_rows"),
+            ("pos%",              6, "positive_rate"),
+            ("OOS acc",           9, "oos_accuracy"),
+            ("Bal acc",           9, "oos_balanced_accuracy"),
+            ("Macro-F1",          9, "macro_f1"),
+            ("PR-AUC",            9, "pr_auc"),
+            ("Lift",              9, "accuracy_lift_vs_majority"),
+            ("OK?",               6, None),
+        ]
+        def _ok(r):
+            lift = r.get("accuracy_lift_vs_majority")
+            return "✓" if (lift is not None and lift > 0) else "✗"
+
+    elif target == "drawdown_event":
+        cols = [
+            ("Config / Label",   44, "label"),
+            ("H",                 4, "horizon"),
+            ("DD%",               5, "drawdown_thresh"),
+            ("Model",            10, "model"),
+            ("N",                 6, "n_rows"),
+            ("prev%",             6, "event_prevalence"),
+            ("Bal acc",           9, "oos_balanced_accuracy"),
+            ("Prec",              8, "event_precision"),
+            ("Recall",            8, "event_recall"),
+            ("PR-AUC",            9, "pr_auc"),
+            ("PR lift",           8, "pr_auc_lift_vs_prevalence"),
+            ("DD rcl",            8, "avoided_drawdown_recall"),
+            ("Gate?",             6, "passes_promotion_gate"),
+        ]
+        def _ok(r):
+            return "✓" if r.get("passes_promotion_gate") else "✗"
+
+    else:  # three_state
+        cols = [
+            ("Config / Label",   44, "label"),
+            ("H",                 4, "horizon"),
+            ("T%",                5, "threshold"),
+            ("Model",            10, "model"),
+            ("N",                 6, "n_rows"),
+            ("Bal acc",           9, "oos_balanced_accuracy"),
+            ("Macro-F1",          9, "macro_f1"),
+            ("Gate?",             6, "passes_promotion_gate"),
+        ]
+        def _ok(r):
+            return "✓" if r.get("passes_promotion_gate") else "✗"
 
     def row_line(r):
         parts = []
         for name, w, key in cols:
             if key is None:
-                lift = r.get("accuracy_lift_vs_majority")
-                ok = "✓" if (lift is not None and lift > 0) else "✗"
-                parts.append(ok.center(w))
-            elif key == "threshold":
-                t = r.get("threshold", 0.0)
+                parts.append(_ok(r).center(w))
+            elif key in ("threshold", "drawdown_thresh"):
+                t = r.get(key, 0.0) or 0.0
                 parts.append(f"{t:.0%}".center(w))
+            elif key == "passes_promotion_gate":
+                parts.append(_ok(r).center(w))
+            elif isinstance(r.get(key), bool):
+                parts.append(str(r[key]).center(w))
             elif isinstance(r.get(key), float):
                 parts.append(_fmt(r[key], w))
             else:
@@ -787,6 +1410,7 @@ def print_results_table(results: list[dict]) -> None:
     header = " | ".join(name[:w].center(w) for name, w, _ in cols)
     sep = "-+-".join("-" * w for name, w, _ in cols)
     print()
+    print(f"── {target.upper()} RESULTS ──")
     print(header)
     print(sep)
     for r in results:
@@ -861,7 +1485,7 @@ def main():
         model_grid = MODELS
 
     # ── Run majority baselines first ──────────────────────────────────────────
-    results: list[dict] = []
+    dir_results: list[dict] = []
     seen_baselines: set = set()
     for h, t in configs:
         key = (h, t)
@@ -869,9 +1493,9 @@ def main():
             seen_baselines.add(key)
             r = majority_baseline_result(df_full, h, t)
             if r:
-                results.append(r)
+                dir_results.append(r)
 
-    # ── Run all configurations ────────────────────────────────────────────────
+    # ── Run all direction configurations ──────────────────────────────────────
     total = len(configs) * len(feature_grid) * len(model_grid)
     done = 0
     for h, t in configs:
@@ -883,12 +1507,117 @@ def main():
                 t0 = time.time()
                 r = run_config(df_full, indicators_full, h, t, fs_cols, mdl, lbl)
                 r["elapsed_s"] = round(time.time() - t0, 1)
-                results.append(r)
+                r.setdefault("target", "direction")
+                dir_results.append(r)
 
     print("\n")
+    print_results_table(dir_results, target="direction")
 
-    # ── Print table ───────────────────────────────────────────────────────────
-    print_results_table(results)
+    # ── Drawdown-event evaluation ─────────────────────────────────────────────
+    # NOTE: No auto-promotion.  A candidate must clear the gate manually.
+    print("\n" + "=" * 80)
+    print("DRAWDOWN-EVENT TARGET  (y=1 when intra-horizon drawdown > threshold)")
+    print("Gate: PR-AUC lift >= 2× prevalence AND precision lift >= 2×")
+    print("No model is written to disk — human review required before promotion.")
+    print("=" * 80)
+
+    if not args.quick:
+        dd_configs_ht = [(h, t) for h in [5, 10, 21] for t in DRAWDOWN_THRESHOLDS]
+        dd_feature_grid = [("all_19", None)]
+        dd_model_grid = ["xgboost", "logistic"]
+    else:
+        dd_configs_ht = [(21, 0.05)]
+        dd_feature_grid = [("all_19", None)]
+        dd_model_grid = ["xgboost"]
+
+    dd_results: list[dict] = []
+    seen_dd_baselines: set = set()
+    for h, dd_t in dd_configs_ht:
+        key = (h, dd_t)
+        if key not in seen_dd_baselines:
+            seen_dd_baselines.add(key)
+            r = majority_baseline_drawdown(df_full, h, dd_t)
+            if r:
+                dd_results.append(r)
+
+    total_dd = len(dd_configs_ht) * len(dd_feature_grid) * len(dd_model_grid)
+    done_dd = 0
+    for h, dd_t in dd_configs_ht:
+        for fs_name, fs_cols in dd_feature_grid:
+            for mdl in dd_model_grid:
+                done_dd += 1
+                lbl = f"DD h={h} dd={dd_t:.0%} feat={fs_name} mdl={mdl}"
+                print(f"\r[{done_dd}/{total_dd}] {lbl:<60}", end="", flush=True)
+                t0 = time.time()
+                r = run_config_drawdown(df_full, indicators_full, h, dd_t, fs_cols, mdl, lbl)
+                r["elapsed_s"] = round(time.time() - t0, 1)
+                dd_results.append(r)
+
+    print("\n")
+    print_results_table(dd_results, target="drawdown_event")
+
+    dd_passing = [r for r in dd_results if r.get("passes_promotion_gate")]
+    if dd_passing:
+        print(f"⚠️  {len(dd_passing)} drawdown config(s) PASS the promotion gate.")
+        print("   Human review required before promoting any candidate to production.")
+        for r in dd_passing:
+            pr_lift = r.get("pr_auc_lift_vs_prevalence", "—")
+            recall = r.get("avoided_drawdown_recall", "—")
+            print(f"   {r['label']:<60}  PR-lift={pr_lift}  DD-recall={recall}")
+    else:
+        print("   No drawdown configuration passed the promotion gate.")
+        print("   Baseline fallback remains active (no auto-promotion).")
+
+    # ── Three-state evaluation ────────────────────────────────────────────────
+    print("\n" + "=" * 80)
+    print("THREE-STATE TARGET  (risk-on / neutral / risk-off)")
+    print("Gate: macro-F1 > 0.40 AND each class F1 > 0.25")
+    print("No model is written to disk — human review required before promotion.")
+    print("=" * 80)
+
+    if not args.quick:
+        ts_configs = [(h, t) for h in THREE_STATE_HORIZONS for t in THREE_STATE_THRESHOLDS]
+        ts_feature_grid = [("all_19", None)]
+        ts_model_grid = ["xgboost", "logistic"]
+    else:
+        ts_configs = [(21, 0.02)]
+        ts_feature_grid = [("all_19", None)]
+        ts_model_grid = ["xgboost"]
+
+    ts_results: list[dict] = []
+    for h, t in ts_configs:
+        r = majority_baseline_three_state(df_full, h, t)
+        if r:
+            ts_results.append(r)
+
+    total_ts = len(ts_configs) * len(ts_feature_grid) * len(ts_model_grid)
+    done_ts = 0
+    for h, t in ts_configs:
+        for fs_name, fs_cols in ts_feature_grid:
+            for mdl in ts_model_grid:
+                done_ts += 1
+                lbl = f"3S h={h} t={t:.0%} feat={fs_name} mdl={mdl}"
+                print(f"\r[{done_ts}/{total_ts}] {lbl:<60}", end="", flush=True)
+                t0 = time.time()
+                r = run_config_three_state(df_full, indicators_full, h, t, fs_cols, mdl, lbl)
+                r["elapsed_s"] = round(time.time() - t0, 1)
+                ts_results.append(r)
+
+    print("\n")
+    print_results_table(ts_results, target="three_state")
+
+    ts_passing = [r for r in ts_results if r.get("passes_promotion_gate")]
+    if ts_passing:
+        print(f"⚠️  {len(ts_passing)} three-state config(s) PASS the promotion gate.")
+        print("   Human review required before promoting any candidate to production.")
+        for r in ts_passing:
+            print(f"   {r['label']:<60}  macro-F1={r.get('macro_f1', '—')}")
+    else:
+        print("   No three-state configuration passed the promotion gate.")
+        print("   Baseline fallback remains active (no auto-promotion).")
+
+    # ── Combine all results for JSON export ───────────────────────────────────
+    all_results = dir_results + dd_results + ts_results
 
     # ── Run causal financial benchmark when requested ─────────────────────────
     benchmark_result = None
@@ -931,14 +1660,13 @@ def main():
 
     # ── Confirm no writes to real models dir ──────────────────────────────────
     real_model_files = list(real_models_dir.glob("*.pkl")) + list(real_models_dir.glob("*.json"))
-    print(f"✅ Real models dir file count unchanged: {len(real_model_files)} files")
+    print(f"\n✅ Real models dir file count unchanged: {len(real_model_files)} files")
     print(f"✅ Dry-run artefacts in: {_DRY_RUN_DIR}")
 
     # ── Save JSON summary ─────────────────────────────────────────────────────
-    # Save to /tmp (never to the codebase)
     summary_path = _DRY_RUN_DIR / "results.json"
     with open(summary_path, "w") as f:
-        json.dump(results, f, indent=2, default=str)
+        json.dump(all_results, f, indent=2, default=str)
     print(f"📄 JSON results saved to: {summary_path}")
     if benchmark_result is not None:
         benchmark_path = _DRY_RUN_DIR / "strategy_benchmark.json"
@@ -946,9 +1674,9 @@ def main():
             json.dump(benchmark_result, f, indent=2, default=str)
         print(f"📄 Strategy benchmark saved to: {benchmark_path}")
 
-    # ── Print best configurations (positive lift) ─────────────────────────────
+    # ── Print best direction configurations (positive lift) ───────────────────
     positive = [
-        r for r in results
+        r for r in dir_results
         if isinstance(r.get("accuracy_lift_vs_majority"), float)
         and r["accuracy_lift_vs_majority"] > 0.0
         and r.get("model") not in ("majority_class",)
@@ -956,7 +1684,7 @@ def main():
     ]
     positive.sort(key=lambda r: r.get("accuracy_lift_vs_majority", 0.0), reverse=True)
 
-    print("\n🏆 Configurations with positive OOS lift (sorted by lift):")
+    print("\n🏆 Direction configs with positive OOS lift (sorted by lift):")
     if positive:
         for r in positive[:10]:
             lift = r["accuracy_lift_vs_majority"]
@@ -966,9 +1694,12 @@ def main():
     else:
         print("   NONE — no configuration beats the majority baseline OOS.")
 
-    print(f"\n📊 Summary: {len(positive)}/{len(results)} configs beat the majority baseline.\n")
+    dir_all = [r for r in dir_results if r.get("model") not in ("majority_class",)]
+    print(f"\n📊 Direction summary: {len(positive)}/{len(dir_all)} configs beat the majority baseline.")
+    print(f"📊 Drawdown gate passes: {len(dd_passing)}/{len([r for r in dd_results if r.get('model') not in ('majority_class',)])}")
+    print(f"📊 Three-state gate passes: {len(ts_passing)}/{len([r for r in ts_results if r.get('model') not in ('majority_class',)])}\n")
 
-    return results
+    return all_results
 
 
 if __name__ == "__main__":

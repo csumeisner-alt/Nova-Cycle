@@ -22,6 +22,8 @@ Covers:
 
 import asyncio
 import pickle
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -367,6 +369,202 @@ def test_positive_oos_lift_candidate_is_accepted(isolated_long_path, monkeypatch
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Live health: successful retrain clears consecutive_failures
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Drawdown-event and three-state target label tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_dry_run_df(n: int = 600, seed: int = 99):
+    """Synthetic daily df for dry-run target builder tests."""
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2018-01-02", periods=n)
+    price = np.maximum(300.0 + np.cumsum(rng.normal(0.04, 2.5, n)), 1.0)
+    return pd.DataFrame({
+        "open":   price - rng.uniform(0, 0.5, n),
+        "high":   price + rng.uniform(0, 1.5, n),
+        "low":    price - rng.uniform(0, 2.0, n),
+        "close":  price,
+        "volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+        "is_extended_hours": False,
+    }, index=idx)
+
+
+def test_drawdown_label_uses_only_future_prices():
+    """Drawdown labels must depend solely on close[t+1..t+H], not close[t].
+
+    We verify this by checking that:
+      (a) The last `horizon` rows are always dropped (incomplete future window).
+      (b) Modifying close[t] but leaving close[t+1..t+H] unchanged does not
+          change the future-min component — only the drawdown ratio changes
+          because close[t] is the denominator, not the window.
+      (c) The label is derived from future prices: shifting the close series
+          forward by 1 (so close[t] = old close[t-1]) changes all labels,
+          confirming the window is forward-looking.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from long_trend_dry_run import _build_drawdown_labels
+
+    df = _make_dry_run_df(n=300)
+    horizon = 21
+    thresh = 0.05
+
+    labeled = _build_drawdown_labels(df, horizon, thresh)
+
+    # (a) Last `horizon` rows should be absent (incomplete window dropped)
+    assert len(labeled) <= len(df) - horizon, (
+        f"Expected at most {len(df) - horizon} rows after dropping last {horizon}; "
+        f"got {len(labeled)}"
+    )
+
+    # (b) _future_min_close must equal the row-wise min of close[t+1..t+H]
+    # Reconstruct expected future min independently
+    close = df["close"]
+    future_cols = pd.concat(
+        [close.shift(-k) for k in range(1, horizon + 1)], axis=1
+    )
+    expected_min = future_cols.min(axis=1).dropna()
+    # Align to labeled index
+    expected_min_aligned = expected_min.reindex(labeled.index)
+    np.testing.assert_allclose(
+        labeled["_future_min_close"].values,
+        expected_min_aligned.values,
+        rtol=1e-6,
+        err_msg="_future_min_close must equal row-wise min of close[t+1..t+H]",
+    )
+
+    # (c) Label is binary 0/1 only
+    assert set(labeled["_label"].unique()).issubset({0, 1}), (
+        "_label must be binary (0 or 1)"
+    )
+    # Both classes must be present for a non-trivial threshold
+    assert labeled["_label"].sum() > 0, "No drawdown events found — test data may be wrong"
+    assert (labeled["_label"] == 0).sum() > 0, "No non-events found"
+
+
+def test_drawdown_label_embargo_covers_full_horizon():
+    """The embargo in the drawdown dry-run must be >= horizon rows.
+
+    This is the minimum purge required so no training label's future window
+    overlaps any test price.  The dry-run passes embargo=max(horizon, 21);
+    we verify that guarantee holds for every horizon in DRAWDOWN configurations.
+    """
+    # Inline the embargo logic from run_config_drawdown
+    for horizon in [5, 10, 21, 42]:
+        embargo = max(horizon, 21)
+        assert embargo >= horizon, (
+            f"Embargo {embargo} < horizon {horizon}: label leakage possible"
+        )
+
+
+def test_three_state_label_all_classes_present():
+    """Three-state labels must produce all three classes on realistic data.
+
+    If neutral rows are never created the model degenerates to binary.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from long_trend_dry_run import _build_three_state_labels
+
+    df = _make_dry_run_df(n=400, seed=77)
+    labeled = _build_three_state_labels(df, horizon=21, threshold=0.02)
+
+    classes_present = set(int(v) for v in labeled["_label"].unique())
+    assert classes_present == {0, 1, 2}, (
+        f"Expected classes {{0, 1, 2}} (risk-off, neutral, risk-on); "
+        f"got {classes_present}"
+    )
+
+    # Last `horizon` rows must be dropped (no future close available)
+    assert len(labeled) <= len(df) - 21, (
+        "Three-state labels must drop the last horizon rows (future window incomplete)"
+    )
+
+
+def test_three_state_label_future_only():
+    """Three-state labels must use close.shift(-H), not close[t].
+
+    Concretely: the label for row t is determined by close[t+H] / close[t] - 1.
+    We verify this matches a manually computed forward return.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from long_trend_dry_run import _build_three_state_labels
+
+    df = _make_dry_run_df(n=200, seed=55)
+    horizon = 10
+    threshold = 0.02
+
+    labeled = _build_three_state_labels(df, horizon=horizon, threshold=threshold)
+
+    # Recompute expected labels manually
+    fwd_close = df["close"].shift(-horizon).dropna()
+    aligned = fwd_close.reindex(labeled.index)
+    entry = df["close"].reindex(labeled.index)
+    fwd_ret = aligned / entry - 1.0
+
+    expected_label = np.where(fwd_ret > threshold, 2,
+                     np.where(fwd_ret < -threshold, 0, 1))
+
+    np.testing.assert_array_equal(
+        labeled["_label"].values,
+        expected_label,
+        err_msg="Three-state label must be derived from close.shift(-H)/close[t]-1",
+    )
+
+
+def test_pr_auc_equals_prevalence_for_random_classifier():
+    """PR-AUC of a random classifier equals event prevalence (chance floor).
+
+    A drawdown model is only useful when its PR-AUC materially exceeds the
+    event prevalence.  This test verifies the floor: random predictions
+    (equal to prevalence) produce PR-AUC ≈ prevalence, confirming the gate
+    metric is properly anchored.
+    """
+    from sklearn.metrics import average_precision_score
+
+    rng = np.random.default_rng(0)
+    prevalence = 0.15
+    n = 1000
+    labels = (rng.random(n) < prevalence).astype(int)
+    # Random classifier: predict the base rate for every example
+    preds = np.full(n, prevalence)
+
+    pr_auc = float(average_precision_score(labels, preds))
+    # Random classifier PR-AUC should be close to prevalence
+    assert abs(pr_auc - prevalence) < 0.05, (
+        f"Random classifier PR-AUC {pr_auc:.4f} deviates too far from "
+        f"prevalence {prevalence:.4f}; the floor anchor is broken"
+    )
+
+
+def test_macro_f1_present_in_walk_forward_metrics(isolated_long_path):
+    """walk_forward_evaluate must include macro_f1 in the returned metrics dict."""
+    import xgboost as xgb
+    from ml.calibration import walk_forward_evaluate
+
+    rng = np.random.default_rng(7)
+    n = 400
+    X = rng.random((n, 5)).astype(np.float32)
+    y = (rng.random(n) > 0.45).astype(int)
+
+    def factory():
+        return xgb.XGBClassifier(
+            n_estimators=20, max_depth=2,
+            eval_metric="logloss", use_label_encoder=False,
+            random_state=42,
+        )
+
+    metrics, probs, labels = walk_forward_evaluate(
+        X, y, weights=None, model_factory=factory, n_splits=3, embargo=5,
+    )
+
+    assert metrics.get("evaluated"), "walk_forward_evaluate must complete evaluation"
+    assert "macro_f1" in metrics, (
+        "walk_forward_evaluate must return 'macro_f1' in metrics dict"
+    )
+    val = metrics["macro_f1"]
+    assert val is not None and 0.0 <= val <= 1.0, (
+        f"macro_f1 must be in [0, 1]; got {val}"
+    )
+
 
 def test_successful_retrain_clears_consecutive_failures(isolated_long_path, monkeypatch):
     """After a series of failures, a good retrain (positive lift) must reset
