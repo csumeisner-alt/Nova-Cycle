@@ -34,11 +34,14 @@ _Describe the high-level user-facing capabilities of this app once they exist._
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- When the user asks for the newest Android APK, build and provide the installable **signed release APK**, never a debug APK.
+- Deliver APKs as a clear, usable clickable download link. Do not present only a file attachment/card or ask the user to find the artifact path.
+- If a signed release APK cannot be built or retrieved, explain the exact blocker before offering any alternative; do not silently substitute a debug APK.
+- Treat the established CI-published release artifact as the correct APK delivery path. A locally debug-signed APK is not an acceptable substitute because it may not update an existing release-signed installation.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Android APK delivery must use the CI/release signing path; local debug builds are for internal verification only and must not be delivered as the requested APK.
 
 ## Pointers
 
