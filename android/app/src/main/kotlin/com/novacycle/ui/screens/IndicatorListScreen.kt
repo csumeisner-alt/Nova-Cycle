@@ -14,6 +14,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.novacycle.data.remote.models.IndicatorResponse
 import androidx.compose.foundation.layout.fillMaxSize
+import com.novacycle.ui.components.luxeRim
 import com.novacycle.ui.components.PullRefreshBox
 import com.novacycle.ui.components.UpdatedAgoLabel
 import com.novacycle.ui.theme.*
@@ -31,7 +32,12 @@ fun IndicatorListScreen(viewModel: IndicatorViewModel = hiltViewModel()) {
     ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-            Text("Indicators", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Indicators",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
             TextButton(onClick = { viewModel.loadIndicators() }) { Text("Refresh") }
         }
 
@@ -176,7 +182,11 @@ fun IndicatorListScreen(viewModel: IndicatorViewModel = hiltViewModel()) {
 
 @Composable
 private fun IndicatorCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .luxeRim(CardDefaults.shape),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
