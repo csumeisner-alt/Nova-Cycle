@@ -1,6 +1,6 @@
 """Tests for the VOO 5-min feed staleness check (quiet intraday stall detection)."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -155,3 +155,43 @@ async def test_market_holiday_morning_not_stale(db_session):
 
     assert status["market_open"] is False, "Holiday should not be market_open"
     assert status["stale"] is False, "Should not alarm on a market-holiday morning"
+
+
+# ── Half-day (early close at 13:00 ET) ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_half_day_after_early_close_not_stale(db_session):
+    """Last bar at 12:55 ET on a half-day; check at 14:00 ET → no alarm.
+
+    The day after Thanksgiving (2024-11-29) is a well-known NYSE half-day
+    where the regular session ends at 13:00 ET instead of 16:00 ET.
+    After 13:00 ET the market is closed so the staleness check should
+    never alarm regardless of how old the last bar is.
+    """
+    # 2024-11-29 = day after Thanksgiving → confirmed half-day
+    half_day = date(2024, 11, 29)
+    assert market_calendar.is_half_day(half_day), (
+        "2024-11-29 must be recognised as a half-day for this test to be valid"
+    )
+    assert market_calendar.is_trading_day(half_day), (
+        "2024-11-29 must be a trading day for this test to be valid"
+    )
+
+    # Last bar stored at 12:55 ET (5 min before the early 13:00 close)
+    last_bar_et = datetime(2024, 11, 29, 12, 55, tzinfo=market_calendar.EASTERN)
+    last_bar_utc = _et_to_utc_naive(last_bar_et)
+    db_session.add(_bar(last_bar_utc))
+    await db_session.flush()
+
+    # Staleness check run at 14:00 ET — one full hour after the early close
+    check_et = datetime(2024, 11, 29, 14, 0, tzinfo=market_calendar.EASTERN)
+    now_utc = _et_to_utc_naive(check_et)
+
+    status = await check_5min_staleness(db_session, now=now_utc)
+
+    assert status["market_open"] is False, (
+        "Market should be closed at 14:00 ET on a half-day (closes 13:00 ET)"
+    )
+    assert status["stale"] is False, (
+        "Should not alarm after the early close on a half-day"
+    )
