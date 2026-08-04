@@ -106,3 +106,52 @@ async def test_exactly_at_threshold_not_stale(db_session):
     status = await check_5min_staleness(db_session, now=NOW)
     assert status["stale"] is False
     assert status["age_minutes"] == float(MAX_AGE)
+
+
+# ── Off-hours: weekend and holiday ────────────────────────────────────────────
+
+def _et_to_utc_naive(dt_et: datetime) -> datetime:
+    """Convert an ET-aware datetime to a UTC-naive datetime (matching DB convention)."""
+    return dt_et.astimezone(market_calendar.timezone.utc).replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_saturday_morning_not_stale(db_session):
+    """Last bar from Friday close; now = Saturday 10:00 ET → no alarm expected."""
+    # Use a known recent Friday: 2025-01-03 is a Friday (trading day).
+    friday = datetime(2025, 1, 3, 16, 0, tzinfo=market_calendar.EASTERN)  # 4 PM ET close
+    saturday = datetime(2025, 1, 4, 10, 0, tzinfo=market_calendar.EASTERN)  # Sat morning
+
+    db_session.add(_bar(_et_to_utc_naive(friday)))
+    await db_session.flush()
+
+    now_utc = _et_to_utc_naive(saturday)
+    status = await check_5min_staleness(db_session, now=now_utc)
+
+    assert status["market_open"] is False, "Saturday should not be market_open"
+    assert status["stale"] is False, "Should not alarm on a weekend morning"
+
+
+@pytest.mark.asyncio
+async def test_market_holiday_morning_not_stale(db_session):
+    """Last bar from the day before a holiday; now = holiday morning → no alarm expected.
+
+    2025-01-01 is New Year's Day (NYSE holiday). The prior trading day is
+    2024-12-31 (Tuesday). A bar stored at the 31st's close should not trigger
+    staleness when the check is run on holiday morning (Jan 1 at 10:00 ET).
+    """
+    prior_close = datetime(2024, 12, 31, 16, 0, tzinfo=market_calendar.EASTERN)
+    holiday_morning = datetime(2025, 1, 1, 10, 0, tzinfo=market_calendar.EASTERN)
+
+    assert market_calendar.is_market_holiday(holiday_morning.date()), (
+        "2025-01-01 must be a recognised NYSE holiday for this test to be valid"
+    )
+
+    db_session.add(_bar(_et_to_utc_naive(prior_close)))
+    await db_session.flush()
+
+    now_utc = _et_to_utc_naive(holiday_morning)
+    status = await check_5min_staleness(db_session, now=now_utc)
+
+    assert status["market_open"] is False, "Holiday should not be market_open"
+    assert status["stale"] is False, "Should not alarm on a market-holiday morning"
