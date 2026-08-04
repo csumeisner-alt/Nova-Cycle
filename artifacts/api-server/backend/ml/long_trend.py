@@ -211,26 +211,49 @@ class LongTrendModel:
             vol_avg20 = volume.rolling(20).mean()
 
         # ── Additive features (vectorized, in-memory) ─────────────────────────
+        # When pre-computed columns are present (set by train() on the FULL,
+        # UNFILTERED df before the meaningful-move filter) use them directly.
+        # Recomputing these rolling-window features on the filtered subset
+        # (non-contiguous dates) makes their windows span filtered rows rather
+        # than real trading days, creating a train/inference feature mismatch —
+        # the same bug class as the _return_* fix in train().
         open_col = df["open"] if "open" in df.columns else close
         liq_class = df["liquidity_class"] if "liquidity_class" in df.columns else None
-        vol_regimes = ml_features.compute_volatility_regime(
-            close, atr=atr, liquidity_class=liq_class
-        )
-        vol_regime_enc = ml_features.encode_volatility_regime(vol_regimes)
-        macro_sens = ml_features.compute_macro_sensitivity(
-            close,
-            open_=open_col,
-            vix_regime=vix_regime if not vix_regime.empty else None,
-            spx_futures_close=indicators.get("spx_futures_close"),
-        )
-        macro_flag = ml_features.macro_override_flag(
-            df.index,
-            close=close,
-            open_=open_col,
-            vix_regime=vix_regime if not vix_regime.empty else None,
-            volatility_regime=vol_regimes,
-        )
-        overnight_weighted = ml_features.compute_overnight_return_weighted(open_col, close)
+        if "_vol_regime_enc" in df.columns:
+            vol_regime_enc = df["_vol_regime_enc"]
+        else:
+            vol_regimes = ml_features.compute_volatility_regime(
+                close, atr=atr, liquidity_class=liq_class
+            )
+            vol_regime_enc = ml_features.encode_volatility_regime(vol_regimes)
+        if "_macro_sens" in df.columns:
+            macro_sens = df["_macro_sens"]
+        else:
+            macro_sens = ml_features.compute_macro_sensitivity(
+                close,
+                open_=open_col,
+                vix_regime=vix_regime if not vix_regime.empty else None,
+                spx_futures_close=indicators.get("spx_futures_close"),
+            )
+        if "_macro_flag" in df.columns:
+            macro_flag = df["_macro_flag"]
+        else:
+            if "_vol_regime_enc" in df.columns:
+                # Recompute regimes only if needed for the flag fallback.
+                vol_regimes = ml_features.compute_volatility_regime(
+                    close, atr=atr, liquidity_class=liq_class
+                )
+            macro_flag = ml_features.macro_override_flag(
+                df.index,
+                close=close,
+                open_=open_col,
+                vix_regime=vix_regime if not vix_regime.empty else None,
+                volatility_regime=vol_regimes,
+            )
+        if "_overnight_w" in df.columns:
+            overnight_weighted = df["_overnight_w"]
+        else:
+            overnight_weighted = ml_features.compute_overnight_return_weighted(open_col, close)
 
         for i, (ts, row) in enumerate(df.iterrows()):
             try:
@@ -427,6 +450,39 @@ class LongTrendModel:
                 df["_vol_avg20"] = df["volume"].rolling(20).mean()
             else:
                 df["_vol_avg20"] = 0.0
+
+            # Same treatment for the four additive rolling-window features:
+            # compute them on the full unfiltered df so training sees the same
+            # values as inference (where the full df is always passed).
+            _close_full = df["close"]
+            _open_full = df["open"] if "open" in df.columns else _close_full
+            _liq_full = (
+                df["liquidity_class"] if "liquidity_class" in df.columns else None
+            )
+            _atr_full = indicators.get("atr", pd.Series(dtype=float))
+            _vix_regime_full = indicators.get("vix_regime", pd.Series(dtype=object))
+            _vol_regimes_full = ml_features.compute_volatility_regime(
+                _close_full, atr=_atr_full, liquidity_class=_liq_full
+            )
+            df["_vol_regime_enc"] = ml_features.encode_volatility_regime(
+                _vol_regimes_full
+            )
+            df["_macro_sens"] = ml_features.compute_macro_sensitivity(
+                _close_full,
+                open_=_open_full,
+                vix_regime=_vix_regime_full if not _vix_regime_full.empty else None,
+                spx_futures_close=indicators.get("spx_futures_close"),
+            )
+            df["_macro_flag"] = ml_features.macro_override_flag(
+                df.index,
+                close=_close_full,
+                open_=_open_full,
+                vix_regime=_vix_regime_full if not _vix_regime_full.empty else None,
+                volatility_regime=_vol_regimes_full,
+            )
+            df["_overnight_w"] = ml_features.compute_overnight_return_weighted(
+                _open_full, _close_full
+            )
 
             horizon = int(getattr(settings, "LONG_LABEL_HORIZON_DAYS", 21))
             threshold = float(

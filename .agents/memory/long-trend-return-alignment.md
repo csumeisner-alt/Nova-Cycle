@@ -19,3 +19,10 @@ Pre-compute `_return_5d`, `_return_10d`, `_return_20d`, and `_vol_avg20` on the 
 - Tests in `tests/test_long_trend_return_alignment.py` cover: value matches, sign consistency, OOS lift > -0.10, rollback still fires.
 
 **Why the threshold is -0.10, not 0.0**: Random Brownian motion data produces XGBoost variance of ±0.05 even with a correctly aligned model. The real failure mode produces -0.20 to -0.30. -0.10 catches the bug while tolerating noise.
+
+## Extension (Aug 2026): the same bug class hit the additive features
+The four additive rolling-window features (`volatility_regime_enc`, `macro_sensitivity_score`, `macro_override_flag`, `overnight_return_weighted`) were still recomputed inside `build_features()` on the filtered subset, so their windows spanned filtered rows. Fix mirrors the return-feature pattern: `train()` pre-computes `_vol_regime_enc`, `_macro_sens`, `_macro_flag`, `_overnight_w` on the full df; `build_features()` consumes them when present. Parity test: `tests/test_long_trend_additive_feature_parity.py` asserts full feature-vector equality between train path and inference path for shared timestamps.
+
+**Lesson**: ANY feature computed inside `build_features()` from the passed df is at risk. When adding a new rolling/window feature, either pre-compute it in `train()` before the meaningful-move filter, or extend the parity test — it will catch the mismatch automatically.
+
+**Important honest result**: after fixing additive-feature parity, isolated dry-run OOS accuracy improved 35.6% → 44.7% but lift vs majority is still -22.6pp (balanced acc 0.417). Feature parity was necessary but not sufficient — with parity clean, the remaining negative lift means the current feature set has no real edge at the 21-day/±2% target; the OOS gate is correctly refusing to promote. Don't weaken the gate; the model needs better features or a different target, not more retries.
