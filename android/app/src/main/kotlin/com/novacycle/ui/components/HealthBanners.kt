@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -29,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.novacycle.data.remote.models.HealthzResponse
 import com.novacycle.data.remote.models.ModelHealth
@@ -100,55 +103,61 @@ fun HealthBanners(
         val health = state.health
         if (health?.isDegraded == true) {
             val degradedModels = health.degradedModels
-            Card(
+            OutlinedCard(
                 colors = CardDefaults.cardColors(
                     containerColor = Amber.copy(alpha = 0.15f)
                 ),
+                border = BorderStroke(1.dp, Amber.copy(alpha = 0.45f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { showDetailSheet = true }
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        text       = "⚠️ Predictions degraded",
-                        style      = MaterialTheme.typography.titleSmall,
+                        text       = "⚠",
+                        style      = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
-                        color      = Amber
+                        color      = Amber,
+                        modifier   = Modifier.padding(end = 8.dp)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = if (degradedModels.isNotEmpty()) {
-                            "Predictions may be unreliable — affected model" +
-                                (if (degradedModels.size > 1) "s" else "") +
-                                ": ${degradedModels.joinToString(", ")}."
+                            "Predictions degraded · ${degradedModels.joinToString(", ")}"
                         } else {
-                            "Some system components are degraded."
+                            "Predictions degraded"
                         },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Amber.copy(alpha = 0.9f)
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Amber.copy(alpha = 0.95f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
-                    health.alerts.orEmpty().forEach { alert ->
-                        Text(
-                            text  = "• $alert",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Amber.copy(alpha = 0.7f)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text  = "Tap for details",
+                        text = "Details",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Amber.copy(alpha = 0.6f)
+                        fontWeight = FontWeight.Bold,
+                        color = Amber.copy(alpha = 0.75f),
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                    androidx.compose.material3.Icon(
+                        imageVector = Icons.Filled.ExpandMore,
+                        contentDescription = "Expand prediction health details",
+                        tint = Amber.copy(alpha = 0.9f),
+                        modifier = Modifier.padding(start = 2.dp)
                     )
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
-
+            // Keep the full payload out of the layout. It belongs in the
+            // expandable sheet so a degraded state never consumes the screen.
             if (showDetailSheet) {
-                HealthDetailSheet(
-                    health = health,
-                    onDismiss = { showDetailSheet = false }
-                )
+                HealthDetailSheet(health = health, onDismiss = { showDetailSheet = false })
             }
         }
     }
