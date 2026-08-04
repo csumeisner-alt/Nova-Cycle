@@ -566,6 +566,139 @@ def test_macro_f1_present_in_walk_forward_metrics(isolated_long_path):
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Avoided-drawdown recall: regression tests against silent miss
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_avoided_drawdown_recall_non_none_when_events_present(monkeypatch):
+    """avoided_drawdown_recall must be non-None when walk-forward evaluation
+    succeeds and OOS labels contain actual drawdown events.
+
+    A None value means the metric was silently skipped — which would allow
+    a future feature change to break drawdown detection without any alert.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=301)
+
+    # Synthetic feature matrix — avoids running the full indicator pipeline.
+    n_fake = 200
+    rng = np.random.default_rng(301)
+    X_fake = rng.random((n_fake, 5)).astype(np.float32)
+    w_fake = np.ones(n_fake, dtype=np.float32)
+
+    # OOS results: 3 actual drawdown events, model catches 2 of them.
+    # Probs >= 0.5 at indices 0, 2, 6  →  flagged = {0, 2, 6}
+    # Events at indices 0, 2, 4        →  caught = {0, 2}, missed = {4}
+    # avoided_drawdown_recall = 2/3
+    oos_probs  = np.array([0.8, 0.2, 0.7, 0.1, 0.3, 0.3, 0.6, 0.4], dtype=float)
+    oos_labels = np.array([1,   0,   1,   0,   1,   0,   0,   0  ], dtype=int)
+
+    def _fake_build_features(self, df_arg, indicators):  # noqa: N802
+        return X_fake, w_fake, np.arange(n_fake)
+
+    def _fake_wfe(X, y, weights, model_factory, n_splits, embargo):  # noqa: N802
+        metrics = {
+            "evaluated": True,
+            "oos_accuracy": 0.75,
+            "majority_baseline_accuracy": 0.85,
+            "accuracy_lift_vs_majority": -0.10,
+            "pr_auc": 0.40,
+            "precision_lift_vs_base_rate": 2.5,
+        }
+        return metrics, oos_probs, oos_labels
+
+    monkeypatch.setattr(LongTrendModel, "build_features", _fake_build_features)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", _fake_wfe)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_recall_non_none",
+    )
+
+    assert "avoided_drawdown_recall" in result, (
+        "run_config_drawdown must include 'avoided_drawdown_recall' in its result"
+    )
+    assert result["avoided_drawdown_recall"] is not None, (
+        "avoided_drawdown_recall must be non-None when walk-forward evaluation "
+        "succeeds and OOS labels contain actual drawdown events. "
+        "A None value means the metric was silently skipped."
+    )
+    val = result["avoided_drawdown_recall"]
+    assert 0.0 <= val <= 1.0, (
+        f"avoided_drawdown_recall must be in [0, 1]; got {val}"
+    )
+    # Sanity: model caught 2 of 3 events → recall = 2/3 ≈ 0.6667
+    assert abs(val - 2 / 3) < 0.001, (
+        f"Expected avoided_drawdown_recall ≈ {2/3:.4f} (2 caught out of 3 events); "
+        f"got {val}"
+    )
+
+
+def test_always_no_drawdown_model_reports_zero_recall(monkeypatch):
+    """A model that always predicts 'no drawdown' (all probs < 0.5) must
+    report avoided_drawdown_recall = 0.0.
+
+    This is the worst-case scenario for silent misses: every deep drawdown
+    goes undetected.  The metric must be 0.0 (not None) so the failure is
+    visible rather than absent.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=302)
+
+    n_fake = 200
+    rng = np.random.default_rng(302)
+    X_fake = rng.random((n_fake, 5)).astype(np.float32)
+    w_fake = np.ones(n_fake, dtype=np.float32)
+
+    # All predicted probs well below 0.5 → model always says "no drawdown".
+    oos_probs  = np.full(8, 0.05, dtype=float)
+    # Three actual drawdown events that the model completely misses.
+    oos_labels = np.array([1, 0, 1, 0, 1, 0, 0, 0], dtype=int)
+
+    def _fake_build_features(self, df_arg, indicators):  # noqa: N802
+        return X_fake, w_fake, np.arange(n_fake)
+
+    def _fake_wfe(X, y, weights, model_factory, n_splits, embargo):  # noqa: N802
+        metrics = {
+            "evaluated": True,
+            "oos_accuracy": 0.625,
+            "majority_baseline_accuracy": 0.625,
+            "accuracy_lift_vs_majority": 0.0,
+            "pr_auc": 0.375,
+            "precision_lift_vs_base_rate": 1.0,
+        }
+        return metrics, oos_probs, oos_labels
+
+    monkeypatch.setattr(LongTrendModel, "build_features", _fake_build_features)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", _fake_wfe)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_always_no_drawdown",
+    )
+
+    assert "avoided_drawdown_recall" in result, (
+        "run_config_drawdown must include 'avoided_drawdown_recall' in its result"
+    )
+    assert result["avoided_drawdown_recall"] is not None, (
+        "avoided_drawdown_recall must be 0.0 (not None) when the model flags "
+        "no events — a None would hide the total-miss failure silently"
+    )
+    assert result["avoided_drawdown_recall"] == 0.0, (
+        f"A model that always predicts 'no drawdown' must report "
+        f"avoided_drawdown_recall=0.0 (catches zero events); "
+        f"got {result['avoided_drawdown_recall']}"
+    )
+
+
 def test_successful_retrain_clears_consecutive_failures(isolated_long_path, monkeypatch):
     """After a series of failures, a good retrain (positive lift) must reset
     consecutive_failures to 0 so the live health surface un-stucks the model."""
