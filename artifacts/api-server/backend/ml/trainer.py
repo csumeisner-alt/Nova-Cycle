@@ -392,7 +392,14 @@ class ModelTrainer:
         # ── Load daily VOO candles ─────────────────────────────────────────────
         daily_df = await self._load_daily_voo(db_session)
         if daily_df.empty:
-            logger.warning("No daily VOO data available for training. Skipping.")
+            logger.error(
+                "retrain_no_data ticker=%s timeframe=daily — weekly retrain "
+                "aborted because the candle table is empty; models may be stale. "
+                "Check that the ingestion pipeline is writing to the correct "
+                "database file and that DATABASE_URL is not overriding the "
+                "SQLite path.",
+                settings.TICKER,
+            )
             record_training_result(
                 "long_trend", success=False, error="No daily VOO data available"
             )

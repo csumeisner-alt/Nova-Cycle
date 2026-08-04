@@ -18,6 +18,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+import logging as _logging
+import os as _os
+
 from database.models import Base
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,6 +29,29 @@ from database.models import Base
 # overriding the pydantic-settings default.
 # ─────────────────────────────────────────────────────────────────────────────
 _SQLITE_URL = "sqlite+aiosqlite:///./novacycle.db"
+
+# Warn loudly when DATABASE_URL is set in the environment but ignored.
+# In production (Replit Reserved VM) DATABASE_URL points at PostgreSQL, but
+# NovaCycle stores all data in the local SQLite file.  Without this warning
+# operators may spend hours debugging "wrong database" failures.
+_env_db_url = _os.environ.get("DATABASE_URL", "")
+if _env_db_url and "sqlite" not in _env_db_url.lower():
+    # Extract only the scheme and host for logging — never log the full URL
+    # which may contain embedded credentials (user:password@host).
+    try:
+        from urllib.parse import urlparse as _urlparse
+        _parsed = _urlparse(_env_db_url)
+        _safe_url = f"{_parsed.scheme}://{_parsed.hostname}"
+    except Exception:
+        _safe_url = "<non-sqlite>"
+    _logging.getLogger(__name__).warning(
+        "db_url_ignored DATABASE_URL points at %s (non-SQLite) but NovaCycle "
+        "always uses the local SQLite file (%s).  The env var is intentionally "
+        "ignored — remove it from production config to avoid confusion.",
+        _safe_url,
+        _SQLITE_URL,
+    )
+
 async_engine = create_async_engine(
     _SQLITE_URL,
     connect_args={"check_same_thread": False},
