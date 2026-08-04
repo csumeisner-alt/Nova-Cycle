@@ -8,7 +8,8 @@ The production DB is opened read-only via the sqlite URI (file:...?mode=ro).
 
 Usage (run from artifacts/api-server/backend/):
 
-    python scripts/long_trend_dry_run.py [--db PATH] [--quick] [--combo H,T]
+     python scripts/long_trend_dry_run.py [--db PATH] [--quick] [--combo H,T]
+                                             [--benchmark]
 
     --db PATH      Override the SQLite DB path (default: novacycle.db).
     --quick        Run only the core matrix (fewer feature variants).
@@ -466,6 +467,278 @@ def majority_baseline_result(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Read-only strategy benchmark
+# ─────────────────────────────────────────────────────────────────────────────
+
+STRATEGY_HORIZON = 21
+STRATEGY_THRESHOLD = 0.02
+TRADING_DAYS_PER_YEAR = 252
+VOL_TARGET_ANNUAL = 0.10
+
+
+def _strategy_performance(
+    positions: np.ndarray,
+    next_returns: np.ndarray,
+    benchmark_returns: np.ndarray,
+) -> dict:
+    """Calculate transparent long-only portfolio metrics.
+
+    A position observed at the close of day t is applied to the return from
+    t to t+1.  Positions are therefore never allowed to use the next day's
+    close.  Turnover is one-way absolute position change, annualized by the
+    number of 252-day years in the evaluated window.  Downside capture is the
+    strategy's cumulative return on benchmark-negative days divided by the
+    absolute cumulative benchmark return on those same days.
+    """
+    positions = np.asarray(positions, dtype=float)
+    next_returns = np.asarray(next_returns, dtype=float)
+    benchmark_returns = np.asarray(benchmark_returns, dtype=float)
+    valid = np.isfinite(positions) & np.isfinite(next_returns) & np.isfinite(benchmark_returns)
+    positions = positions[valid]
+    next_returns = next_returns[valid]
+    benchmark_returns = benchmark_returns[valid]
+    if len(next_returns) == 0:
+        return {
+            "evaluated": False,
+            "reason": "no valid next-day returns",
+        }
+
+    portfolio_returns = positions * next_returns
+    equity = np.cumprod(1.0 + portfolio_returns)
+    benchmark_equity = np.cumprod(1.0 + benchmark_returns)
+    years = len(portfolio_returns) / TRADING_DAYS_PER_YEAR
+    total_return = float(equity[-1] - 1.0)
+    benchmark_total_return = float(benchmark_equity[-1] - 1.0)
+    cagr = float(equity[-1] ** (1.0 / years) - 1.0) if years > 0 and equity[-1] > 0 else None
+    daily_std = float(np.std(portfolio_returns, ddof=1)) if len(portfolio_returns) > 1 else 0.0
+    sharpe = (
+        float(np.mean(portfolio_returns) / daily_std * math.sqrt(TRADING_DAYS_PER_YEAR))
+        if daily_std > 0
+        else None
+    )
+    drawdown = equity / np.maximum.accumulate(equity) - 1.0
+    max_drawdown = float(np.min(drawdown))
+    turnover = float(
+        (abs(positions[0]) + np.abs(np.diff(positions)).sum()) / years
+        if years > 0 else 0.0
+    )
+    down_mask = benchmark_returns < 0
+    down_benchmark = float(np.prod(1.0 + benchmark_returns[down_mask]) - 1.0) if down_mask.any() else 0.0
+    down_strategy = float(np.prod(1.0 + portfolio_returns[down_mask]) - 1.0) if down_mask.any() else 0.0
+    # Both values are negative during benchmark-down days; retaining the
+    # denominator sign makes 1.0 mean identical downside participation and
+    # values below 1.0 mean the strategy protected capital.
+    downside_capture = (
+        float(down_strategy / down_benchmark)
+        if down_benchmark < 0
+        else None
+    )
+    return {
+        "evaluated": True,
+        "n_days": int(len(portfolio_returns)),
+        "total_return": total_return,
+        "benchmark_total_return": benchmark_total_return,
+        "cagr": cagr,
+        "sharpe": sharpe,
+        "max_drawdown": max_drawdown,
+        "annualized_turnover": turnover,
+        "downside_capture": downside_capture,
+    }
+
+
+def _classification_accuracy(
+    predictions: np.ndarray,
+    forward_returns: np.ndarray,
+    threshold: float,
+) -> Optional[float]:
+    """Accuracy only on meaningful H-day labels, matching the current target."""
+    predictions = np.asarray(predictions, dtype=int)
+    forward_returns = np.asarray(forward_returns, dtype=float)
+    meaningful = np.isfinite(forward_returns) & (
+        (forward_returns >= threshold) | (forward_returns <= -threshold)
+    )
+    if not meaningful.any():
+        return None
+    labels = (forward_returns[meaningful] >= threshold).astype(int)
+    return float((predictions[meaningful] == labels).mean())
+
+
+def _benchmark_strategy_positions(
+    close: pd.Series,
+    decision_dates: pd.DatetimeIndex,
+    model_predictions: Optional[np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Build causal positions for each benchmark on decision dates."""
+    close = close.sort_index()
+    dates = pd.DatetimeIndex(decision_dates)
+    close_at_decision = close.reindex(dates)
+    returns = close.pct_change()
+    next_returns = (close.shift(-1) / close - 1.0).reindex(dates).to_numpy(dtype=float)
+
+    # The classifier is converted to a long/flat position so its financial
+    # result is directly comparable with buy-and-hold and risk-off filters.
+    if model_predictions is None:
+        model_position = np.full(len(dates), np.nan)
+    else:
+        model_position = np.asarray(model_predictions, dtype=float)
+
+    sma200 = close.rolling(200, min_periods=200).mean().reindex(dates)
+    sma_position = (close_at_decision > sma200).astype(float).to_numpy()
+    realized_vol = returns.rolling(20, min_periods=20).std() * math.sqrt(TRADING_DAYS_PER_YEAR)
+    vol_position = (VOL_TARGET_ANNUAL / realized_vol).clip(lower=0.0, upper=1.0).reindex(dates)
+    vol_position = vol_position.fillna(0.0).to_numpy(dtype=float)
+
+    return {
+        "current_long_model": model_position,
+        "always_up": np.ones(len(dates), dtype=float),
+        "buy_and_hold": np.ones(len(dates), dtype=float),
+        "sma200_filter": sma_position,
+        "volatility_targeted": vol_position,
+        "_next_returns": next_returns,
+        "_benchmark_returns": next_returns,
+    }
+
+
+def benchmark_current_long_model(
+    df_full: pd.DataFrame,
+    indicators_full: dict,
+    horizon: int = STRATEGY_HORIZON,
+    threshold: float = STRATEGY_THRESHOLD,
+) -> dict:
+    """Benchmark the current long model and simple strategies out of sample.
+
+    Unlike ``run_config``, this function does not remove test rows whose future
+    return is small.  It trains each fold only on past meaningful labels, then
+    predicts every valid out-of-sample decision day.  This makes the financial
+    simulation causal and prevents a future-return filter from deciding when a
+    strategy is allowed to trade.
+    """
+    df = df_full.sort_index().copy()
+    df["_future_close"] = df["close"].shift(-horizon)
+    df["_forward_return"] = df["_future_close"] / df["close"] - 1.0
+
+    lt = LongTrendModel.__new__(LongTrendModel)
+    lt.model = None
+    X_all, weights, valid_pos = lt.build_features(df, indicators_full)
+    if len(X_all) < 150:
+        return {"evaluated": False, "reason": f"too few feature rows ({len(X_all)})"}
+
+    feature_dates = pd.DatetimeIndex(df.index[valid_pos])
+    forward_returns = df["_forward_return"].to_numpy(dtype=float)[valid_pos]
+    next_returns_all = (df["close"].shift(-1) / df["close"] - 1.0).to_numpy(dtype=float)[valid_pos]
+    label_mask = np.isfinite(forward_returns) & (
+        (forward_returns >= threshold) | (forward_returns <= -threshold)
+    )
+    y_all = (forward_returns >= threshold).astype(int)
+
+    n = len(X_all)
+    embargo = max(horizon, 21)
+    min_train = max(100, embargo * 3)
+    test_start = max(min_train + embargo, int(n * 0.5))
+    fold_edges = np.linspace(test_start, n, 6, dtype=int)
+    fold_results: list[dict] = []
+    pooled_positions: dict[str, list[np.ndarray]] = {}
+    pooled_returns: list[np.ndarray] = []
+    pooled_benchmark_returns: list[np.ndarray] = []
+    pooled_model_predictions: list[np.ndarray] = []
+    pooled_sma_predictions: list[np.ndarray] = []
+    pooled_forward_returns: list[np.ndarray] = []
+
+    for fold_number in range(5):
+        t0, t1 = int(fold_edges[fold_number]), int(fold_edges[fold_number + 1])
+        train_end = t0 - embargo
+        train_mask = np.arange(n) < train_end
+        train_mask &= label_mask
+        if train_mask.sum() < min_train or t1 <= t0:
+            continue
+
+        y_train = y_all[train_mask]
+        train_weights = weights[train_mask].copy()
+        counts = np.bincount(y_train.astype(int), minlength=2)
+        class_weights = np.ones(2, dtype=np.float32)
+        for class_id, count in enumerate(counts):
+            if count > 0:
+                class_weights[class_id] = len(y_train) / (2.0 * count)
+        train_weights *= class_weights[y_train.astype(int)]
+        if train_weights.mean() > 0:
+            train_weights /= train_weights.mean()
+
+        model = _xgb_factory()()
+        model.fit(X_all[train_mask], y_train, sample_weight=train_weights, verbose=False)
+        probs = model.predict_proba(X_all[t0:t1])[:, 1]
+        predictions = (probs >= 0.5).astype(int)
+        dates = feature_dates[t0:t1]
+        benchmark = _benchmark_strategy_positions(
+            df["close"], dates, predictions.astype(float)
+        )
+        fold_metrics = {
+            "fold": fold_number + 1,
+            "train_rows": int(train_mask.sum()),
+            "test_rows": int(t1 - t0),
+            "model_accuracy": _classification_accuracy(
+                predictions, forward_returns[t0:t1], threshold
+            ),
+            "always_up_accuracy": _classification_accuracy(
+                np.ones(t1 - t0, dtype=int), forward_returns[t0:t1], threshold
+            ),
+            "sma200_accuracy": _classification_accuracy(
+                benchmark["sma200_filter"].astype(int), forward_returns[t0:t1], threshold
+            ),
+            "strategies": {},
+        }
+        fold_next_returns = benchmark["_next_returns"]
+        fold_benchmark_returns = benchmark["_benchmark_returns"]
+        for name in ("current_long_model", "always_up", "buy_and_hold", "sma200_filter", "volatility_targeted"):
+            fold_metrics["strategies"][name] = _strategy_performance(
+                benchmark[name], fold_next_returns, fold_benchmark_returns
+            )
+            pooled_positions.setdefault(name, []).append(benchmark[name])
+        pooled_returns.append(fold_next_returns)
+        pooled_benchmark_returns.append(fold_benchmark_returns)
+        pooled_model_predictions.append(predictions)
+        pooled_sma_predictions.append(benchmark["sma200_filter"].astype(int))
+        pooled_forward_returns.append(forward_returns[t0:t1])
+        fold_results.append(fold_metrics)
+
+    if not fold_results:
+        return {"evaluated": False, "reason": "no valid walk-forward folds"}
+
+    pooled_next_returns = np.concatenate(pooled_returns)
+    pooled_benchmark = np.concatenate(pooled_benchmark_returns)
+    pooled_forward = np.concatenate(pooled_forward_returns)
+    pooled_predictions = np.concatenate(pooled_model_predictions)
+    pooled_sma = np.concatenate(pooled_sma_predictions)
+    pooled = {}
+    for name, position_parts in pooled_positions.items():
+        pooled[name] = _strategy_performance(
+            np.concatenate(position_parts), pooled_next_returns, pooled_benchmark
+        )
+
+    return {
+        "evaluated": True,
+        "method": "causal_purged_walk_forward_strategy_benchmark",
+        "horizon": horizon,
+        "threshold": threshold,
+        "embargo_rows": embargo,
+        "volatility_target_annual": VOL_TARGET_ANNUAL,
+        "n_oos_decision_days": int(len(pooled_next_returns)),
+        "pooled_accuracy": {
+            "current_long_model": _classification_accuracy(
+                pooled_predictions, pooled_forward, threshold
+            ),
+            "always_up": _classification_accuracy(
+                np.ones(len(pooled_forward), dtype=int), pooled_forward, threshold
+            ),
+            "sma200_filter": _classification_accuracy(
+                pooled_sma, pooled_forward, threshold
+            ),
+        },
+        "pooled_strategies": pooled,
+        "folds": fold_results,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Results table printer
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -534,6 +807,11 @@ def main():
                         help="Run single combo only, e.g. --combo 21,0.02")
     parser.add_argument("--yf", action="store_true",
                         help="Fetch data from yfinance instead of DB")
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Also run the causal strategy benchmark for the current long target",
+    )
     args = parser.parse_args()
 
     # ── Guard: confirm no writes to ml/models ─────────────────────────────────
@@ -612,6 +890,45 @@ def main():
     # ── Print table ───────────────────────────────────────────────────────────
     print_results_table(results)
 
+    # ── Run causal financial benchmark when requested ─────────────────────────
+    benchmark_result = None
+    if args.benchmark:
+        from config import settings
+        benchmark_horizon = settings.LONG_LABEL_HORIZON_DAYS
+        benchmark_threshold = settings.LONG_MEANINGFUL_MOVE_THRESHOLD
+        if args.combo:
+            h_str, t_str = args.combo.split(",")
+            benchmark_horizon = int(h_str)
+            benchmark_threshold = float(t_str)
+        print(
+            "\n📈 Running causal strategy benchmark "
+            f"(h={benchmark_horizon}, threshold={benchmark_threshold:.0%}) …"
+        )
+        benchmark_result = benchmark_current_long_model(
+            df_full,
+            indicators_full,
+            horizon=benchmark_horizon,
+            threshold=benchmark_threshold,
+        )
+        if benchmark_result.get("evaluated"):
+            print(
+                f"   OOS decision days: {benchmark_result['n_oos_decision_days']}; "
+                f"folds: {len(benchmark_result['folds'])}"
+            )
+            for name, metrics in benchmark_result["pooled_strategies"].items():
+                if metrics.get("evaluated"):
+                    print(
+                        f"   {name:<22} "
+                        f"return={metrics.get('total_return', float('nan')):+.2%} "
+                        f"CAGR={metrics.get('cagr', float('nan')):+.2%} "
+                        f"Sharpe={metrics.get('sharpe', float('nan')):+.2f} "
+                        f"maxDD={metrics.get('max_drawdown', float('nan')):+.2%} "
+                        f"turnover={metrics.get('annualized_turnover', float('nan')):.2f} "
+                        f"downside={metrics.get('downside_capture', float('nan'))}"
+                    )
+        else:
+            print(f"   Benchmark unavailable: {benchmark_result.get('reason')}")
+
     # ── Confirm no writes to real models dir ──────────────────────────────────
     real_model_files = list(real_models_dir.glob("*.pkl")) + list(real_models_dir.glob("*.json"))
     print(f"✅ Real models dir file count unchanged: {len(real_model_files)} files")
@@ -623,6 +940,11 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
     print(f"📄 JSON results saved to: {summary_path}")
+    if benchmark_result is not None:
+        benchmark_path = _DRY_RUN_DIR / "strategy_benchmark.json"
+        with open(benchmark_path, "w") as f:
+            json.dump(benchmark_result, f, indent=2, default=str)
+        print(f"📄 Strategy benchmark saved to: {benchmark_path}")
 
     # ── Print best configurations (positive lift) ─────────────────────────────
     positive = [

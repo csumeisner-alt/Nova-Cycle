@@ -15,6 +15,58 @@ falling back to a calibrated majority-class estimator that is honest about its u
 
 ---
 
+## Causal strategy benchmark
+
+The dry-run harness also supports `--benchmark`, which evaluates the current
+long-target configuration as a trading strategy without changing production
+artifacts:
+
+```bash
+cd artifacts/api-server/backend
+python scripts/long_trend_dry_run.py --quick --benchmark
+```
+
+This benchmark is intentionally separate from the classification grid:
+
+- Every out-of-sample decision day is retained; future-return filtering is used
+  only to define which rows receive a classification accuracy label.
+- Each fold trains only on past meaningful labels and leaves an embargo of at
+  least the full target horizon before the test window.
+- A prediction made at the close of day `t` is applied to the return from `t` to
+  `t+1`, so no future close is available when the position is selected.
+- The benchmark compares the current model with always-up/buy-and-hold, a
+  200-day moving-average filter, and a 10% annualized volatility-targeted
+  long-only exposure.
+- Pooled and per-fold results include total return, CAGR, Sharpe, maximum
+  drawdown, annualized one-way turnover, and downside capture. Classification
+  accuracy is reported for the current model, always-up/buy-and-hold, and the
+  moving-average filter on meaningful H-day labels.
+
+The output is written to a temporary `strategy_benchmark.json` file, not to
+`ml/models`, and is never a production promotion or gate decision by itself.
+
+### Current VOO benchmark result
+
+Using the local read-only database (2,521 daily VOO candles, 2016-07-25
+through 2026-08-04), the default 21-day/±2% target produced 1,261
+out-of-sample decision days across five purged folds:
+
+| Strategy | Total return | CAGR | Sharpe | Max drawdown | Annual turnover | Downside capture |
+|---|---:|---:|---:|---:|---:|---:|
+| Current long model | +41.15% | +7.14% | 0.59 | −21.17% | 18.40 | 0.93 |
+| Always-up / buy-and-hold | +87.63% | +13.41% | 0.83 | −24.52% | 0.20 | 1.00 |
+| 200-day SMA filter | +63.07% | +10.27% | 0.91 | −19.56% | 6.20 | 0.95 |
+| 10% volatility-targeted | +54.00% | +9.02% | 0.88 | −12.76% | 5.22 | 0.96 |
+
+The current model reduced drawdown slightly versus buy-and-hold, but it
+materially lost on total return, CAGR, and Sharpe while requiring substantially
+more turnover. It therefore does **not** qualify as an improvement or a
+replacement for the baseline behavior. These results reinforce the rule that
+future long candidates must beat a practical strategy baseline on both return
+and risk-adjusted metrics before promotion.
+
+---
+
 ## Methodology
 
 ### Harness
