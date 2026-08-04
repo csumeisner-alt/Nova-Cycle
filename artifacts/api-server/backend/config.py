@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Warn when the latest stored VOO 5-min bar is older than this many
     # minutes while the regular market session is open (staleness check).
     FIVEMIN_STALENESS_MAX_AGE_MINUTES: int = 20
+    # Alert when the most recent daily VOO candle is more than this many
+    # trading days old — the ingestion pipeline may have silently stopped.
+    DAILY_CANDLE_STALE_THRESHOLD_DAYS: int = 3
 
     # ── Time-decay lambdas ────────────────────────────────────────────────────
     # Weight(t) = exp(-lambda * age)

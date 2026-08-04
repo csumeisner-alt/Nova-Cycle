@@ -1782,6 +1782,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     # ── SPX futures staleness ────────────────────────────────────────────
     from ingestion.pipeline import (
         check_spx_staleness, check_vix_staleness, check_5min_staleness,
+        check_daily_candle_staleness,
         get_5min_recovery_status,
     )
 
@@ -1801,6 +1802,15 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             degraded = True
     except Exception as exc:
         logger.error("healthz: VIX staleness check failed: %s", exc)
+
+    # ── Daily candle feed staleness ───────────────────────────────────────
+    daily_candle_data = None
+    try:
+        daily_candle_data = await check_daily_candle_staleness(session)
+        if daily_candle_data.get("stale"):
+            degraded = True
+    except Exception as exc:
+        logger.error("healthz: daily candle staleness check failed: %s", exc)
 
     # ── VOO 5-min staleness ───────────────────────────────────────────────
     fivemin_data = None
@@ -1901,6 +1911,8 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         logger.error("healthz: VIX training coverage lookup failed: %s", exc)
         vix_training_coverage["error"] = str(exc)
         degraded = True
+    if daily_candle_data and daily_candle_data.get("stale"):
+        alerts.append(f"voo_daily_candles: {daily_candle_data.get('detail')}")
     if spx_data and spx_data.get("stale"):
         alerts.append(f"spx_futures: {spx_data.get('detail')}")
     if vix_data and vix_data.get("stale"):
@@ -2036,6 +2048,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
 
     return {
         "status": "degraded" if degraded else "ok",
+        "candle_feed_stale": bool(daily_candle_data and daily_candle_data.get("stale")),
         "ticker": "VOO",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "NovaCycle API",
@@ -2044,6 +2057,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "retrain_skipped_at_startup": retrain_skipped_at_startup,
         "cleanup_pending": cleanup_pending,
         "models": models,
+        "voo_daily": daily_candle_data,
         "spx_futures": spx_data,
         "vix": vix_data,
         "vix_training_coverage": vix_training_coverage,

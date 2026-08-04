@@ -483,6 +483,14 @@ class IngestionPipeline:
         except Exception as exc:
             logger.error("vix_staleness_check_failed error=%s", exc)
 
+        # ── Daily candle feed staleness check ─────────────────────────────────
+        # If the ingestion pipeline silently stops writing daily candles, the
+        # weekly retrain won't notice for up to 7 days.  Surface it now.
+        try:
+            await check_daily_candle_staleness(db_session)
+        except Exception as exc:
+            logger.error("daily_candle_staleness_check_failed error=%s", exc)
+
         # ── VOO 5-min staleness check ─────────────────────────────────────────
         # If yfinance quietly stops returning intraday bars, the short-trend
         # signal silently goes stale during market hours. Surface it loudly.
@@ -1335,6 +1343,87 @@ async def check_vix_staleness(db_session: AsyncSession) -> dict:
         ),
         log_event="vix_data_stale",
     )
+
+
+async def check_daily_candle_staleness(
+    db_session: AsyncSession,
+    now: Optional[datetime] = None,
+) -> dict:
+    """
+    Detect when the daily VOO candle feed has silently stopped writing new rows.
+
+    Counts trading days between the most recent regular-hours daily VOO candle
+    and today (wall-clock UTC). When the gap exceeds
+    ``settings.DAILY_CANDLE_STALE_THRESHOLD_DAYS``, the ingestion pipeline has
+    likely stopped and this is surfaced as a structured ERROR-level log and a
+    ``stale=True`` flag in the health response.
+
+    Returns:
+
+        {
+            "stale": bool,
+            "latest_daily": Optional[str],       # ISO date of most recent candle
+            "lag_trading_days": Optional[int],
+            "threshold_trading_days": int,
+            "detail": Optional[str],             # set when stale
+        }
+
+    ``now`` is injectable for tests; defaults to current UTC (naive, matching
+    the DB's UTC-naive timestamps).
+    """
+    if now is None:
+        now = datetime.utcnow()
+    if now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
+
+    threshold = settings.DAILY_CANDLE_STALE_THRESHOLD_DAYS
+
+    result = await db_session.execute(
+        select(func.max(VooCandle.timestamp)).where(
+            VooCandle.ticker == settings.TICKER,
+            VooCandle.timeframe == "daily",
+            VooCandle.is_extended_hours == False,  # noqa: E712
+        )
+    )
+    latest: Optional[datetime] = result.scalar()
+
+    status: dict = {
+        "stale": False,
+        "latest_daily": latest.date().isoformat() if latest else None,
+        "lag_trading_days": None,
+        "threshold_trading_days": threshold,
+        "detail": None,
+    }
+
+    if latest is None:
+        # No candles at all — only stale if we are past the startup grace window;
+        # a fresh deployment with no data yet is not the same as a stopped feed.
+        # We leave stale=False here; the retrain no-data error covers this case.
+        return status
+
+    # Count trading days in (latest.date(), now.date()]
+    lag = 0
+    if latest.date() < now.date():
+        for d in pd.date_range(
+            latest.date() + timedelta(days=1), now.date(), freq="D"
+        ):
+            if market_calendar.is_trading_day(d.date()):
+                lag += 1
+    status["lag_trading_days"] = lag
+
+    if lag > threshold:
+        status["stale"] = True
+        status["detail"] = (
+            f"Most recent daily VOO candle ({status['latest_daily']}) is "
+            f"{lag} trading days old (threshold {threshold}) — "
+            "the ingestion pipeline may have stopped writing new candles."
+        )
+        logger.error(
+            "candle_feed_stale latest_daily=%s lag_trading_days=%d threshold=%d — %s",
+            status["latest_daily"], lag, threshold, status["detail"],
+        )
+
+    return status
 
 
 async def check_5min_staleness(
