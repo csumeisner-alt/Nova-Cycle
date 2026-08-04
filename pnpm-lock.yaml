@@ -610,9 +610,15 @@ importers:
 
   lib/api-spec:
     devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.5
       orval:
         specifier: ^8.22.0
         version: 8.22.0(typescript@5.9.3)
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
 
   lib/api-zod:
     dependencies:
