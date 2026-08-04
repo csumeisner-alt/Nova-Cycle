@@ -251,6 +251,69 @@ class FCMNotifier:
 
         return await self._post(payload, access_token, project_id)
 
+    async def send_baseline_duration_alert(
+        self,
+        device_token: str,
+        model_name: str,
+        days_in_baseline: float,
+        threshold_days: float,
+    ) -> bool:
+        """Send an operator alert when the long-trend model has stayed in
+        baseline mode (no gate-passing trained model) past the configured
+        threshold.
+
+        Returns:
+            True on success.
+        """
+        if not settings.FCM_SERVER_KEY:
+            logger.info(
+                "FCM_SERVER_KEY not configured — skipping baseline-duration alert (%s)",
+                model_name,
+            )
+            return False
+
+        if not device_token:
+            logger.warning("No device token provided — skipping baseline-duration alert")
+            return False
+
+        auth = await self._get_auth()
+        if not auth:
+            return False
+        access_token, project_id = auth
+
+        pretty_name = model_name.replace("_", " ").title()
+        days_int = int(days_in_baseline)
+        title = f"⚠️ NovaCycle – {pretty_name} Stuck in Baseline Mode"
+        body = (
+            f"{pretty_name} has been serving the calibrated base rate for "
+            f"{days_int} day(s) (threshold: {int(threshold_days)}d). "
+            f"No retrain has passed the OOS quality gate. "
+            f"Investigate features or data quality."
+        )
+
+        payload = {
+            "message": {
+                "token": device_token,
+                "notification": {"title": title, "body": body},
+                "data": {
+                    "alert_type": "baseline_mode_duration",
+                    "model_name": model_name,
+                    "days_in_baseline": str(days_int),
+                    "threshold_days": str(int(threshold_days)),
+                    "ticker": settings.TICKER,
+                },
+                "android": {
+                    "priority": "HIGH",
+                    "notification": {"sound": "default"},
+                },
+                "apns": {
+                    "payload": {"aps": {"sound": "default"}},
+                },
+            }
+        }
+
+        return await self._post(payload, access_token, project_id)
+
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────

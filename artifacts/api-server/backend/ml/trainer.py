@@ -26,12 +26,18 @@ from ml.short_trend import ShortTrendModel
 from ml.model_health import check_accuracy_regression
 from ml.training_status import (
     any_model_failed_last_attempt,
+    clear_baseline_mode_tracking,
+    get_baseline_mode_days,
+    get_baseline_mode_since,
     get_consecutive_failures,
     get_last_successful_accuracy,
     get_last_successful_accuracy_metric,
     get_training_status,
+    mark_baseline_duration_alert_sent,
     mark_stuck_alert_sent,
+    record_baseline_mode_onset,
     record_training_result,
+    should_send_baseline_duration_alert,
     should_send_stuck_alert,
 )
 
@@ -408,6 +414,7 @@ class ModelTrainer:
             )
             await self._maybe_send_stuck_alert(db_session, "long_trend")
             await self._maybe_send_stuck_alert(db_session, "short_trend")
+            await self._track_and_alert_baseline_duration(db_session, "long_trend")
             return
 
         # ── Load VIX candles ───────────────────────────────────────────────────
@@ -548,6 +555,7 @@ class ModelTrainer:
                 "long_trend", success=False, error=str(exc), rolled_back=restored
             )
         await self._maybe_send_stuck_alert(db_session, "long_trend")
+        await self._track_and_alert_baseline_duration(db_session, "long_trend")
 
         # ── Load 5-min VOO candles ─────────────────────────────────────────────
         fivemin_df = await self._load_fivemin_voo(db_session)
@@ -807,6 +815,89 @@ class ModelTrainer:
                 )
         except Exception as exc:
             logger.error("_maybe_send_stuck_alert error for %s: %s", model_name, exc)
+
+    async def _track_and_alert_baseline_duration(
+        self, db_session: AsyncSession, model_name: str
+    ) -> None:
+        """Update baseline-mode onset tracking and fire a one-time duration alert.
+
+        Called after each long-trend training attempt.  Checks whether the
+        model is currently in baseline mode (via a forced mtime-reload), updates
+        the ``baseline_mode_since`` timestamp accordingly, and pushes a push
+        alert the first time the model has been continuously in baseline mode
+        past ``settings.LONG_BASELINE_MODE_ALERT_DAYS``.
+
+        Never raises — a notification failure must not break training.
+        """
+        if model_name != "long_trend":
+            # Baseline-mode duration tracking is only defined for the long model.
+            return
+        try:
+            # Force mtime-reload so we see the model state *after* the retrain
+            # (a gate-passing retrain updates the pkl mtime).
+            in_baseline = self.long_model.is_baseline_mode()
+
+            if in_baseline:
+                record_baseline_mode_onset(model_name)
+                logger.debug(
+                    "baseline_mode_tracking model=%s status=in_baseline "
+                    "since=%s days=%.1f",
+                    model_name,
+                    get_baseline_mode_since(model_name),
+                    get_baseline_mode_days(model_name) or 0.0,
+                )
+            else:
+                clear_baseline_mode_tracking(model_name)
+                return  # Not in baseline — nothing to alert about.
+
+            threshold_days = float(settings.LONG_BASELINE_MODE_ALERT_DAYS)
+            if not should_send_baseline_duration_alert(model_name, threshold_days):
+                return
+
+            from database.models import DeviceToken
+            from notifications.fcm import FCMNotifier
+
+            result = await db_session.execute(select(DeviceToken))
+            tokens = result.scalars().all()
+            if not tokens:
+                logger.warning(
+                    "baseline_duration_alert model=%s — no device tokens registered; "
+                    "alert stays armed until a device is available",
+                    model_name,
+                )
+                return
+
+            days = get_baseline_mode_days(model_name) or 0.0
+            notifier = FCMNotifier()
+            any_sent = False
+            for device in tokens:
+                ok = await notifier.send_baseline_duration_alert(
+                    device_token=device.token,
+                    model_name=model_name,
+                    days_in_baseline=days,
+                    threshold_days=threshold_days,
+                )
+                any_sent = any_sent or ok
+
+            if any_sent:
+                mark_baseline_duration_alert_sent(model_name)
+                logger.warning(
+                    "baseline_duration_alert_sent model=%s days_in_baseline=%.1f "
+                    "threshold_days=%.0f",
+                    model_name,
+                    days,
+                    threshold_days,
+                )
+            else:
+                logger.error(
+                    "baseline_duration_alert_failed model=%s — will retry on next "
+                    "failed retrain attempt",
+                    model_name,
+                )
+        except Exception as exc:
+            logger.error(
+                "_track_and_alert_baseline_duration error for %s: %s", model_name, exc
+            )
 
     @staticmethod
     def _missing_model_files() -> list:

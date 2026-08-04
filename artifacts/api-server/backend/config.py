@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     # classifier instead of being forced into BUY/SELL labels.
     LONG_LABEL_HORIZON_DAYS: int = 21
     LONG_MEANINGFUL_MOVE_THRESHOLD: float = 0.02
+    # ── Baseline-mode duration alert ──────────────────────────────────────────
+    # Fire a one-time operator alert when the long-trend model stays in baseline
+    # mode (no gate-passing trained model) for at least this many calendar days.
+    # Set to 0 to disable the alert.
+    LONG_BASELINE_MODE_ALERT_DAYS: int = 14
+
     LONG_MIN_TRAINING_ROWS: int = 80
     # A directional model must beat the majority-class baseline on honest
     # purged OOS evaluation before it can replace the active model.

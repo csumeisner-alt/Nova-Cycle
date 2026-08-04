@@ -75,6 +75,10 @@ def record_training_result(
             # Carry the flag forward through the episode so the alert fires
             # only once per stuck episode.
             stuck_alert_sent = bool(prev.get("stuck_alert_sent"))
+        # Carry baseline-mode tracking fields forward so they survive across
+        # training attempts.  These fields are managed exclusively by
+        # record_baseline_mode_onset() and clear_baseline_mode_tracking();
+        # record_training_result() must never reset them.
         data[model_name] = {
             "success": bool(success),
             "rolled_back": bool(rolled_back) and not success,
@@ -86,6 +90,9 @@ def record_training_result(
             "consecutive_failures": consecutive_failures,
             "stuck_alert_sent": stuck_alert_sent,
             "attempted_at": datetime.now(timezone.utc).isoformat(),
+            # Baseline-mode duration: preserve across training attempts.
+            "baseline_mode_since": prev.get("baseline_mode_since"),
+            "baseline_mode_alert_sent": bool(prev.get("baseline_mode_alert_sent")),
         }
         STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(STATUS_PATH, "w") as f:
@@ -244,3 +251,137 @@ def get_last_successful_accuracy_metric(model_name: str) -> Optional[str]:
     except Exception as exc:
         logger.error("training_status get_last_successful_accuracy_metric error: %s", exc)
     return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Baseline-mode duration tracking
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def record_baseline_mode_onset(model_name: str) -> None:
+    """Record that ``model_name`` has entered baseline mode (idempotent).
+
+    Sets ``baseline_mode_since`` only on the first call for an episode; a
+    second call during the same episode preserves the original timestamp so
+    the elapsed-days calculation remains accurate.  Never raises.
+    """
+    try:
+        data = _load_raw()
+        entry = data.get(model_name)
+        if not isinstance(entry, dict):
+            entry = {}
+        # Idempotent: preserve the original onset timestamp across retrain
+        # cycles so we measure total continuous duration, not just since the
+        # last failed retrain.
+        if not entry.get("baseline_mode_since"):
+            entry["baseline_mode_since"] = datetime.now(timezone.utc).isoformat()
+            data[model_name] = entry
+            STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(STATUS_PATH, "w") as f:
+                json.dump(data, f, indent=2)
+    except Exception as exc:
+        logger.error("training_status record_baseline_mode_onset error: %s", exc)
+
+
+def clear_baseline_mode_tracking(model_name: str) -> None:
+    """Clear baseline-mode tracking when the model exits baseline mode.
+
+    Resets ``baseline_mode_since`` and ``baseline_mode_alert_sent`` so a
+    future re-entry starts a fresh duration counter.  Never raises.
+    """
+    try:
+        data = _load_raw()
+        entry = data.get(model_name)
+        if not isinstance(entry, dict):
+            return
+        changed = False
+        if entry.get("baseline_mode_since") is not None:
+            entry["baseline_mode_since"] = None
+            changed = True
+        if entry.get("baseline_mode_alert_sent"):
+            entry["baseline_mode_alert_sent"] = False
+            changed = True
+        if changed:
+            data[model_name] = entry
+            STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(STATUS_PATH, "w") as f:
+                json.dump(data, f, indent=2)
+    except Exception as exc:
+        logger.error("training_status clear_baseline_mode_tracking error: %s", exc)
+
+
+def get_baseline_mode_since(model_name: str) -> Optional[str]:
+    """Return the ISO-8601 timestamp when baseline mode began, or None.
+
+    Never raises.
+    """
+    try:
+        entry = _load_raw().get(model_name)
+        if isinstance(entry, dict):
+            return entry.get("baseline_mode_since") or None
+    except Exception as exc:
+        logger.error("training_status get_baseline_mode_since error: %s", exc)
+    return None
+
+
+def get_baseline_mode_days(model_name: str) -> Optional[float]:
+    """Return how many calendar days the model has been in baseline mode.
+
+    Returns None when the model is not currently in baseline mode (i.e. no
+    ``baseline_mode_since`` timestamp is recorded).  Never raises.
+    """
+    since_str = get_baseline_mode_since(model_name)
+    if not since_str:
+        return None
+    try:
+        since = datetime.fromisoformat(since_str)
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - since
+        return delta.total_seconds() / 86400.0
+    except Exception as exc:
+        logger.error("training_status get_baseline_mode_days error: %s", exc)
+    return None
+
+
+def should_send_baseline_duration_alert(model_name: str, threshold_days: float) -> bool:
+    """Return True when a baseline-mode duration alert should be sent.
+
+    True only when:
+    - ``threshold_days`` > 0 (alert not disabled),
+    - the model has been in baseline mode for at least ``threshold_days``, and
+    - no alert has been sent for the current baseline-mode episode yet.
+    Never raises.
+    """
+    if threshold_days <= 0:
+        return False
+    try:
+        entry = _load_raw().get(model_name)
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("baseline_mode_alert_sent"):
+            return False
+        days = get_baseline_mode_days(model_name)
+        return days is not None and days >= threshold_days
+    except Exception as exc:
+        logger.error("training_status should_send_baseline_duration_alert error: %s", exc)
+    return False
+
+
+def mark_baseline_duration_alert_sent(model_name: str) -> None:
+    """Record that the baseline-duration alert was sent for the current episode.
+
+    Never raises.
+    """
+    try:
+        data = _load_raw()
+        entry = data.get(model_name)
+        if not isinstance(entry, dict):
+            return
+        entry["baseline_mode_alert_sent"] = True
+        data[model_name] = entry
+        STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(STATUS_PATH, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as exc:
+        logger.error("training_status mark_baseline_duration_alert_sent error: %s", exc)
