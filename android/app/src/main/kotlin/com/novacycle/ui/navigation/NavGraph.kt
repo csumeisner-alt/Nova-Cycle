@@ -62,18 +62,10 @@ fun NovaCycleNavHost(
     val currentDestination = navBackStackEntry?.destination
     val healthState by healthViewModel.uiState.collectAsStateWithLifecycle()
 
-    // Screens that display backend-derived data — the shared health banners
-    // appear on all of these. Settings is the only non-data screen.
-    val dataScreenRoutes = setOf(
-        Routes.DUAL_GAUGE,
-        Routes.RAW_CHART,
-        Routes.FILTERED_CHART,
-        Routes.CONFIDENCE_HISTORY,
-        Routes.INDICATOR_LIST,
-        Routes.HOLD_TIME,
-        Routes.RELIABILITY
-    )
-    val showHealthBanners = currentDestination?.route in dataScreenRoutes
+    // Keep the health warning visible only where it directly explains the
+    // prediction gauges. Other data screens should stay focused; users can
+    // still inspect detailed health from the Gauge dashboard.
+    val showHealthBanners = currentDestination?.route == Routes.DUAL_GAUGE
 
     // Destinations that show the bottom nav bar
     val bottomNavRoutes = bottomNavItems.map { it.route }.toSet()
@@ -120,8 +112,8 @@ fun NovaCycleNavHost(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // App-level banner slot: one shared /healthz poll drives the
-            // degraded / unreachable banners across every data screen.
+            // The prediction-health banner belongs to the Gauge dashboard,
+            // not to every screen that happens to use backend data.
             if (showHealthBanners) {
                 HealthBanners(
                     state = healthState,
