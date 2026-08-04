@@ -19,3 +19,4 @@
 - [Long-trend return alignment bug](long-trend-return-alignment.md) — train/inference mismatch: return features must be pre-computed on full df before meaningful-move filter or sign inversion causes -0.30 OOS lift
 - [Calibration report staleness](calibration-report-staleness.md) — stale-flag contract for reports; test fixtures must patch cal.MODEL_DIR or suites overwrite real ml/models files
 - [Missed-rally monitoring](missed-rally-monitoring.md) — signal-free windows still need independent rally detection instead of silently reporting zero
+- [Long-trend no directional edge](long-trend-no-edge.md) — 128-config dry-run grid: nothing beats the majority baseline; recommend calibrated base-rate fallback for the long signal
