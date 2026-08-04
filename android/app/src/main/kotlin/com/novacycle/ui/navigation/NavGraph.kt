@@ -135,7 +135,9 @@ fun NovaCycleNavHost(
                 )
             }
             composable(Routes.RAW_CHART) {
-                RawChartScreen()
+                RawChartScreen(
+                    onBack = { navController.popBackStack() }
+                )
             }
             composable(Routes.FILTERED_CHART) {
                 FilteredChartScreen()
