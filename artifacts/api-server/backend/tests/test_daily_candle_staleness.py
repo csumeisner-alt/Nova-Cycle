@@ -221,3 +221,72 @@ async def test_threshold_trading_days_reflects_config(db_session):
     """threshold_trading_days in the response matches the config setting."""
     status = await check_daily_candle_staleness(db_session)
     assert status["threshold_trading_days"] == settings.DAILY_CANDLE_STALE_THRESHOLD_DAYS
+
+
+# ── Holiday / weekend edge cases ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_now_on_market_holiday_not_stale(db_session):
+    """Staleness check must not fire when 'now' is a market holiday.
+
+    Independence Day 2026 falls on Saturday; the NYSE observes it on Friday
+    July 3, 2026.  The last trading day is therefore Thursday July 2, 2026.
+    When 'now' is set to the holiday itself (July 3), zero trading days have
+    elapsed since the most recent candle and stale must be False.
+    """
+    # July 3, 2026 is the observed Independence Day (NYSE closed).
+    # July 2, 2026 is the last trading day before that holiday.
+    last_trading_day = datetime(2026, 7, 2)   # Thursday – confirmed trading day
+    holiday = datetime(2026, 7, 3, 18, 0)     # Friday – observed Independence Day
+
+    db_session.add(_voo_daily(last_trading_day))
+    await db_session.flush()
+
+    status = await check_daily_candle_staleness(db_session, now=holiday)
+    assert status["stale"] is False
+    assert status["lag_trading_days"] == 0
+
+
+@pytest.mark.asyncio
+async def test_now_on_weekend_after_holiday_not_stale(db_session):
+    """A multi-day holiday+weekend window must not trigger the staleness alert.
+
+    July 4, 2026 falls on a Saturday.  The NYSE observes Independence Day on
+    Friday July 3 (holiday).  The candle feed is silent from close of business
+    Thursday July 2 through Sunday July 5 — three consecutive non-trading days.
+    With 'now' set to Sunday July 5 the lag must be 0 and stale must be False.
+    """
+    last_trading_day = datetime(2026, 7, 2)   # Thursday – last trading day
+    sunday_in_window = datetime(2026, 7, 5, 12, 0)  # Sunday – inside holiday window
+
+    db_session.add(_voo_daily(last_trading_day))
+    await db_session.flush()
+
+    status = await check_daily_candle_staleness(db_session, now=sunday_in_window)
+    assert status["stale"] is False
+    # July 3 = NYSE holiday, July 4–5 = weekend → 0 trading days elapsed
+    assert status["lag_trading_days"] == 0
+
+
+@pytest.mark.asyncio
+async def test_thanksgiving_long_weekend_not_stale(db_session):
+    """Thanksgiving 2025 long weekend must not produce a false-positive alert.
+
+    Thanksgiving is Thursday Nov 27, 2025.  The last candle is written on
+    Wednesday Nov 26, 2025.  With 'now' set to Saturday Nov 29, 2025 the only
+    elapsed days are Thursday (holiday) and Friday (day-after-Thanksgiving,
+    which is a half-day trading session — so lag=1) and Saturday (weekend).
+    Either way the lag is well within the default threshold and stale is False.
+    """
+    last_trading_day = datetime(2025, 11, 26)   # Wednesday before Thanksgiving
+    saturday_after = datetime(2025, 11, 29, 10, 0)  # Saturday
+
+    db_session.add(_voo_daily(last_trading_day))
+    await db_session.flush()
+
+    status = await check_daily_candle_staleness(db_session, now=saturday_after)
+    assert status["stale"] is False
+    # Nov 27 = Thanksgiving (holiday); Nov 28 = day after (half-day, still trading);
+    # Nov 29 = Saturday (weekend, not counted).  Lag ≤ 1, well under threshold.
+    assert status["lag_trading_days"] is not None
+    assert status["lag_trading_days"] <= settings.DAILY_CANDLE_STALE_THRESHOLD_DAYS
