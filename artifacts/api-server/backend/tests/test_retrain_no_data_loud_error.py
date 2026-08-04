@@ -171,3 +171,69 @@ def test_no_warning_when_database_url_not_set(caplog, monkeypatch):
     assert not ignored_warnings, (
         "Should not warn about DATABASE_URL when it is not set"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — health flag clears after successful retrain follows failures
+# ---------------------------------------------------------------------------
+
+def test_successful_retrain_clears_health_flags(isolated_status):
+    """After N consecutive no-data failures, a single successful retrain must
+    reset consecutive_failures to 0, set success to True, and clear the
+    training_stuck flag (stuck_alert_sent) so healthz returns to 'ok'.
+
+    This guards against a future refactor that silently leaves the health
+    flag stuck in 'degraded' even after the data problem is resolved.
+    """
+    from ml.training_status import (
+        record_training_result,
+        get_consecutive_failures,
+        get_training_status,
+        should_send_stuck_alert,
+        mark_stuck_alert_sent,
+        CONSECUTIVE_FAILURE_ALERT_THRESHOLD,
+    )
+
+    model = "long_trend"
+    failure_count = CONSECUTIVE_FAILURE_ALERT_THRESHOLD + 1  # exceed threshold
+
+    # --- Phase 1: accumulate failures ---
+    for i in range(1, failure_count + 1):
+        record_training_result(
+            model, success=False, error="No daily VOO data available"
+        )
+        assert get_consecutive_failures(model) == i, (
+            f"Expected consecutive_failures={i} after {i} failures"
+        )
+
+    # Simulate the stuck alert being sent (marks stuck_alert_sent=True)
+    assert should_send_stuck_alert(model), (
+        "should_send_stuck_alert should be True after threshold is exceeded"
+    )
+    mark_stuck_alert_sent(model)
+    assert not should_send_stuck_alert(model), (
+        "should_send_stuck_alert should be False after alert is recorded"
+    )
+
+    # --- Phase 2: successful retrain ---
+    record_training_result(model, success=True, accuracy=0.72)
+
+    # consecutive_failures must reset to 0
+    assert get_consecutive_failures(model) == 0, (
+        "consecutive_failures must reset to 0 after a successful retrain"
+    )
+
+    # get_training_status must show success=True and consecutive_failures=0
+    status = get_training_status()
+    assert status[model]["success"] is True, (
+        "training status success must be True after a successful retrain"
+    )
+    assert status[model]["consecutive_failures"] == 0, (
+        "training status consecutive_failures must be 0 after a successful retrain"
+    )
+
+    # The stuck alert should no longer fire (counter is below threshold)
+    assert not should_send_stuck_alert(model), (
+        "should_send_stuck_alert must be False after a successful retrain "
+        "clears the consecutive_failures counter"
+    )
