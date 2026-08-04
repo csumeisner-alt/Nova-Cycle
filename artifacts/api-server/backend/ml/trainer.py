@@ -423,6 +423,16 @@ class ModelTrainer:
         # ── Load SPX futures candles (real macro series; empty → fallback) ────
         spx_close = await self._load_spx_close(db_session)
 
+        # ── Load broader market context series (empty → neutral fallback) ─────
+        # These series feed the new context features when
+        # settings.LONG_BROADER_CONTEXT_ENABLED=True.  When the DB tables for
+        # these tickers do not yet exist, each loader returns an empty Series
+        # and the corresponding _missing indicator fires during training — the
+        # model learns that absent context carries no signal.  No error is
+        # raised; the existing 19-feature baseline is unaffected when the flag
+        # is False.
+        broader_context = await self._load_broader_context(db_session)
+
         # ── Compute indicators ─────────────────────────────────────────────────
         logger.info("Computing indicators for training data…")
         try:
@@ -437,6 +447,10 @@ class ModelTrainer:
         # series into compute_macro_sensitivity (fallback preserved when empty).
         if not spx_close.empty:
             indicators["spx_futures_close"] = spx_close
+
+        # Attach broader context series (empty Series are harmless — feature
+        # functions check emptiness and fall back to neutral values + missing=1).
+        indicators.update(broader_context)
 
         # ── Train long-trend model ─────────────────────────────────────────────
         logger.info("Training long-trend model…")
@@ -579,6 +593,7 @@ class ModelTrainer:
 
         if not spx_close.empty:
             short_indicators["spx_futures_close"] = spx_close
+        # Broader context is long-model-specific; short model ignores unknown keys.
 
         # ── Train short-trend model ────────────────────────────────────────────
         logger.info("Training short-trend model…")
@@ -1025,6 +1040,60 @@ class ModelTrainer:
         except Exception as exc:
             logger.error("_load_vix error: %s", exc)
             return pd.DataFrame()
+
+    @staticmethod
+    async def _load_broader_context(db_session: AsyncSession) -> dict:
+        """
+        Load broader market context series for the long-trend model.
+
+        Returns a dict mapping indicator key → pd.Series (daily closes).
+        Keys consumed by long_trend.build_features():
+          "vix_short_close"  — VIX9D  (9-day VIX, term-structure numerator)
+          "vix_long_close"   — VIX3M  (3-month VIX, denominator)
+          "credit_hy_close"  — HYG    (high-yield bond ETF)
+          "credit_ig_close"  — LQD    (investment-grade bond ETF)
+          "breadth_close"    — NYAD   (NYSE advance-decline line)
+          "rates_close"      — TNX    (10-year Treasury yield × 10)
+
+        When settings.LONG_BROADER_CONTEXT_ENABLED=False the caller still
+        calls this method but long_trend ignores the keys, so returning empty
+        Series is always safe.
+
+        Each source is loaded from its own DB table when it exists.  If the
+        table is absent, the key maps to an empty Series and the corresponding
+        _missing feature fires to 1.0 during training — the model learns that
+        absent context carries no directional signal.
+
+        NOTE: DB tables for these tickers are not yet created.  When ingestion
+        is wired up for a new ticker, add the corresponding SQLAlchemy model
+        import and loader here following the _load_spx_close pattern.  Until
+        then, each loader returns an empty Series and the feature layer
+        gracefully falls back.
+
+        Never raises.
+        """
+        result: dict = {
+            "vix_short_close": pd.Series(dtype=float),
+            "vix_long_close":  pd.Series(dtype=float),
+            "credit_hy_close": pd.Series(dtype=float),
+            "credit_ig_close": pd.Series(dtype=float),
+            "breadth_close":   pd.Series(dtype=float),
+            "rates_close":     pd.Series(dtype=float),
+        }
+        if not settings.LONG_BROADER_CONTEXT_ENABLED:
+            # Short-circuit: flag off → context ignored downstream anyway.
+            return result
+        # Future: add per-source loaders here as DB tables become available.
+        # Pattern:
+        #   from database.models import VixShortCandle
+        #   result["vix_short_close"] = await _load_close_series(
+        #       db_session, VixShortCandle, settings.VIX_SHORT_TICKER
+        #   )
+        logger.debug(
+            "ml_trainer_broader_context: flag enabled; no DB tables yet — "
+            "all context features will fire missing=1.0 during training"
+        )
+        return result
 
     @staticmethod
     async def _load_spx_close(db_session: AsyncSession) -> pd.Series:

@@ -160,6 +160,28 @@ class Settings(BaseSettings):
     # purged OOS evaluation before it can replace the active model.
     LONG_MIN_OOS_ACCURACY_LIFT: float = 0.0
 
+    # ── Broader market context (experimental; gated behind OOS viability) ─────
+    # Ablation control: False (default) = existing 19-feature set; True = add
+    # 8 broader-context features (4 values + 4 freshness flags).  Only enable
+    # after a candidate model with the new features clears the unchanged OOS
+    # promotion gate.  Toggling this changes FEATURE_NAMES length, which puts
+    # the current model pkl into baseline mode until the next retrain.
+    LONG_BROADER_CONTEXT_ENABLED: bool = False
+    # Data older than this many trading days is treated as stale; the
+    # corresponding _missing indicator fires (= 1.0) so the model can learn
+    # to discount absent context.  Two extra calendar days are added internally
+    # to absorb weekends without penalising a Friday close on Monday.
+    LONG_CONTEXT_STALENESS_MAX_DAYS: int = 5
+
+    # Tickers for broader context sources (ingested separately from VOO/VIX).
+    # Empty string → that source is permanently absent (neutral fallback fires).
+    VIX_SHORT_TICKER: str = "^VIX9D"   # 9-day VIX (term-structure numerator)
+    VIX_LONG_TICKER: str = "^VIX3M"    # 3-month VIX (term-structure denominator)
+    RATES_TICKER: str = "^TNX"          # 10-year Treasury yield (value ÷ 10 = %)
+    CREDIT_HY_TICKER: str = "HYG"       # iShares iBoxx HY Corporate Bond ETF
+    CREDIT_IG_TICKER: str = "LQD"       # iShares iBoxx IG Corporate Bond ETF
+    BREADTH_TICKER: str = "^NYAD"       # NYSE Advance-Decline line
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

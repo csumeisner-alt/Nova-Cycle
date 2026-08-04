@@ -32,6 +32,7 @@ import pandas as pd
 
 from config import settings
 
+
 logger = logging.getLogger(__name__)
 
 # ── Encodings (stable — order matters for saved models) ──────────────────────
@@ -376,3 +377,270 @@ def compute_overnight_return_weighted(
     except Exception as exc:
         logger.error("ml_feature_error feature=overnight_return_weighted error=%s", exc)
         return _default_series(close.index, DEFAULT_OVERNIGHT_WEIGHTED)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6–9. Broader market context (gated behind LONG_BROADER_CONTEXT_ENABLED)
+#      Each function returns (value_series, missing_series) where
+#      missing = 1.0 means the data is absent or too stale to trust.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _stale_mask(
+    target_index: pd.Index,
+    source_index: pd.Index,
+    staleness_max_days: int,
+) -> pd.Series:
+    """
+    Boolean Series (True = stale) for each date in target_index where the
+    most recent source date at or before that date is more than
+    (staleness_max_days + 2) calendar days away.
+
+    The +2 buffer absorbs weekends, so a Friday data point is not flagged
+    stale on the following Monday.  Dates that predate the earliest source
+    date are always stale.  Never raises.
+    """
+    if source_index.empty:
+        return pd.Series(True, index=target_index)
+    try:
+        src_sorted = pd.DatetimeIndex(source_index).sort_values()
+        tgt_ts = pd.DatetimeIndex(target_index)
+        tolerance = staleness_max_days + 2  # absorb weekends
+
+        # For each target date, find the index of the last source date ≤ tgt.
+        pos = src_sorted.searchsorted(tgt_ts, side="right") - 1
+        before_start = pos < 0
+
+        # Clip pos so array indexing is safe; before_start cases are overridden.
+        safe_pos = np.clip(pos, 0, len(src_sorted) - 1)
+        last_src = src_sorted[safe_pos]
+        gap_days = (tgt_ts - last_src).days
+
+        stale = before_start | (gap_days > tolerance)
+        # stale is a numpy bool array here; wrap directly (no .values needed)
+        return pd.Series(stale, index=target_index)
+    except Exception as exc:
+        logger.error("ml_feature_error feature=_stale_mask error=%s", exc)
+        return pd.Series(False, index=target_index)
+
+
+def compute_vix_term_structure(
+    vix_close: pd.Series,
+    vix_short_close: "pd.Series | None" = None,
+    vix_long_close: "pd.Series | None" = None,
+    proxy_window_short: int = 5,
+    proxy_window_long: int = 20,
+    staleness_max_days: int = 5,
+) -> "tuple[pd.Series, pd.Series]":
+    """
+    VIX term-structure slope and freshness indicator (both indexed to
+    vix_close.index).
+
+    Real mode (VIX9D + VIX3M available):
+      slope = vix_short / vix_long − 1
+        < 0 → contango / near-term fear receding
+        > 0 → backwardation / near-term spike
+
+    Proxy mode (term data absent):
+      slope = SMA(vix, short_window) / SMA(vix, long_window) − 1
+      vix_term_missing = 1.0  (proxy is always treated as stale)
+
+    Freshness: if the last source date predates any target date by more than
+    staleness_max_days + 2 calendar days, that date is marked stale even when
+    a series is provided.
+
+    Returns:
+        (term_slope clipped to [−1, 1], term_missing ∈ {0.0, 1.0})
+    """
+    try:
+        idx = vix_close.index
+        have_real = (
+            vix_short_close is not None and not vix_short_close.empty
+            and vix_long_close is not None and not vix_long_close.empty
+        )
+
+        if have_real:
+            short_a = (
+                vix_short_close
+                .reindex(idx, method="ffill")
+                .replace([np.inf, -np.inf], np.nan)
+            )
+            long_a = (
+                vix_long_close
+                .reindex(idx, method="ffill")
+                .replace([np.inf, -np.inf], np.nan)
+            )
+            raw_slope = (short_a / long_a.replace(0, np.nan) - 1.0)
+            slope = raw_slope.clip(-1.0, 1.0).fillna(0.0)
+            stale = _stale_mask(idx, vix_short_close.index, staleness_max_days)
+            missing = stale.astype(float)
+        else:
+            # Proxy: rolling SMA ratio captures short-vs-long VIX momentum
+            sma_short = vix_close.rolling(proxy_window_short, min_periods=1).mean()
+            sma_long  = vix_close.rolling(proxy_window_long,  min_periods=1).mean()
+            raw_slope = (sma_short / sma_long.replace(0, np.nan) - 1.0)
+            slope = raw_slope.clip(-1.0, 1.0).fillna(0.0)
+            missing = pd.Series(1.0, index=idx)  # proxy → always stale
+
+        return slope, missing
+    except Exception as exc:
+        logger.error("ml_feature_error feature=vix_term_structure error=%s", exc)
+        return (
+            _default_series(vix_close.index, 0.0),
+            _default_series(vix_close.index, 1.0),
+        )
+
+
+def compute_credit_stress(
+    index: pd.Index,
+    hy_close: "pd.Series | None" = None,
+    ig_close: "pd.Series | None" = None,
+    window: int = 20,
+    staleness_max_days: int = 5,
+) -> "tuple[pd.Series, pd.Series]":
+    """
+    Credit stress score in [0, 1] and freshness indicator.
+
+    When HYG (high-yield) and/or LQD (investment-grade) series are available:
+      spread = rolling_mean(ig_return − hy_return, window)
+      score  = (spread / p95_spread + 1) / 2   mapped to [0,1]
+      0.5 = neutral; > 0.5 = HY underperforming → rising stress.
+
+    When neither series is present: score = 0.5, missing = 1.0.
+
+    Returns:
+        (credit_stress_score [0,1], credit_stress_missing ∈ {0.0, 1.0})
+    """
+    try:
+        have_hy = hy_close is not None and not hy_close.empty
+        have_ig = ig_close is not None and not ig_close.empty
+
+        if not have_hy and not have_ig:
+            return (
+                _default_series(index, 0.5),
+                _default_series(index, 1.0),
+            )
+
+        if have_hy:
+            hy_a = hy_close.reindex(index, method="ffill").replace(
+                [np.inf, -np.inf], np.nan
+            )
+            hy_ret = hy_a.pct_change().fillna(0.0)
+        else:
+            hy_ret = pd.Series(0.0, index=index)
+
+        if have_ig:
+            ig_a = ig_close.reindex(index, method="ffill").replace(
+                [np.inf, -np.inf], np.nan
+            )
+            ig_ret = ig_a.pct_change().fillna(0.0)
+        else:
+            ig_ret = pd.Series(0.0, index=index)
+
+        # Spread: positive = HY underperforming IG = stress rising
+        spread = (ig_ret - hy_ret).rolling(window, min_periods=1).mean()
+        p95 = float(spread.abs().quantile(0.95)) or 0.01
+        score = ((spread / p95).clip(-1.0, 1.0) + 1.0) / 2.0
+        score = score.clip(0.0, 1.0).fillna(0.5)
+
+        ref = hy_close.index if have_hy else ig_close.index
+        stale = _stale_mask(index, ref, staleness_max_days)
+        missing = stale.astype(float)
+        return score, missing
+    except Exception as exc:
+        logger.error("ml_feature_error feature=credit_stress error=%s", exc)
+        return (
+            _default_series(index, 0.5),
+            _default_series(index, 1.0),
+        )
+
+
+def compute_market_breadth(
+    index: pd.Index,
+    breadth_close: "pd.Series | None" = None,
+    window: int = 20,
+    staleness_max_days: int = 5,
+) -> "tuple[pd.Series, pd.Series]":
+    """
+    Market breadth score in [0, 1] and freshness indicator.
+
+    When NYSE advance-decline (NYAD) data is available:
+      Uses the window-day momentum of the AD line, normalised to [0,1].
+      score > 0.5 = improving breadth; < 0.5 = deteriorating breadth.
+
+    When absent: score = 0.5, missing = 1.0.
+
+    Returns:
+        (breadth_score [0,1], breadth_missing ∈ {0.0, 1.0})
+    """
+    try:
+        have_data = breadth_close is not None and not breadth_close.empty
+        if not have_data:
+            return (
+                _default_series(index, 0.5),
+                _default_series(index, 1.0),
+            )
+
+        aligned = breadth_close.reindex(index, method="ffill").replace(
+            [np.inf, -np.inf], np.nan
+        )
+        momentum = aligned.diff(window).fillna(0.0)
+        p95 = float(momentum.abs().quantile(0.95)) or 0.01
+        score = ((momentum / p95).clip(-1.0, 1.0) + 1.0) / 2.0
+        score = score.clip(0.0, 1.0).fillna(0.5)
+
+        stale = _stale_mask(index, breadth_close.index, staleness_max_days)
+        missing = stale.astype(float)
+        return score, missing
+    except Exception as exc:
+        logger.error("ml_feature_error feature=market_breadth error=%s", exc)
+        return (
+            _default_series(index, 0.5),
+            _default_series(index, 1.0),
+        )
+
+
+def compute_rates_level(
+    index: pd.Index,
+    rates_close: "pd.Series | None" = None,
+    clip_max_pct: float = 8.0,
+    staleness_max_days: int = 5,
+) -> "tuple[pd.Series, pd.Series]":
+    """
+    10-year Treasury yield level (normalised to [0, 1]) and freshness
+    indicator.
+
+    TNX is quoted as yield × 10 (e.g. 45 = 4.5%).  The raw value is
+    divided by (clip_max_pct × 10) so that an 8 % yield maps to 1.0.
+
+    When absent: rates_level_norm = 0.5, missing = 1.0.
+
+    Returns:
+        (rates_level_norm [0,1], rates_missing ∈ {0.0, 1.0})
+    """
+    try:
+        have_data = rates_close is not None and not rates_close.empty
+        if not have_data:
+            return (
+                _default_series(index, 0.5),
+                _default_series(index, 1.0),
+            )
+
+        aligned = (
+            rates_close
+            .reindex(index, method="ffill")
+            .replace([np.inf, -np.inf], np.nan)
+            .ffill()
+            .fillna(clip_max_pct * 5.0)   # neutral mid-point on failure
+        )
+        # TNX unit: raw value ÷ 10 = yield %; normalise by clip_max_pct
+        norm = (aligned / (clip_max_pct * 10.0)).clip(0.0, 1.0)
+
+        stale = _stale_mask(index, rates_close.index, staleness_max_days)
+        missing = stale.astype(float)
+        return norm, missing
+    except Exception as exc:
+        logger.error("ml_feature_error feature=rates_level error=%s", exc)
+        return (
+            _default_series(index, 0.5),
+            _default_series(index, 1.0),
+        )

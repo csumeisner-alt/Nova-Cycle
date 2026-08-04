@@ -45,7 +45,14 @@ MODEL_PATH = MODEL_DIR / "long_trend_model.pkl"
 
 VIX_REGIME_MAP = {"LOW": 0, "NORMAL": 1, "HIGH": 2, "EXTREME": 3}
 
-FEATURE_NAMES = [
+# ── Feature name registry ─────────────────────────────────────────────────────
+# _BASE_FEATURE_NAMES: the stable 19-feature set used by all trained models.
+# _BROADER_CONTEXT_FEATURE_NAMES: 8 additional features (4 values + 4 freshness
+#   flags) enabled only when settings.LONG_BROADER_CONTEXT_ENABLED=True.
+# FEATURE_NAMES: the authoritative list consumed by build_features(), train(),
+#   and load_model().  Computed once at import time from the settings singleton.
+
+_BASE_FEATURE_NAMES = [
     "sma50_200_ratio",
     "macd_line",
     "macd_signal",
@@ -69,6 +76,25 @@ FEATURE_NAMES = [
     "vix_percentile_1y",
     "vix_missing",
 ]
+
+# Broader market context features — added only after OOS viability is confirmed.
+# Paired as (value, freshness_flag): missing=1.0 when the external data source
+# is absent or stale so the model can learn to ignore unavailable context rather
+# than rely on a hard-coded neutral value for signal.
+_BROADER_CONTEXT_FEATURE_NAMES = [
+    "vix_term_slope",        # VIX9D/VIX3M − 1 (negative=contango, positive=backwardation)
+    "vix_term_missing",      # 1.0 when term-structure data absent (proxy active)
+    "credit_stress_score",   # HY-IG spread proxy [0,1]; 0.5=neutral, >0.5=stress
+    "credit_stress_missing", # 1.0 when HYG/LQD data absent
+    "breadth_score",         # NYSE A/D momentum [0,1]; >0.5=improving breadth
+    "breadth_missing",       # 1.0 when NYAD data absent
+    "rates_level_norm",      # 10Y yield / 8% cap → [0,1]
+    "rates_missing",         # 1.0 when TNX data absent
+]
+
+FEATURE_NAMES: list[str] = _BASE_FEATURE_NAMES + (
+    _BROADER_CONTEXT_FEATURE_NAMES if settings.LONG_BROADER_CONTEXT_ENABLED else []
+)
 
 
 class LongTrendModel:
@@ -285,6 +311,73 @@ class LongTrendModel:
         else:
             overnight_weighted = ml_features.compute_overnight_return_weighted(open_col, close)
 
+        # ── Broader market context (gated by LONG_BROADER_CONTEXT_ENABLED) ────
+        # Train path: pre-computed df columns survive the meaningful-move filter
+        #   and are consumed directly (same value as on the full unfiltered df).
+        # Inference path: compute vectorially from indicators on the spot.
+        # All functions return (value_series, missing_series) and never raise.
+        _ctx_vix_term_slope = None
+        _ctx_vix_term_missing = None
+        _ctx_credit_stress = None
+        _ctx_credit_missing = None
+        _ctx_breadth = None
+        _ctx_breadth_missing = None
+        _ctx_rates = None
+        _ctx_rates_missing = None
+
+        if settings.LONG_BROADER_CONTEXT_ENABLED:
+            _stale_days = int(
+                getattr(settings, "LONG_CONTEXT_STALENESS_MAX_DAYS", 5)
+            )
+            # VIX term structure: use the raw VIX level series as proxy base
+            _vix_for_term = vix_level if not vix_level.empty else close
+            if "_vix_term_slope" in df.columns:
+                _ctx_vix_term_slope = df["_vix_term_slope"]
+                _ctx_vix_term_missing = df["_vix_term_missing"]
+            else:
+                _ctx_vix_term_slope, _ctx_vix_term_missing = (
+                    ml_features.compute_vix_term_structure(
+                        _vix_for_term,
+                        vix_short_close=indicators.get("vix_short_close"),
+                        vix_long_close=indicators.get("vix_long_close"),
+                        staleness_max_days=_stale_days,
+                    )
+                )
+            if "_credit_stress_score" in df.columns:
+                _ctx_credit_stress = df["_credit_stress_score"]
+                _ctx_credit_missing = df["_credit_stress_missing"]
+            else:
+                _ctx_credit_stress, _ctx_credit_missing = (
+                    ml_features.compute_credit_stress(
+                        df.index,
+                        hy_close=indicators.get("credit_hy_close"),
+                        ig_close=indicators.get("credit_ig_close"),
+                        staleness_max_days=_stale_days,
+                    )
+                )
+            if "_breadth_score" in df.columns:
+                _ctx_breadth = df["_breadth_score"]
+                _ctx_breadth_missing = df["_breadth_missing"]
+            else:
+                _ctx_breadth, _ctx_breadth_missing = (
+                    ml_features.compute_market_breadth(
+                        df.index,
+                        breadth_close=indicators.get("breadth_close"),
+                        staleness_max_days=_stale_days,
+                    )
+                )
+            if "_rates_level_norm" in df.columns:
+                _ctx_rates = df["_rates_level_norm"]
+                _ctx_rates_missing = df["_rates_missing"]
+            else:
+                _ctx_rates, _ctx_rates_missing = (
+                    ml_features.compute_rates_level(
+                        df.index,
+                        rates_close=indicators.get("rates_close"),
+                        staleness_max_days=_stale_days,
+                    )
+                )
+
         for i, (ts, row) in enumerate(df.iterrows()):
             try:
                 c = float(row["close"])
@@ -398,6 +491,22 @@ class LongTrendModel:
                     vix_pct,
                     vix_miss,
                 ]
+                # ── Broader context (appended after the 19-feature base) ──────
+                if settings.LONG_BROADER_CONTEXT_ENABLED:
+                    try:
+                        feature_row.extend([
+                            float(_ctx_vix_term_slope.iloc[i]),
+                            float(_ctx_vix_term_missing.iloc[i]),
+                            float(_ctx_credit_stress.iloc[i]),
+                            float(_ctx_credit_missing.iloc[i]),
+                            float(_ctx_breadth.iloc[i]),
+                            float(_ctx_breadth_missing.iloc[i]),
+                            float(_ctx_rates.iloc[i]),
+                            float(_ctx_rates_missing.iloc[i]),
+                        ])
+                    except Exception:
+                        # Data absent or index out of range: neutral + all missing
+                        feature_row.extend([0.0, 1.0, 0.5, 1.0, 0.5, 1.0, 0.5, 1.0])
                 rows.append(feature_row)
                 valid_positions.append(i)
 
@@ -525,6 +634,59 @@ class LongTrendModel:
             df["_overnight_w"] = ml_features.compute_overnight_return_weighted(
                 _open_full, _close_full
             )
+
+            # ── Broader market context pre-computation ───────────────────────
+            # Only when the ablation flag is on.  Computed on the FULL,
+            # UNFILTERED df (same principle as the additive features above) so
+            # the values for each date are identical to the inference path where
+            # the full df is always passed.  The columns survive the
+            # meaningful-move filter below and are consumed by build_features()
+            # via the `_<name>` column fast-path.
+            if settings.LONG_BROADER_CONTEXT_ENABLED:
+                _stale_days = int(
+                    getattr(settings, "LONG_CONTEXT_STALENESS_MAX_DAYS", 5)
+                )
+                _vix_level_full = indicators.get(
+                    "vix_level", pd.Series(dtype=float)
+                )
+                _vix_for_term = (
+                    _vix_level_full
+                    if not _vix_level_full.empty
+                    else _close_full
+                )
+                _ctx_ts, _ctx_tm = ml_features.compute_vix_term_structure(
+                    _vix_for_term,
+                    vix_short_close=indicators.get("vix_short_close"),
+                    vix_long_close=indicators.get("vix_long_close"),
+                    staleness_max_days=_stale_days,
+                )
+                df["_vix_term_slope"] = _ctx_ts.reindex(df.index)
+                df["_vix_term_missing"] = _ctx_tm.reindex(df.index)
+
+                _ctx_cs, _ctx_cm = ml_features.compute_credit_stress(
+                    df.index,
+                    hy_close=indicators.get("credit_hy_close"),
+                    ig_close=indicators.get("credit_ig_close"),
+                    staleness_max_days=_stale_days,
+                )
+                df["_credit_stress_score"] = _ctx_cs
+                df["_credit_stress_missing"] = _ctx_cm
+
+                _ctx_bs, _ctx_bm = ml_features.compute_market_breadth(
+                    df.index,
+                    breadth_close=indicators.get("breadth_close"),
+                    staleness_max_days=_stale_days,
+                )
+                df["_breadth_score"] = _ctx_bs
+                df["_breadth_missing"] = _ctx_bm
+
+                _ctx_rs, _ctx_rm = ml_features.compute_rates_level(
+                    df.index,
+                    rates_close=indicators.get("rates_close"),
+                    staleness_max_days=_stale_days,
+                )
+                df["_rates_level_norm"] = _ctx_rs
+                df["_rates_missing"] = _ctx_rm
 
             horizon = int(getattr(settings, "LONG_LABEL_HORIZON_DAYS", 21))
             threshold = float(
