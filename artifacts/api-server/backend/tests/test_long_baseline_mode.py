@@ -527,6 +527,81 @@ class TestTargetTypeMismatch:
         )
         assert m.model is None
 
+    def test_three_state_model_with_direction_config_is_baseline(
+        self, isolated, monkeypatch
+    ):
+        """Reverse-direction mismatch: trainer promotes a three_state model
+        (meta sidecar says 'three_state'), then LONG_TARGET_TYPE is reverted
+        back to 'direction' without a new retrain.
+        load_model() must detect the mismatch and enter baseline mode rather
+        than serving a three-state model under direction semantics."""
+        from ml import long_trend as lt
+
+        # Promote a valid 19-feature three_state model (gate-passing retrain)
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "three_state")
+
+        # Revert config to direction without retraining
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "direction")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is True, (
+            "Reverting LONG_TARGET_TYPE from three_state → direction "
+            "without retraining must force baseline mode"
+        )
+        assert m.model is None
+
+    def test_three_state_model_with_matching_config_does_not_force_baseline(
+        self, isolated, monkeypatch
+    ):
+        """When the meta sidecar and LONG_TARGET_TYPE both say 'three_state',
+        there is no mismatch and baseline mode must NOT be entered."""
+        from ml import long_trend as lt
+
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "three_state")
+
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "three_state")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is False, (
+            "Matching three_state config + three_state meta sidecar must not "
+            "force baseline mode"
+        )
+        assert m.model is not None
+
+    def test_three_state_model_direction_config_clears_after_direction_retrain(
+        self, isolated, monkeypatch
+    ):
+        """Full round-trip: three_state model promoted → config reverted to
+        direction (baseline mode) → direction retrain succeeds → baseline clears."""
+        import time
+        from ml import long_trend as lt
+
+        # Step 1: three_state model on disk, config reverted → mismatch → baseline
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "three_state")
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "direction")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is True, (
+            "three_state model + direction config must start in baseline mode"
+        )
+
+        # Step 2: retrain completes with direction target; promote new pkl + sidecar
+        time.sleep(0.01)  # ensure mtime differs
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "direction")
+
+        # Step 3: mtime-based reload picks up the new promotion
+        m._loaded_mtime = None
+        m._maybe_reload()
+
+        assert m.is_baseline_mode() is False, (
+            "After a matching direction retrain, baseline mode must clear"
+        )
+        assert m.model is not None
+
     def test_baseline_clears_after_matching_retrain(
         self, isolated, monkeypatch
     ):
