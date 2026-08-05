@@ -670,7 +670,15 @@ class ModelTrainer:
                     # Gate passed — write the target_type meta sidecar so
                     # load_model() can verify alignment on the next startup.
                     from ml.long_trend import LongTrendModel as _LTM
-                    _LTM.save_promotion_meta(target_type)
+                    _LTM.save_promotion_meta(
+                        target_type,
+                        target_horizon_days=long_result.get("target_horizon_days"),
+                        target_threshold=long_result.get("target_threshold"),
+                        feature_names=long_result.get("feature_names"),
+                        broader_context_enabled=long_result.get(
+                            "broader_context_enabled"
+                        ),
+                    )
                     record_training_result(
                         "long_trend",
                         success=True,

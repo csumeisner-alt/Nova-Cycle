@@ -23,6 +23,8 @@ Time-decay sample weight:
 """
 
 import logging
+import hashlib
+import json
 import math
 import os
 import pickle
@@ -46,6 +48,8 @@ MODEL_PATH = MODEL_DIR / "long_trend_model.pkl"
 # Written on every successful promotion; read during load_model() to detect
 # mismatches when LONG_TARGET_TYPE changes between retrains.
 _META_PATH = MODEL_DIR / "long_trend_meta.json"
+PROMOTION_META_SCHEMA_VERSION = 2
+PROMOTION_META_FINGERPRINT_ALGORITHM = "sha256"
 
 VIX_REGIME_MAP = {"LOW": 0, "NORMAL": 1, "HIGH": 2, "EXTREME": 3}
 
@@ -99,6 +103,138 @@ _BROADER_CONTEXT_FEATURE_NAMES = [
 FEATURE_NAMES: list[str] = _BASE_FEATURE_NAMES + (
     _BROADER_CONTEXT_FEATURE_NAMES if settings.LONG_BROADER_CONTEXT_ENABLED else []
 )
+
+
+def current_feature_names() -> list[str]:
+    """Return the feature order required by the current runtime configuration.
+
+    ``FEATURE_NAMES`` is the feature order used by the imported model module.
+    This helper deliberately reads the context switch again so a hot config
+    change is treated as a semantic artifact mismatch instead of being hidden
+    by a stale module-level list.
+    """
+    return list(_BASE_FEATURE_NAMES) + (
+        list(_BROADER_CONTEXT_FEATURE_NAMES)
+        if settings.LONG_BROADER_CONTEXT_ENABLED
+        else []
+    )
+
+
+def _target_semantics(target_type: str) -> tuple[int, float]:
+    """Return the configured horizon and label threshold for a target family."""
+    if target_type == "drawdown_event":
+        return (
+            int(getattr(settings, "LONG_DRAWDOWN_HORIZON", 21)),
+            float(getattr(settings, "LONG_DRAWDOWN_THRESHOLD", 0.05)),
+        )
+    if target_type == "three_state":
+        return (
+            int(getattr(settings, "LONG_THREE_STATE_HORIZON", 21)),
+            float(getattr(settings, "LONG_THREE_STATE_THRESHOLD", 0.02)),
+        )
+    return (
+        int(getattr(settings, "LONG_LABEL_HORIZON_DAYS", 21)),
+        float(getattr(settings, "LONG_MEANINGFUL_MOVE_THRESHOLD", 0.02)),
+    )
+
+
+def build_promotion_meta(
+    target_type: str,
+    *,
+    target_horizon_days: Optional[int] = None,
+    target_threshold: Optional[float] = None,
+    feature_names: Optional[list[str]] = None,
+    broader_context_enabled: Optional[bool] = None,
+) -> dict:
+    """Build the complete, fingerprinted contract for a promoted artifact."""
+    target_type = str(target_type)
+    configured_horizon, configured_threshold = _target_semantics(target_type)
+    names = list(
+        feature_names if feature_names is not None else current_feature_names()
+    )
+    payload = {
+        "schema_version": PROMOTION_META_SCHEMA_VERSION,
+        "target_type": target_type,
+        "target_horizon_days": int(
+            configured_horizon if target_horizon_days is None else target_horizon_days
+        ),
+        "target_threshold": float(
+            configured_threshold if target_threshold is None else target_threshold
+        ),
+        "feature_names": names,
+        "broader_context_enabled": bool(
+            settings.LONG_BROADER_CONTEXT_ENABLED
+            if broader_context_enabled is None
+            else broader_context_enabled
+        ),
+    }
+    feature_set_bytes = json.dumps(
+        names, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    payload["feature_set_id"] = hashlib.sha256(feature_set_bytes).hexdigest()
+    payload["fingerprint_algorithm"] = PROMOTION_META_FINGERPRINT_ALGORITHM
+    fingerprint_bytes = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    payload["fingerprint"] = hashlib.sha256(fingerprint_bytes).hexdigest()
+    return payload
+
+
+def promotion_meta_mismatch(meta: object, target_type: Optional[str] = None) -> Optional[str]:
+    """Return a human-readable mismatch reason, or None when metadata matches."""
+    if not isinstance(meta, dict):
+        return "promotion metadata is missing or not an object"
+    target = str(target_type or settings.LONG_TARGET_TYPE)
+    expected = build_promotion_meta(target, feature_names=current_feature_names())
+    required = (
+        "schema_version",
+        "target_type",
+        "target_horizon_days",
+        "target_threshold",
+        "feature_names",
+        "feature_set_id",
+        "broader_context_enabled",
+        "fingerprint_algorithm",
+        "fingerprint",
+    )
+    missing = [key for key in required if key not in meta]
+    if missing:
+        return f"promotion metadata missing fields: {', '.join(missing)}"
+    if meta.get("fingerprint_algorithm") != PROMOTION_META_FINGERPRINT_ALGORITHM:
+        return "promotion metadata fingerprint algorithm mismatch"
+    # Recompute from the stored semantic fields so a hand-edited sidecar
+    # cannot claim a valid fingerprint for different label/feature semantics.
+    stored_payload = {
+        key: meta[key]
+        for key in (
+            "schema_version",
+            "target_type",
+            "target_horizon_days",
+            "target_threshold",
+            "feature_names",
+            "broader_context_enabled",
+            "feature_set_id",
+            "fingerprint_algorithm",
+        )
+    }
+    stored_bytes = json.dumps(
+        stored_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    if hashlib.sha256(stored_bytes).hexdigest() != meta.get("fingerprint"):
+        return "promotion metadata fingerprint is invalid"
+    if meta.get("schema_version") != expected["schema_version"]:
+        return "promotion metadata schema version mismatch"
+    for key in (
+        "target_type",
+        "target_horizon_days",
+        "target_threshold",
+        "feature_names",
+        "feature_set_id",
+        "broader_context_enabled",
+    ):
+        if meta.get(key) != expected[key]:
+            return f"promotion metadata {key} mismatch"
+    return None
 
 
 def _walk_forward_multiclass(
@@ -218,6 +354,8 @@ class LongTrendModel:
         self._calibrator_mtime: Optional[float] = None
         self.calibration_base_rate: Optional[float] = None
         self._calibration_report_mtime: Optional[float] = None
+        self._meta_signature: Optional[str] = None
+        self._runtime_semantic_signature: Optional[str] = None
         # True when no gate-passing trained model is available; the long signal
         # is served from a calibrated majority-class base rate instead.
         self._baseline_mode: bool = False
@@ -251,9 +389,29 @@ class LongTrendModel:
         except OSError:
             mtime = None
 
-        if not self._model_loaded or mtime != self._loaded_mtime:
+        try:
+            meta_signature = (
+                hashlib.sha256(_META_PATH.read_bytes()).hexdigest()
+                if _META_PATH.exists()
+                else None
+            )
+        except OSError:
+            meta_signature = None
+        runtime_semantic_signature = build_promotion_meta(
+            settings.LONG_TARGET_TYPE,
+            feature_names=current_feature_names(),
+        )["fingerprint"]
+
+        if (
+            not self._model_loaded
+            or mtime != self._loaded_mtime
+            or meta_signature != self._meta_signature
+            or runtime_semantic_signature != self._runtime_semantic_signature
+        ):
             self.load_model()
             self._loaded_mtime = mtime
+            self._meta_signature = meta_signature
+            self._runtime_semantic_signature = runtime_semantic_signature
 
         # Reload the calibrator when its file appears or changes (e.g. after
         # a retrain in the trainer component of the same process).
@@ -1023,7 +1181,7 @@ class LongTrendModel:
 
             # Feature importances
             importances = dict(
-                zip(FEATURE_NAMES, model.feature_importances_.tolist())
+                zip(current_feature_names(), model.feature_importances_.tolist())
             )
 
             # Degeneracy health check: a broken train (e.g. vanishing sample
@@ -1056,6 +1214,11 @@ class LongTrendModel:
                 "train_accuracy": acc,
                 "target_horizon_days": horizon,
                 "meaningful_move_threshold": threshold,
+                "target_threshold": threshold,
+                "feature_names": current_feature_names(),
+                "broader_context_enabled": bool(
+                    settings.LONG_BROADER_CONTEXT_ENABLED
+                ),
                 "training_rows": int(len(X)),
                 "excluded_noise_rows": int(excluded_noise_rows),
                 "positive_label_rate": float(np.mean(y)),
@@ -1074,8 +1237,15 @@ class LongTrendModel:
     # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def save_promotion_meta(target_type: str) -> None:
-        """Persist the target_type of the just-promoted model to the meta sidecar.
+    def save_promotion_meta(
+        target_type: str,
+        *,
+        target_horizon_days: Optional[int] = None,
+        target_threshold: Optional[float] = None,
+        feature_names: Optional[list[str]] = None,
+        broader_context_enabled: Optional[bool] = None,
+    ) -> None:
+        """Persist the complete semantic contract of a promoted model.
 
         Called by the trainer immediately after a gate-passing model is written
         to MODEL_PATH.  Safe to call from outside the class (e.g. from trainer.py).
@@ -1084,10 +1254,21 @@ class LongTrendModel:
         import json as _json
         try:
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            metadata = build_promotion_meta(
+                target_type,
+                target_horizon_days=target_horizon_days,
+                target_threshold=target_threshold,
+                feature_names=feature_names,
+                broader_context_enabled=broader_context_enabled,
+            )
             with open(_META_PATH, "w") as _mf:
-                _json.dump({"target_type": target_type}, _mf)
+                _json.dump(metadata, _mf, indent=2, sort_keys=True)
             logger.info(
-                "ml_model_meta_saved model=long_trend target_type=%s", target_type
+                "ml_model_meta_saved model=long_trend target_type=%s "
+                "schema_version=%s fingerprint=%s",
+                target_type,
+                metadata["schema_version"],
+                metadata["fingerprint"][:12],
             )
         except Exception as exc:
             logger.error("save_promotion_meta error: %s", exc)
@@ -1209,7 +1390,9 @@ class LongTrendModel:
             self.model = model
             self._model_loaded = True
 
-            importances = dict(zip(FEATURE_NAMES, model.feature_importances_.tolist()))
+            importances = dict(
+                zip(current_feature_names(), model.feature_importances_.tolist())
+            )
             degenerate, degeneracy_reason = check_model_degeneracy(model, X)
             if degenerate:
                 logger.error(
@@ -1243,6 +1426,11 @@ class LongTrendModel:
                 "target_type": "drawdown_event",
                 "target_horizon_days": horizon,
                 "drawdown_threshold": dd_thresh,
+                "target_threshold": dd_thresh,
+                "feature_names": current_feature_names(),
+                "broader_context_enabled": bool(
+                    settings.LONG_BROADER_CONTEXT_ENABLED
+                ),
                 "training_rows": int(len(X)),
                 "positive_label_rate": event_rate,
                 "pr_auc_lift_vs_prevalence": pr_auc_lift,
@@ -1367,7 +1555,9 @@ class LongTrendModel:
             self.model = model
             self._model_loaded = True
 
-            importances = dict(zip(FEATURE_NAMES, model.feature_importances_.tolist()))
+            importances = dict(
+                zip(current_feature_names(), model.feature_importances_.tolist())
+            )
             degenerate, degeneracy_reason = check_model_degeneracy(model, X)
             if degenerate:
                 logger.error(
@@ -1392,6 +1582,11 @@ class LongTrendModel:
                 "target_type": "three_state",
                 "target_horizon_days": horizon,
                 "three_state_threshold": threshold,
+                "target_threshold": threshold,
+                "feature_names": current_feature_names(),
+                "broader_context_enabled": bool(
+                    settings.LONG_BROADER_CONTEXT_ENABLED
+                ),
                 "training_rows": int(len(X)),
                 "macro_f1": macro_f1,
                 "per_class": calibration_summary.get("per_class"),
@@ -1553,7 +1748,10 @@ class LongTrendModel:
                 with open(MODEL_PATH, "rb") as f:
                     model = pickle.load(f)
                 n_in = getattr(model, "n_features_in_", None)
-                self._model_feature_count = int(n_in) if n_in is not None else len(FEATURE_NAMES)
+                expected_feature_names = current_feature_names()
+                self._model_feature_count = (
+                    int(n_in) if n_in is not None else len(expected_feature_names)
+                )
                 is_legacy_xgb = (
                     n_in is not None
                     and int(n_in) == 15
@@ -1566,18 +1764,18 @@ class LongTrendModel:
                         "ml_model_baseline_mode model=long_trend expected_features=%d "
                         "found=%d reason=legacy_model_no_oos_edge "
                         "action=calibrated_base_rate",
-                        len(FEATURE_NAMES), int(n_in),
+                        len(expected_feature_names), int(n_in),
                     )
                     self.model = None
                     self._model_feature_count = None
                     self._baseline_mode = True
                     self._model_loaded = True
                     return False
-                if n_in is not None and int(n_in) != len(FEATURE_NAMES):
+                if n_in is not None and int(n_in) != len(expected_feature_names):
                     logger.warning(
                         "ml_model_stale model=long_trend expected_features=%d "
                         "found=%d action=baseline_await_retrain",
-                        len(FEATURE_NAMES), int(n_in),
+                        len(expected_feature_names), int(n_in),
                     )
                     self.model = None
                     self._model_feature_count = None
@@ -1604,27 +1802,31 @@ class LongTrendModel:
                     self._model_loaded = True
                     return False
 
-                # Target-type alignment: read the meta sidecar written by the
-                # last successful promotion and compare to the configured target.
-                # A mismatch forces baseline mode until a retrain for the new
-                # target completes — this prevents a direction model from being
-                # served as a drawdown/three_state model (wrong output semantics).
+                # Semantic alignment: read the complete metadata contract
+                # written by the last successful promotion. Missing, legacy,
+                # tampered, or configuration-mismatched metadata forces
+                # baseline mode until a retrain creates a fresh artifact.
                 try:
-                    import json as _json
                     if _META_PATH.exists():
                         with open(_META_PATH) as _mf:
-                            _meta = _json.load(_mf)
-                        _promoted = str(_meta.get("target_type", "direction"))
+                            _meta = json.load(_mf)
                     else:
-                        _promoted = "direction"  # pre-meta pkl defaults to direction
+                        _meta = None
+                    _promoted = (
+                        str(_meta.get("target_type"))
+                        if isinstance(_meta, dict) and _meta.get("target_type")
+                        else None
+                    )
                     self._promoted_target_type = _promoted
                     configured = settings.LONG_TARGET_TYPE
-                    if _promoted != configured:
+                    mismatch = promotion_meta_mismatch(_meta)
+                    if mismatch:
                         logger.warning(
                             "ml_model_baseline_mode model=long_trend "
                             "promoted_target=%s configured_target=%s "
-                            "reason=target_type_mismatch action=baseline_await_retrain",
+                            "reason=%s action=baseline_await_retrain",
                             _promoted, configured,
+                            mismatch,
                         )
                         self.model = None
                         self._model_feature_count = None
@@ -1634,10 +1836,14 @@ class LongTrendModel:
                 except Exception as _meta_exc:
                     logger.warning(
                         "ml_model_meta_read_error model=long_trend error=%s "
-                        "— assuming direction target",
+                        "action=baseline_await_retrain",
                         _meta_exc,
                     )
-                    self._promoted_target_type = "direction"
+                    self.model = None
+                    self._model_feature_count = None
+                    self._baseline_mode = True
+                    self._model_loaded = True
+                    return False
 
                 self.model = model
                 self._baseline_mode = False

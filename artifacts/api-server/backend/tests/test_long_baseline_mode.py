@@ -89,6 +89,14 @@ class _XGBLike10:
         return np.array([[0.5, 0.5]] * len(X))
 
 
+class _ModelWithoutFeatureCount:
+    """Picklable model used to isolate metadata checks from width checks."""
+
+    def predict_proba(self, X):
+        import numpy as np
+        return np.array([[0.27, 0.73]] * len(X))
+
+
 _fake_xgb_sklearn._XGBLike15 = _XGBLike15
 _fake_xgb_sklearn._XGBLike19 = _XGBLike19
 _fake_xgb_sklearn._XGBLike10 = _XGBLike10
@@ -198,13 +206,13 @@ class TestLoadModelBaselineMode:
         assert m.model is None
 
     def test_valid_19feature_model_clears_baseline(self, isolated):
-        """A valid 19-feature pkl must set _baseline_mode=False and load model."""
+        """A bare pkl is not enough without a semantic promotion contract."""
         from ml import long_trend as lt
 
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
         m = LongTrendModel()
-        assert m.is_baseline_mode() is False, "19-feature model must clear baseline mode"
-        assert m.model is not None
+        assert m.is_baseline_mode() is True
+        assert m.model is None
 
     def test_pre_gate_19feature_sets_baseline_mode(self, isolated, monkeypatch):
         """A 19-feature pkl whose last_success_metric is NOT
@@ -303,8 +311,10 @@ class TestBaselineModeAutoRecovery:
         m = LongTrendModel()
         assert m.is_baseline_mode() is True
 
-        # Simulate a gate-passing retrain: write a 19-feature pkl
+        # Simulate a gate-passing retrain: write a 19-feature pkl and its
+        # complete semantic promotion metadata.
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        LongTrendModel.save_promotion_meta("direction")
 
         # Force mtime change detection
         m._loaded_mtime = None
@@ -322,9 +332,10 @@ class TestBaselineModeAutoRecovery:
         m = LongTrendModel()
         assert m.is_baseline_mode() is True
 
-        # Retrain promotes a 19-feature model
+        # Retrain promotes a 19-feature model and complete metadata.
         time.sleep(0.01)  # ensure mtime differs
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        LongTrendModel.save_promotion_meta("direction")
 
         # Trigger mtime-based reload
         m._loaded_mtime = None
@@ -385,6 +396,7 @@ class TestPredictLongBaselineResponseContract:
         from ml import long_trend as lt
 
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        LongTrendModel.save_promotion_meta("direction")
         m = LongTrendModel()
         long_signal_mode = "baseline" if m.is_baseline_mode() else "trained"
         assert long_signal_mode == "trained"
@@ -411,6 +423,7 @@ class TestNeutralFallbackConsistency:
         from ml import long_trend as lt
 
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        LongTrendModel.save_promotion_meta("direction")
         m = LongTrendModel()
         assert m.is_baseline_mode() is False
         assert m.is_neutral_fallback() is False
@@ -433,9 +446,11 @@ class TestTargetTypeMismatch:
     a direction model under drawdown / three-state semantics."""
 
     def _write_meta(self, path, target_type: str) -> None:
-        """Write a minimal meta sidecar JSON."""
+        """Write a complete promotion contract for a target family."""
         import json
-        path.write_text(json.dumps({"target_type": target_type}))
+        from ml.long_trend import build_promotion_meta
+
+        path.write_text(json.dumps(build_promotion_meta(target_type)))
 
     def test_direction_model_with_drawdown_config_is_baseline(
         self, isolated, monkeypatch
@@ -480,8 +495,7 @@ class TestTargetTypeMismatch:
     def test_matching_target_type_does_not_force_baseline(
         self, isolated, monkeypatch
     ):
-        """When the meta sidecar and LONG_TARGET_TYPE agree (both 'direction'),
-        no mismatch → baseline mode must NOT be set."""
+        """A complete direction contract matching the config must load."""
         from ml import long_trend as lt
 
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
@@ -496,9 +510,7 @@ class TestTargetTypeMismatch:
     def test_absent_meta_sidecar_defaults_to_direction(
         self, isolated, monkeypatch
     ):
-        """When no meta sidecar exists, load_model() assumes 'direction'.
-        A valid 19-feature pkl with LONG_TARGET_TYPE='direction' must load
-        successfully (no baseline mode)."""
+        """A missing sidecar is unverifiable and must enter baseline mode."""
         from ml import long_trend as lt
 
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
@@ -506,8 +518,8 @@ class TestTargetTypeMismatch:
         monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "direction")
 
         m = LongTrendModel()
-        assert m.is_baseline_mode() is False
-        assert m.model is not None
+        assert m.is_baseline_mode() is True
+        assert m.model is None
 
     def test_absent_meta_sidecar_with_drawdown_config_is_baseline(
         self, isolated, monkeypatch
@@ -588,7 +600,8 @@ class TestTargetTypeMismatch:
             "three_state model + direction config must start in baseline mode"
         )
 
-        # Step 2: retrain completes with direction target; promote new pkl + sidecar
+        # Step 2: retrain completes with direction target; promote new pkl +
+        # complete sidecar.
         time.sleep(0.01)  # ensure mtime differs
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
         self._write_meta(lt._META_PATH, "direction")
@@ -617,7 +630,7 @@ class TestTargetTypeMismatch:
         m = LongTrendModel()
         assert m.is_baseline_mode() is True
 
-        # Simulate a successful drawdown_event retrain: update pkl + sidecar
+        # Simulate a successful drawdown_event retrain: update pkl + complete sidecar
         import time
         time.sleep(0.01)  # ensure mtime differs
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
@@ -631,6 +644,119 @@ class TestTargetTypeMismatch:
             "After a matching drawdown_event retrain, baseline mode must clear"
         )
         assert m.model is not None
+
+
+# ---------------------------------------------------------------------------
+# 6b. Semantic contract changes force baseline mode
+# ---------------------------------------------------------------------------
+
+class TestPromotionMetadataSemantics:
+    def _write_contract_model(self, lt, target_type="direction", **overrides):
+        _write_pkl(lt.MODEL_PATH, _ModelWithoutFeatureCount())
+        metadata = lt.build_promotion_meta(target_type, **overrides)
+        lt._META_PATH.write_text(__import__("json").dumps(metadata))
+        return metadata
+
+    def test_direction_horizon_change_is_baseline(self, isolated, monkeypatch):
+        from ml import long_trend as lt
+
+        self._write_contract_model(lt, "direction")
+        monkeypatch.setattr(lt.settings, "LONG_LABEL_HORIZON_DAYS", 42)
+
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is True
+        assert model.model is None
+
+    def test_direction_threshold_change_is_baseline(self, isolated, monkeypatch):
+        from ml import long_trend as lt
+
+        self._write_contract_model(lt, "direction")
+        monkeypatch.setattr(lt.settings, "LONG_MEANINGFUL_MOVE_THRESHOLD", 0.04)
+
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is True
+        assert model.model is None
+
+    @pytest.mark.parametrize(
+        ("target_type", "horizon_setting", "threshold_setting", "new_value"),
+        [
+            ("drawdown_event", "LONG_DRAWDOWN_HORIZON", "LONG_DRAWDOWN_THRESHOLD", 42),
+            ("three_state", "LONG_THREE_STATE_HORIZON", "LONG_THREE_STATE_THRESHOLD", 42),
+        ],
+    )
+    def test_alternative_target_semantic_change_is_baseline(
+        self,
+        isolated,
+        monkeypatch,
+        target_type,
+        horizon_setting,
+        threshold_setting,
+        new_value,
+    ):
+        from ml import long_trend as lt
+
+        self._write_contract_model(lt, target_type)
+        monkeypatch.setattr(lt.settings, horizon_setting, new_value)
+
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is True
+        assert model.model is None
+
+        # The threshold is also part of the contract, independently of horizon.
+        monkeypatch.setattr(lt.settings, horizon_setting, getattr(lt.settings, horizon_setting) - 21)
+        monkeypatch.setattr(lt.settings, threshold_setting, 0.11)
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is True
+
+    def test_feature_order_change_is_baseline(self, isolated):
+        from ml import long_trend as lt
+
+        names = lt.current_feature_names()
+        reordered = [names[1], names[0], *names[2:]]
+        self._write_contract_model(lt, "direction", feature_names=reordered)
+
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is True
+        assert model.model is None
+
+    def test_context_enablement_change_is_baseline(self, isolated, monkeypatch):
+        from ml import long_trend as lt
+
+        self._write_contract_model(lt, "direction")
+        monkeypatch.setattr(lt.settings, "LONG_BROADER_CONTEXT_ENABLED", True)
+
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is True
+        assert model.model is None
+
+    def test_tampered_fingerprint_is_baseline(self, isolated):
+        import json
+        from ml import long_trend as lt
+
+        self._write_contract_model(lt, "direction")
+        metadata = json.loads(lt._META_PATH.read_text())
+        metadata["target_threshold"] = 0.99
+        lt._META_PATH.write_text(json.dumps(metadata))
+
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is True
+        assert model.model is None
+
+    def test_metadata_only_change_triggers_hot_reload(self, isolated, monkeypatch):
+        from ml import long_trend as lt
+
+        self._write_contract_model(lt, "direction")
+        model = LongTrendModel()
+        assert model.is_baseline_mode() is False
+
+        original_metadata = lt._META_PATH.read_text()
+        monkeypatch.setattr(lt.settings, "LONG_LABEL_HORIZON_DAYS", 42)
+        # Keep the old promoted artifact metadata on disk while the runtime
+        # configuration changes; this is the no-retrain scenario.
+        lt._META_PATH.write_text(original_metadata)
+        model._maybe_reload()
+        assert model.is_baseline_mode() is True
+        assert model.model is None
 
 
 # ---------------------------------------------------------------------------
@@ -730,7 +856,9 @@ class TestRollbackPreservesMetaSidecar:
 
         # ── Step 1: establish the known-good direction state ──────────────────
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
-        lt._META_PATH.write_text(json.dumps({"target_type": "direction"}))
+        lt._META_PATH.write_text(
+            json.dumps(lt.build_promotion_meta("direction"))
+        )
 
         # ── Step 2: back up before the retrain ───────────────────────────────
         backup_path = _backup_model_file(lt.MODEL_PATH)
@@ -747,7 +875,9 @@ class TestRollbackPreservesMetaSidecar:
         import time
         time.sleep(0.01)  # ensure mtime differs from backup
         _write_pkl(lt.MODEL_PATH, _XGBLike19())
-        lt._META_PATH.write_text(json.dumps({"target_type": "drawdown_event"}))
+        lt._META_PATH.write_text(
+            json.dumps(lt.build_promotion_meta("drawdown_event"))
+        )
 
         # ── Step 4: quality gate fails → rollback ────────────────────────────
         restored = _restore_model_file(lt.MODEL_PATH, backup_path, "long_trend")

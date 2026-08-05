@@ -103,18 +103,16 @@ class TestRetrainRoundTrip:
         assert set(result["feature_importances"].keys()) == set(LONG_FEATURES)
         assert long_path.exists()
 
-        # Fresh instance: load from disk and predict
+        # Fresh instance: the failed OOS evaluation wrote a candidate pickle,
+        # but it was never promoted. Without a complete promotion metadata
+        # sidecar, startup must reject the artifact into baseline mode.
         fresh = LongTrendModel()
-        assert fresh.load_model() is True
-        assert int(fresh.model.n_features_in_) == len(LONG_FEATURES)
+        assert fresh.load_model() is False
+        assert fresh.is_baseline_mode() is True
+        assert fresh.model is None
 
         X, _w, _pos = fresh.build_features(df, {})
         assert X.shape[1] == len(LONG_FEATURES)
-        preds = [fresh.predict(X[i]) for i in range(0, len(X), 10)]
-        assert all(0.0 <= p <= 1.0 for p in preds)
-        # Non-constant: not the neutral-0.5 fallback, and varies across inputs
-        assert np.std(preds) > 1e-6
-        assert any(abs(p - 0.5) > 1e-6 for p in preds)
 
     def test_short_trend_round_trip(self, isolated_model_paths):
         _, short_path = isolated_model_paths
