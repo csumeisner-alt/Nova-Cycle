@@ -385,6 +385,54 @@ def compute_overnight_return_weighted(
 #      missing = 1.0 means the data is absent or too stale to trust.
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _sanitize_close(
+    series: pd.Series,
+    label: str,
+) -> "tuple[pd.Series, pd.Series]":
+    """
+    Detect and neutralise bad close values (NaN or ≤ 0) in a context candle
+    series before they corrupt model features.
+
+    A bad row is one where ``close`` is NaN, infinite, or ≤ 0 — values that
+    can slip past an older ingestion run and silently poison derived features.
+
+    Behaviour:
+      - Logs a WARNING for every call that finds at least one bad value.
+      - Fills bad positions via forward-fill (then back-fill as a last resort)
+        so downstream arithmetic (pct_change, division) stays numerically
+        valid.
+      - Returns a boolean ``bad_mask`` that callers must OR into their
+        ``missing`` flag so the model sees ``missing=1.0`` for those rows
+        rather than the filled placeholder.
+
+    Args:
+        series : raw close series (may contain NaN / 0 / negative values).
+        label  : short name used in log messages (e.g. ``"hyg_close"``).
+
+    Returns:
+        cleaned  : pd.Series — same index as *series*, bad values filled.
+        bad_mask : pd.Series[bool] — True at every bad position.
+    """
+    numeric = pd.to_numeric(series, errors="coerce")
+    bad_mask = numeric.isna() | ~np.isfinite(numeric) | (numeric <= 0)
+    n_bad = int(bad_mask.sum())
+    if n_bad:
+        logger.warning(
+            "ml_feature_bad_context_row label=%s bad_rows=%d/%d "
+            "— setting missing=1.0 for affected positions",
+            label,
+            n_bad,
+            len(series),
+        )
+        cleaned = numeric.where(~bad_mask).ffill().bfill()
+        # If the entire series is bad, ffill/bfill leave NaN; use 1.0 as a
+        # safe non-zero placeholder so division never blows up.
+        cleaned = cleaned.fillna(1.0)
+    else:
+        cleaned = numeric
+    return cleaned, bad_mask
+
+
 def _stale_mask(
     target_index: pd.Index,
     source_index: pd.Index,
@@ -459,20 +507,23 @@ def compute_vix_term_structure(
         )
 
         if have_real:
-            short_a = (
-                vix_short_close
-                .reindex(idx, method="ffill")
-                .replace([np.inf, -np.inf], np.nan)
-            )
-            long_a = (
-                vix_long_close
-                .reindex(idx, method="ffill")
-                .replace([np.inf, -np.inf], np.nan)
-            )
+            # Sanitize source series before reindexing so bad rows don't
+            # forward-fill corrupt values onto adjacent target dates.
+            short_src, short_bad_src = _sanitize_close(vix_short_close, "vix_short_close")
+            long_src, long_bad_src = _sanitize_close(vix_long_close, "vix_long_close")
+
+            short_a = short_src.reindex(idx, method="ffill")
+            long_a = long_src.reindex(idx, method="ffill")
+
+            # Propagate bad-source positions onto the aligned target index.
+            short_bad = short_bad_src.reindex(idx, method="ffill").fillna(False)
+            long_bad = long_bad_src.reindex(idx, method="ffill").fillna(False)
+            any_bad = short_bad | long_bad
+
             raw_slope = (short_a / long_a.replace(0, np.nan) - 1.0)
             slope = raw_slope.clip(-1.0, 1.0).fillna(0.0)
             stale = _stale_mask(idx, vix_short_close.index, staleness_max_days)
-            missing = stale.astype(float)
+            missing = (stale | any_bad).astype(float)
         else:
             # Proxy: rolling SMA ratio captures short-vs-long VIX momentum
             sma_short = vix_close.rolling(proxy_window_short, min_periods=1).mean()
@@ -521,20 +572,24 @@ def compute_credit_stress(
             )
 
         if have_hy:
-            hy_a = hy_close.reindex(index, method="ffill").replace(
-                [np.inf, -np.inf], np.nan
-            )
+            hy_src, hy_bad_src = _sanitize_close(hy_close, "hy_close")
+            hy_a = hy_src.reindex(index, method="ffill")
+            hy_bad = hy_bad_src.reindex(index, method="ffill").fillna(False)
             hy_ret = hy_a.pct_change().fillna(0.0)
         else:
             hy_ret = pd.Series(0.0, index=index)
+            hy_bad = pd.Series(False, index=index)
 
         if have_ig:
-            ig_a = ig_close.reindex(index, method="ffill").replace(
-                [np.inf, -np.inf], np.nan
-            )
+            ig_src, ig_bad_src = _sanitize_close(ig_close, "ig_close")
+            ig_a = ig_src.reindex(index, method="ffill")
+            ig_bad = ig_bad_src.reindex(index, method="ffill").fillna(False)
             ig_ret = ig_a.pct_change().fillna(0.0)
         else:
             ig_ret = pd.Series(0.0, index=index)
+            ig_bad = pd.Series(False, index=index)
+
+        any_bad = hy_bad | ig_bad
 
         # Spread: positive = HY underperforming IG = stress rising
         spread = (ig_ret - hy_ret).rolling(window, min_periods=1).mean()
@@ -544,7 +599,7 @@ def compute_credit_stress(
 
         ref = hy_close.index if have_hy else ig_close.index
         stale = _stale_mask(index, ref, staleness_max_days)
-        missing = stale.astype(float)
+        missing = (stale | any_bad).astype(float)
         return score, missing
     except Exception as exc:
         logger.error("ml_feature_error feature=credit_stress error=%s", exc)
@@ -580,16 +635,17 @@ def compute_market_breadth(
                 _default_series(index, 1.0),
             )
 
-        aligned = breadth_close.reindex(index, method="ffill").replace(
-            [np.inf, -np.inf], np.nan
-        )
+        breadth_src, bad_src = _sanitize_close(breadth_close, "breadth_close")
+        aligned = breadth_src.reindex(index, method="ffill")
+        bad = bad_src.reindex(index, method="ffill").fillna(False)
+
         momentum = aligned.diff(window).fillna(0.0)
         p95 = float(momentum.abs().quantile(0.95)) or 0.01
         score = ((momentum / p95).clip(-1.0, 1.0) + 1.0) / 2.0
         score = score.clip(0.0, 1.0).fillna(0.5)
 
         stale = _stale_mask(index, breadth_close.index, staleness_max_days)
-        missing = stale.astype(float)
+        missing = (stale | bad).astype(float)
         return score, missing
     except Exception as exc:
         logger.error("ml_feature_error feature=market_breadth error=%s", exc)
@@ -625,10 +681,12 @@ def compute_rates_level(
                 _default_series(index, 1.0),
             )
 
+        rates_src, bad_src = _sanitize_close(rates_close, "rates_close")
+        bad = bad_src.reindex(index, method="ffill").fillna(False)
+
         aligned = (
-            rates_close
+            rates_src
             .reindex(index, method="ffill")
-            .replace([np.inf, -np.inf], np.nan)
             .ffill()
             .fillna(clip_max_pct * 5.0)   # neutral mid-point on failure
         )
@@ -636,7 +694,7 @@ def compute_rates_level(
         norm = (aligned / (clip_max_pct * 10.0)).clip(0.0, 1.0)
 
         stale = _stale_mask(index, rates_close.index, staleness_max_days)
-        missing = stale.astype(float)
+        missing = (stale | bad).astype(float)
         return norm, missing
     except Exception as exc:
         logger.error("ml_feature_error feature=rates_level error=%s", exc)
