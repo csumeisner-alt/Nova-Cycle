@@ -385,3 +385,124 @@ def mark_baseline_duration_alert_sent(model_name: str) -> None:
             json.dump(data, f, indent=2)
     except Exception as exc:
         logger.error("training_status mark_baseline_duration_alert_sent error: %s", exc)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Broader-context promotion signal
+# ──────────────────────────────────────────────────────────────────────────────
+
+PROMOTION_PATH = STATUS_PATH.parent / "broader_context_promotion.json"
+
+
+def record_broader_context_promotion(
+    delta: float,
+    lift: float,
+    acc_27: float,
+    auto_enabled: bool = False,
+) -> None:
+    """Record that the 27-feature broader-context model first cleared the OOS gate.
+
+    Idempotent on the same UTC date: a second call on the same day preserves the
+    original timestamp.  If ``auto_enabled`` transitions from False to True on a
+    subsequent call, the record is updated.  Never raises.
+
+    Args:
+        delta:        OOS accuracy delta (27-feat minus 19-feat).
+        lift:         OOS lift of 27-feat model vs majority baseline.
+        acc_27:       Absolute OOS accuracy of the 27-feat model.
+        auto_enabled: True when LONG_BROADER_CONTEXT_ENABLED was flipped
+                      in-memory automatically by LONG_BROADER_CONTEXT_AUTO_ENABLE.
+    """
+    try:
+        existing: dict = {}
+        if PROMOTION_PATH.exists():
+            try:
+                with open(PROMOTION_PATH, "r") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    existing = raw
+            except Exception as exc:
+                logger.warning(
+                    "broader_context_promotion: could not read existing file (%s) "
+                    "— overwriting",
+                    exc,
+                )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        today   = now_iso[:10]
+
+        # Idempotent: preserve original timestamp when already recorded today.
+        promoted_at = existing.get("promoted_at_utc", now_iso)
+        recorded_date = str(promoted_at)[:10]
+        if recorded_date != today:
+            # New date → fresh promotion record (replace the old one).
+            promoted_at = now_iso
+
+        # Update auto_enabled if it transitions False → True.
+        was_auto = bool(existing.get("auto_enabled", False))
+        record = {
+            "promoted_at_utc": promoted_at,
+            "accuracy_delta_27_minus_19": round(float(delta), 4),
+            "oos_lift_27feat": round(float(lift), 4),
+            "oos_accuracy_27feat": round(float(acc_27), 4),
+            "auto_enabled": auto_enabled or was_auto,
+            "alert_sent": bool(existing.get("alert_sent", False)),
+        }
+        PROMOTION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(PROMOTION_PATH, "w") as f:
+            json.dump(record, f, indent=2)
+        logger.warning(
+            "broader_context_promotion_recorded delta=%+.4f lift=%+.4f acc_27=%.4f "
+            "auto_enabled=%s",
+            delta, lift, acc_27, auto_enabled,
+        )
+    except Exception as exc:
+        logger.error("record_broader_context_promotion error: %s", exc)
+
+
+def get_broader_context_promotion() -> Optional[dict]:
+    """Return the promotion record dict if one has been written, else None.
+
+    Never raises.
+    """
+    try:
+        if PROMOTION_PATH.exists():
+            with open(PROMOTION_PATH, "r") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict) and "promoted_at_utc" in raw:
+                return raw
+    except Exception as exc:
+        logger.error("get_broader_context_promotion error: %s", exc)
+    return None
+
+
+def should_send_broader_context_promotion_alert() -> bool:
+    """Return True when the gate has been passed and the FCM alert has not yet been sent.
+
+    Never raises.
+    """
+    try:
+        record = get_broader_context_promotion()
+        if record is None:
+            return False
+        return not bool(record.get("alert_sent", False))
+    except Exception as exc:
+        logger.error("should_send_broader_context_promotion_alert error: %s", exc)
+    return False
+
+
+def mark_broader_context_promotion_alert_sent() -> None:
+    """Record that the broader-context promotion FCM alert was delivered.
+
+    Never raises.
+    """
+    try:
+        record = get_broader_context_promotion()
+        if record is None:
+            return
+        record["alert_sent"] = True
+        PROMOTION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(PROMOTION_PATH, "w") as f:
+            json.dump(record, f, indent=2)
+    except Exception as exc:
+        logger.error("mark_broader_context_promotion_alert_sent error: %s", exc)

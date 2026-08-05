@@ -494,4 +494,45 @@ def run_broader_context_ablation(
     except Exception as exc:
         logger.error("ablation_report_write_failed path=%s error=%s", out_path, exc)
 
+    # ── Promotion signal + optional auto-enable ───────────────────────────────
+    # When the gate passes for the first time, persist a promotion record so
+    # the healthz endpoint and operators know a gate-passing retrain occurred.
+    # If LONG_BROADER_CONTEXT_AUTO_ENABLE=True, flip the in-memory flag
+    # immediately so the next scheduled retrain trains the 27-feature model
+    # without manual intervention.
+    if passes_gate:
+        try:
+            from ml.training_status import record_broader_context_promotion  # noqa: PLC0415
+            from config import settings as _cfg  # noqa: PLC0415
+
+            auto_enabled = False
+            if getattr(_cfg, "LONG_BROADER_CONTEXT_AUTO_ENABLE", False):
+                # Only flip if not already enabled; idempotent re-enables are fine
+                # but we log clearly to avoid confusion.
+                if not _cfg.LONG_BROADER_CONTEXT_ENABLED:
+                    _cfg.LONG_BROADER_CONTEXT_ENABLED = True  # type: ignore[assignment]
+                    auto_enabled = True
+                    logger.warning(
+                        "ablation_broader_context_auto_enabled: "
+                        "LONG_BROADER_CONTEXT_ENABLED flipped True in-memory "
+                        "(LONG_BROADER_CONTEXT_AUTO_ENABLE=True). "
+                        "Next retrain will use the 27-feature model. "
+                        "Set LONG_BROADER_CONTEXT_ENABLED=True in the environment "
+                        "for this to persist across server restarts."
+                    )
+                else:
+                    auto_enabled = True
+                    logger.info(
+                        "ablation_broader_context_auto_enabled: flag already True"
+                    )
+
+            record_broader_context_promotion(
+                delta=delta,
+                lift=lift_27,
+                acc_27=acc_27,
+                auto_enabled=auto_enabled,
+            )
+        except Exception as _promo_exc:
+            logger.error("ablation_promotion_record_failed error=%s", _promo_exc)
+
     return result

@@ -627,11 +627,16 @@ class ModelTrainer:
         if not long_flagged:
             try:
                 from ml.post_retrain_ablation import run_broader_context_ablation  # noqa: PLC0415
-                run_broader_context_ablation(
+                ablation_result = run_broader_context_ablation(
                     daily_df, vix_df, spx_close, broader_context
                 )
             except Exception as _abl_exc:
                 logger.error("post_retrain_ablation_error error=%s", _abl_exc)
+                ablation_result = {}
+            # Send a one-time FCM alert when the broader-context gate passes
+            # for the first time (alert_sent flag suppresses repeats).
+            if ablation_result and ablation_result.get("passes_promotion_gate"):
+                await self._maybe_send_broader_context_promotion_alert(db_session)
 
         # ── Load 5-min VOO candles ─────────────────────────────────────────────
         fivemin_df = await self._load_fivemin_voo(db_session)
@@ -835,6 +840,69 @@ class ModelTrainer:
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    async def _maybe_send_broader_context_promotion_alert(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Send a one-time FCM alert when the broader-context gate passes.
+
+        Fires only the first time the gate is passed (suppressed when
+        ``alert_sent`` is already True in the promotion record). Never raises —
+        a notification failure must not break training.
+        """
+        try:
+            from ml.training_status import (  # noqa: PLC0415
+                should_send_broader_context_promotion_alert,
+                get_broader_context_promotion,
+                mark_broader_context_promotion_alert_sent,
+            )
+            if not should_send_broader_context_promotion_alert():
+                return
+
+            from sqlalchemy import select as _select  # noqa: PLC0415
+            from database.models import DeviceToken  # noqa: PLC0415
+            from notifications.fcm import FCMNotifier  # noqa: PLC0415
+
+            result = await db_session.execute(_select(DeviceToken))
+            tokens = result.scalars().all()
+            if not tokens:
+                logger.warning(
+                    "broader_context_promotion_alert — no device tokens registered; "
+                    "alert stays armed until a device is available"
+                )
+                return
+
+            promo = get_broader_context_promotion()
+            delta    = float(promo.get("accuracy_delta_27_minus_19", 0.0))
+            lift     = float(promo.get("oos_lift_27feat", 0.0))
+            acc_27   = float(promo.get("oos_accuracy_27feat", 0.0))
+            auto_en  = bool(promo.get("auto_enabled", False))
+
+            notifier = FCMNotifier()
+            any_sent = False
+            for device in tokens:
+                ok = await notifier.send_broader_context_promotion_alert(
+                    device_token=device.token,
+                    delta=delta,
+                    lift=lift,
+                    acc_27=acc_27,
+                    auto_enabled=auto_en,
+                )
+                any_sent = any_sent or ok
+
+            if any_sent:
+                mark_broader_context_promotion_alert_sent()
+                logger.warning(
+                    "broader_context_promotion_alert_sent delta=%+.4f lift=%+.4f",
+                    delta, lift,
+                )
+            else:
+                logger.error(
+                    "broader_context_promotion_alert_failed — will retry on next "
+                    "gate-passing retrain"
+                )
+        except Exception as exc:
+            logger.error("_maybe_send_broader_context_promotion_alert error: %s", exc)
 
     async def _maybe_send_stuck_alert(
         self, db_session: AsyncSession, model_name: str

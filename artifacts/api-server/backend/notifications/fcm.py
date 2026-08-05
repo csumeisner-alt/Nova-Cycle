@@ -334,6 +334,85 @@ class FCMNotifier:
 
         return await self._post(payload, access_token, project_id)
 
+    async def send_broader_context_promotion_alert(
+        self,
+        device_token: str,
+        delta: float,
+        lift: float,
+        acc_27: float,
+        auto_enabled: bool = False,
+    ) -> bool:
+        """Send an operator alert when the 27-feature broader-context model first
+        passes the OOS gate during an automated retrain.
+
+        Args:
+            device_token: FCM device registration token.
+            delta:        OOS accuracy gain of 27-feat over 19-feat baseline.
+            lift:         OOS accuracy lift of 27-feat vs majority baseline.
+            acc_27:       Absolute OOS accuracy of the 27-feat model.
+            auto_enabled: Whether LONG_BROADER_CONTEXT_ENABLED was flipped
+                          automatically (True) or still requires manual action (False).
+
+        Returns:
+            True on success.
+        """
+        if not settings.FCM_SERVER_KEY:
+            logger.info(
+                "FCM_SERVER_KEY not configured — skipping broader-context "
+                "promotion alert"
+            )
+            return False
+
+        if not device_token:
+            logger.warning(
+                "No device token provided — skipping broader-context promotion alert"
+            )
+            return False
+
+        auth = await self._get_auth()
+        if not auth:
+            return False
+        access_token, project_id = auth
+
+        title = "✅ NovaCycle – Broader Context Model Promoted"
+        if auto_enabled:
+            body = (
+                f"27-feature model cleared the OOS gate "
+                f"(Δacc={delta:+.3f}, lift={lift:+.3f}, acc={acc_27:.3f}). "
+                f"LONG_BROADER_CONTEXT_ENABLED was auto-enabled in-memory. "
+                f"Set it in the environment to persist across restarts."
+            )
+        else:
+            body = (
+                f"27-feature model cleared the OOS gate "
+                f"(Δacc={delta:+.3f}, lift={lift:+.3f}, acc={acc_27:.3f}). "
+                f"Set LONG_BROADER_CONTEXT_ENABLED=True and retrain to activate."
+            )
+
+        payload = {
+            "message": {
+                "token": device_token,
+                "notification": {"title": title, "body": body},
+                "data": {
+                    "alert_type": "broader_context_promoted",
+                    "accuracy_delta": str(round(delta, 4)),
+                    "oos_lift": str(round(lift, 4)),
+                    "oos_accuracy_27feat": str(round(acc_27, 4)),
+                    "auto_enabled": str(auto_enabled).lower(),
+                    "ticker": settings.TICKER,
+                },
+                "android": {
+                    "priority": "HIGH",
+                    "notification": {"sound": "default"},
+                },
+                "apns": {
+                    "payload": {"aps": {"sound": "default"}},
+                },
+            }
+        }
+
+        return await self._post(payload, access_token, project_id)
+
     async def send_baseline_duration_alert(
         self,
         device_token: str,

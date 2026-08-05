@@ -2094,6 +2094,27 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     except Exception as _exc:
         logger.error("healthz: ablation report load failed: %s", _exc)
 
+    # ── Broader-context promotion signal ──────────────────────────────────────
+    # When the 27-feature model clears the OOS gate during a retrain, a
+    # promotion record is written to ml/models/broader_context_promotion.json.
+    # Surface it here and add an operator alert when the flag is still off.
+    broader_context_promotion = None
+    try:
+        from ml.training_status import get_broader_context_promotion as _get_promo  # noqa: PLC0415
+        broader_context_promotion = _get_promo()
+        if broader_context_promotion is not None:
+            from config import settings as _cfg  # noqa: PLC0415
+            if not _cfg.LONG_BROADER_CONTEXT_ENABLED:
+                auto_en = bool(broader_context_promotion.get("auto_enabled", False))
+                if not auto_en:
+                    alerts.append(
+                        "broader_context_promoted: the 27-feature model cleared the "
+                        "OOS gate. Set LONG_BROADER_CONTEXT_ENABLED=True and retrain "
+                        "to activate the expanded feature set."
+                    )
+    except Exception as _exc:
+        logger.error("healthz: broader_context_promotion load failed: %s", _exc)
+
     # ── Drawdown model gate dry-run summary ──────────────────────────────────
     # Surfaces the latest dry-run drawdown evaluation (passes_promotion_gate,
     # pr_auc_lift, precision_lift) written by long_trend_dry_run.py so failed
@@ -2135,6 +2156,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "alerts": alerts,
         "fallback_stats_last_reset_at": fallback_last_reset_at,
         "broader_context_ablation": broader_context_ablation,
+        "broader_context_promotion": broader_context_promotion,
         "drawdown_gate": drawdown_gate,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
     }

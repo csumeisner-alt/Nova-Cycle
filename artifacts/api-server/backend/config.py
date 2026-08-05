@@ -193,6 +193,17 @@ class Settings(BaseSettings):
     # to absorb weekends without penalising a Friday close on Monday.
     LONG_CONTEXT_STALENESS_MAX_DAYS: int = 5
 
+    # Auto-promotion: when True, the server flips LONG_BROADER_CONTEXT_ENABLED
+    # to True in-memory immediately after a gate-passing ablation so the next
+    # scheduled retrain trains the 27-feature model without a manual config
+    # change.  The promotion is also written to
+    # ml/models/broader_context_promotion.json for operator audit and healthz
+    # visibility.  NOTE: the in-memory flip does NOT survive a server restart
+    # unless LONG_BROADER_CONTEXT_ENABLED is also set to True in the environment.
+    # An FCM push notification is sent when the gate passes for the first time,
+    # regardless of this switch.
+    LONG_BROADER_CONTEXT_AUTO_ENABLE: bool = False
+
     # Tickers for broader context sources (ingested separately from VOO/VIX).
     # Empty string → that source is permanently absent (neutral fallback fires).
     VIX_SHORT_TICKER: str = "^VIX9D"   # 9-day VIX (term-structure numerator)
