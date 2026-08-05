@@ -965,3 +965,162 @@ def test_successful_retrain_clears_consecutive_failures(isolated_long_path, monk
     assert status_after.get("consecutive_failures") == 0, (
         "consecutive_failures must reset to 0 after a successful retrain"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Promotion gate AND-logic: borderline precision / PR-AUC rejection tests
+#
+# These tests call run_config_drawdown directly with monkeypatched
+# build_features + walk_forward_evaluate so the gate logic in
+# long_trend_dry_run.py (lines 767–771) is exercised against real production
+# code, not a local reimplementation.
+#
+# pr_auc_lift = pr_auc / event_prevalence.  Drawdown events with thresh=0.05
+# have prevalence well below 0.5, so:
+#   pr_auc=0.999 → lift >> 2  (guaranteed pass on first condition)
+#   pr_auc=0.001 → lift << 2  (guaranteed fail on first condition)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_gate_test_mocks(pr_auc_value: float, precision_lift_value: float):
+    """Return (fake_build_features, fake_wfe) pair for gate tests.
+
+    The fake walk_forward_evaluate returns the supplied pr_auc and
+    precision_lift_vs_base_rate so we can drive the gate logic to any
+    desired borderline state.
+    """
+    rng = np.random.default_rng(999)
+    n_fake = 200
+    X_fake = rng.random((n_fake, 5)).astype(np.float32)
+    w_fake = np.ones(n_fake, dtype=np.float32)
+    # OOS arrays: 8 rows, one drawdown event so avoided_drawdown_recall path runs
+    oos_probs_val  = np.array([0.6, 0.2, 0.3, 0.1, 0.4, 0.2, 0.3, 0.1], dtype=float)
+    oos_labels_val = np.array([1,   0,   0,   0,   0,   0,   0,   0  ], dtype=int)
+
+    def fake_build_features(self, df_arg, indicators):  # noqa: N802
+        return X_fake, w_fake, np.arange(n_fake)
+
+    def fake_wfe(X, y, weights, model_factory, n_splits, embargo):  # noqa: N802
+        metrics = {
+            "evaluated": True,
+            "oos_accuracy": 0.70,
+            "majority_baseline_accuracy": 0.80,
+            "accuracy_lift_vs_majority": -0.10,
+            "pr_auc": pr_auc_value,
+            "precision_lift_vs_base_rate": precision_lift_value,
+        }
+        return metrics, oos_probs_val, oos_labels_val
+
+    return fake_build_features, fake_wfe
+
+
+def test_promotion_gate_rejects_high_pr_auc_low_precision(monkeypatch):
+    """passes_promotion_gate must be False when PR-AUC lift clears the bar
+    but precision_lift_vs_base_rate falls short (< 2).
+
+    Directly exercises the AND logic in run_config_drawdown (lines 767–771).
+    A regression replacing AND with OR would flip this to True.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=501)
+
+    # pr_auc=0.999 → pr_auc_lift >> 2 for any drawdown prevalence < 0.5
+    # precision_lift=1.8 → below the 2× threshold → gate must reject
+    fake_bf, fake_wfe = _make_gate_test_mocks(pr_auc_value=0.999, precision_lift_value=1.8)
+    monkeypatch.setattr(LongTrendModel, "build_features", fake_bf)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", fake_wfe)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_high_pr_auc_low_precision",
+    )
+
+    assert "passes_promotion_gate" in result
+    assert result["passes_promotion_gate"] is False, (
+        f"passes_promotion_gate must be False when pr_auc_lift >> 2 but "
+        f"precision_lift=1.8 (< 2). "
+        f"pr_auc_lift_vs_prevalence={result.get('pr_auc_lift_vs_prevalence')}, "
+        f"precision_lift_vs_base_rate={result.get('precision_lift_vs_base_rate')}. "
+        "The gate requires BOTH conditions (AND logic)."
+    )
+
+    # Also verify the PR-AUC lift did indeed clear the first bar
+    assert (result.get("pr_auc_lift_vs_prevalence") or 0) >= 2.0, (
+        "Test precondition: pr_auc_lift must be >= 2 so only precision is failing"
+    )
+
+
+def test_promotion_gate_rejects_high_precision_low_pr_auc(monkeypatch):
+    """passes_promotion_gate must be False when precision_lift clears the bar
+    but pr_auc_lift falls short (< 2).
+
+    Directly exercises the AND logic in run_config_drawdown (lines 767–771).
+    This is the symmetric borderline case.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=502)
+
+    # pr_auc=0.001 → pr_auc_lift << 2 for any drawdown prevalence > 0.0005
+    # precision_lift=2.5 → above the 2× threshold, but gate must still reject
+    fake_bf, fake_wfe = _make_gate_test_mocks(pr_auc_value=0.001, precision_lift_value=2.5)
+    monkeypatch.setattr(LongTrendModel, "build_features", fake_bf)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", fake_wfe)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_high_precision_low_pr_auc",
+    )
+
+    assert "passes_promotion_gate" in result
+    assert result["passes_promotion_gate"] is False, (
+        f"passes_promotion_gate must be False when precision_lift=2.5 but "
+        f"pr_auc_lift << 2. "
+        f"pr_auc_lift_vs_prevalence={result.get('pr_auc_lift_vs_prevalence')}, "
+        f"precision_lift_vs_base_rate={result.get('precision_lift_vs_base_rate')}. "
+        "The gate requires BOTH conditions (AND logic)."
+    )
+
+    # Verify precision did clear its bar so only PR-AUC is the failure
+    assert (result.get("precision_lift_vs_base_rate") or 0) >= 2.0, (
+        "Test precondition: precision_lift must be >= 2 so only pr_auc_lift is failing"
+    )
+
+
+def test_promotion_gate_accepts_both_bars_cleared(monkeypatch):
+    """passes_promotion_gate must be True when BOTH pr_auc_lift and
+    precision_lift meet their thresholds — confirming the gate can pass.
+
+    Directly exercises run_config_drawdown to guard against regressions that
+    would break the True path (e.g. accidental AND → always-False).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=503)
+
+    # pr_auc=0.999 → pr_auc_lift >> 2; precision_lift=2.5 → above 2
+    fake_bf, fake_wfe = _make_gate_test_mocks(pr_auc_value=0.999, precision_lift_value=2.5)
+    monkeypatch.setattr(LongTrendModel, "build_features", fake_bf)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", fake_wfe)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_both_bars_cleared",
+    )
+
+    assert "passes_promotion_gate" in result
+    assert result["passes_promotion_gate"] is True, (
+        f"passes_promotion_gate must be True when both pr_auc_lift >> 2 and "
+        f"precision_lift=2.5. "
+        f"pr_auc_lift_vs_prevalence={result.get('pr_auc_lift_vs_prevalence')}, "
+        f"precision_lift_vs_base_rate={result.get('precision_lift_vs_base_rate')}."
+    )
