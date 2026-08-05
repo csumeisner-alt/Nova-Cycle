@@ -251,6 +251,89 @@ class FCMNotifier:
 
         return await self._post(payload, access_token, project_id)
 
+    async def send_context_stale_alert(
+        self,
+        device_token: str,
+        ticker: str,
+        feed_key: str,
+        lag_trading_days: Optional[int],
+        degraded_feature: str,
+    ) -> bool:
+        """
+        Send an operator alert when a context feed (VIX9D, VIX3M, TNX, HYG, LQD,
+        NYAD) has gone stale — i.e. it was healthy on the previous check but is
+        lagging now.
+
+        Args:
+            device_token:      FCM device registration token.
+            ticker:            Raw ticker symbol (e.g. "^VIX9D", "^TNX", "HYG").
+            feed_key:          Short internal feed name (e.g. "vix_short", "rates").
+            lag_trading_days:  Number of trading days the feed is behind VOO.
+                               None means no rows exist at all.
+            degraded_feature:  Model feature name that will be impaired
+                               (e.g. "vix_term_ratio", "rates_change").
+
+        Returns:
+            True on success.
+        """
+        if not settings.FCM_SERVER_KEY:
+            logger.info(
+                "FCM_SERVER_KEY not configured — skipping context-stale alert "
+                "(feed=%s ticker=%s)", feed_key, ticker,
+            )
+            return False
+
+        if not device_token:
+            logger.warning(
+                "No device token provided — skipping context-stale alert (feed=%s)",
+                feed_key,
+            )
+            return False
+
+        auth = await self._get_auth()
+        if not auth:
+            return False
+        access_token, project_id = auth
+
+        title = f"⚠️ NovaCycle – {ticker} Feed Stale"
+        if lag_trading_days is None:
+            body = (
+                f"{ticker} has no stored candles. "
+                f"The '{degraded_feature}' model feature will degrade until "
+                f"the feed is restored."
+            )
+        else:
+            body = (
+                f"{ticker} is {lag_trading_days} trading day(s) behind. "
+                f"The '{degraded_feature}' model feature is degraded."
+            )
+
+        payload = {
+            "message": {
+                "token": device_token,
+                "notification": {"title": title, "body": body},
+                "data": {
+                    "alert_type": "context_feed_stale",
+                    "ticker": ticker,
+                    "feed_key": feed_key,
+                    "lag_trading_days": (
+                        str(lag_trading_days)
+                        if lag_trading_days is not None else ""
+                    ),
+                    "degraded_feature": degraded_feature,
+                },
+                "android": {
+                    "priority": "HIGH",
+                    "notification": {"sound": "default"},
+                },
+                "apns": {
+                    "payload": {"aps": {"sound": "default"}},
+                },
+            }
+        }
+
+        return await self._post(payload, access_token, project_id)
+
     async def send_baseline_duration_alert(
         self,
         device_token: str,

@@ -102,6 +102,10 @@ class IngestionPipeline:
         # to avoid "attached to a different loop" issues in tests.
         self._initialized_flag: bool = False
         self._initialized_event: Optional[asyncio.Event] = None
+        # Tracks which context feed_keys were stale on the previous incremental
+        # run so we only fire an alert on the *transition* (healthy→stale),
+        # not on every subsequent stale check.
+        self._prev_stale_context_feeds: set[str] = set()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Startup-ordering guard
@@ -479,7 +483,22 @@ class IngestionPipeline:
 
         # ── Broader context staleness check ───────────────────────────────────
         try:
-            await check_context_staleness(db_session)
+            ctx_results = await check_context_staleness(db_session)
+            # Alert for feeds that are *newly* stale (healthy last run, stale now).
+            newly_stale = [
+                s for s in ctx_results
+                if s.get("stale")
+                and s.get("feed_key") not in self._prev_stale_context_feeds
+            ]
+            if newly_stale:
+                asyncio.create_task(
+                    _notify_context_stale_feeds(newly_stale),
+                    name="notify_context_stale_feeds",
+                )
+            # Update tracker: stale feed_keys as of this run.
+            self._prev_stale_context_feeds = {
+                s["feed_key"] for s in ctx_results if s.get("stale")
+            }
         except Exception as exc:
             logger.error("context_staleness_check_failed error=%s", exc)
 
@@ -1689,6 +1708,78 @@ async def check_context_staleness(db_session: AsyncSession) -> list[dict]:
                 src["ticker"], exc,
             )
     return results
+
+
+# Map feed_key → model feature that degrades when the feed goes stale.
+# Used to populate the push-notification body so operators know the impact.
+_CONTEXT_FEED_FEATURE_MAP: dict[str, str] = {
+    "vix_short":  "vix_term_ratio",
+    "vix_long":   "vix_term_ratio",
+    "rates":      "rates_change",
+    "credit_hy":  "credit_spread",
+    "credit_ig":  "credit_spread",
+    "breadth":    "breadth",
+}
+
+
+async def _notify_context_stale_feeds(stale_feeds: list[dict]) -> None:
+    """
+    Background task: send push notifications to all registered devices for each
+    context feed that has *newly* gone stale (i.e. was healthy on the previous
+    check).
+
+    One notification per feed per device is sent.  Errors are logged but never
+    raised — this must not interrupt the ingestion run.
+    """
+    from notifications.fcm import FCMNotifier
+    from database.db import get_session_factory
+    from database.models import DeviceToken
+    from sqlalchemy import select
+
+    if not stale_feeds:
+        return
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            result = await db.execute(select(DeviceToken))
+            tokens = [row.token for row in result.scalars().all()]
+    except Exception as exc:
+        logger.error("context_stale_alert_token_fetch_failed error=%s", exc)
+        return
+
+    if not tokens:
+        logger.debug(
+            "context_stale_alert_no_tokens feeds=%s",
+            [f["feed_key"] for f in stale_feeds],
+        )
+        return
+
+    notifier = FCMNotifier()
+    for feed in stale_feeds:
+        ticker = feed.get("ticker") or feed.get("feed_key", "unknown")
+        feed_key = feed.get("feed_key", "unknown")
+        lag = feed.get("lag_trading_days")
+        feature = _CONTEXT_FEED_FEATURE_MAP.get(feed_key, feed_key)
+
+        for token in tokens:
+            try:
+                sent = await notifier.send_context_stale_alert(
+                    device_token=token,
+                    ticker=ticker,
+                    feed_key=feed_key,
+                    lag_trading_days=lag,
+                    degraded_feature=feature,
+                )
+                if sent:
+                    logger.info(
+                        "context_stale_alert_sent feed=%s ticker=%s lag=%s token=%.20s…",
+                        feed_key, ticker, lag, token,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "context_stale_alert_send_failed feed=%s error=%s", feed_key, exc
+                )
 
 
 async def check_spx_staleness(db_session: AsyncSession) -> dict:
