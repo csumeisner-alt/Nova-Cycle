@@ -803,6 +803,129 @@ def test_drawdown_recall_exceeds_min_threshold_for_deep_crashes(monkeypatch):
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Drawdown promotion-gate precision floor
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_always_flag_model_fails_promotion_gate(monkeypatch):
+    """An always-flagging model must be rejected by the promotion gate.
+
+    A model that predicts drawdown for every day achieves perfect recall but
+    its PR-AUC equals event prevalence (no lift) and precision equals the base
+    rate (no lift).  The gate requires BOTH PR-AUC lift >= 2 AND precision
+    lift >= 2; a trivially high-recall model must not pass.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=411)
+
+    n_fake = 200
+    rng = np.random.default_rng(411)
+    X_fake = rng.random((n_fake, 5)).astype(np.float32)
+    w_fake = np.ones(n_fake, dtype=np.float32)
+
+    # All probs well above 0.5 — model always flags a drawdown.
+    oos_probs  = np.full(50, 0.95, dtype=float)
+    oos_labels = np.array([1, 0, 0, 0, 0] * 10, dtype=int)  # 20 % event rate
+
+    def _fake_build_features(self, df_arg, indicators):
+        return X_fake, w_fake, np.arange(n_fake)
+
+    # Metrics representative of an always-flagging model:
+    # - PR-AUC ≈ event prevalence → lift ≈ 1 (well below 2×)
+    # - precision = base rate → precision lift = 1.0 (below 2×)
+    def _fake_wfe(X, y, weights, model_factory, n_splits, embargo):
+        metrics = {
+            "evaluated": True,
+            "oos_accuracy": 0.20,
+            "majority_baseline_accuracy": 0.80,
+            "accuracy_lift_vs_majority": -0.60,
+            "pr_auc": 0.05,             # ≈ prevalence for any reasonable dataset
+            "precision_lift_vs_base_rate": 1.0,  # no precision lift
+        }
+        return metrics, oos_probs, oos_labels
+
+    monkeypatch.setattr(LongTrendModel, "build_features", _fake_build_features)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", _fake_wfe)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_always_flag_gate",
+    )
+
+    assert "passes_promotion_gate" in result, (
+        "run_config_drawdown must include 'passes_promotion_gate' in its result"
+    )
+    assert result["passes_promotion_gate"] is False, (
+        "An always-flagging model (PR-AUC lift ≈ 1, precision lift = 1) must be "
+        "rejected by the promotion gate (passes_promotion_gate=False). "
+        "Perfect recall with zero precision lift would flood operators with false alarms."
+    )
+
+
+def test_high_precision_and_prauc_model_passes_promotion_gate(monkeypatch):
+    """A model with PR-AUC lift >= 2 AND precision lift >= 2 must pass the gate.
+
+    This is the acceptance twin: a genuinely useful drawdown model that clears
+    both bars must be promoted (passes_promotion_gate=True).  Without this
+    test, a regression that tightens the gate to never pass would go undetected.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=412)
+
+    n_fake = 200
+    rng = np.random.default_rng(412)
+    X_fake = rng.random((n_fake, 5)).astype(np.float32)
+    w_fake = np.ones(n_fake, dtype=np.float32)
+
+    oos_probs  = np.array([0.85, 0.1, 0.9, 0.05, 0.8] * 10, dtype=float)
+    oos_labels = np.array([1,    0,   1,   0,    1  ] * 10, dtype=int)
+
+    def _fake_build_features(self, df_arg, indicators):
+        return X_fake, w_fake, np.arange(n_fake)
+
+    # Metrics representative of a genuinely useful model:
+    # - pr_auc=0.80 → lift = 0.80 / event_prevalence; even at a high synthetic
+    #   prevalence of 0.30 this gives lift ≈ 2.67, well above the 2× gate.
+    # - precision_lift_vs_base_rate = 3.0 (well above the 2× bar)
+    def _fake_wfe(X, y, weights, model_factory, n_splits, embargo):
+        metrics = {
+            "evaluated": True,
+            "oos_accuracy": 0.82,
+            "majority_baseline_accuracy": 0.70,
+            "accuracy_lift_vs_majority": 0.12,
+            "pr_auc": 0.80,                      # high PR-AUC → lift >= 2 even at 30 % prevalence
+            "precision_lift_vs_base_rate": 3.0,  # precision 3× base rate
+        }
+        return metrics, oos_probs, oos_labels
+
+    monkeypatch.setattr(LongTrendModel, "build_features", _fake_build_features)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", _fake_wfe)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_good_model_gate",
+    )
+
+    assert "passes_promotion_gate" in result, (
+        "run_config_drawdown must include 'passes_promotion_gate' in its result"
+    )
+    assert result["passes_promotion_gate"] is True, (
+        f"A model with PR-AUC lift >= 2 AND precision lift >= 2 must pass the "
+        f"promotion gate (passes_promotion_gate=True). "
+        f"Got pr_auc_lift_vs_prevalence={result.get('pr_auc_lift_vs_prevalence')}, "
+        f"result={result.get('passes_promotion_gate')}. "
+        "Verify that the gate logic correctly handles both conditions."
+    )
+
+
 def test_successful_retrain_clears_consecutive_failures(isolated_long_path, monkeypatch):
     """After a series of failures, a good retrain (positive lift) must reset
     consecutive_failures to 0 so the live health surface un-stucks the model."""
