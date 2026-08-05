@@ -626,3 +626,70 @@ class TestSavePromotionMeta:
         m = LongTrendModel()
         assert m.is_baseline_mode() is False
         assert m._promoted_target_type == "direction"
+
+
+# ---------------------------------------------------------------------------
+# 8. Rollback restores the meta sidecar — no spurious mismatch after rollback
+# ---------------------------------------------------------------------------
+
+class TestRollbackPreservesMetaSidecar:
+    """Confirm that _restore_model_file restores long_trend_meta.json alongside
+    the pkl so that is_baseline_mode() returns False after a failed retrain
+    rolls back to the previous direction model."""
+
+    def test_rollback_to_direction_model_clears_baseline(
+        self, isolated, monkeypatch
+    ):
+        """Scenario:
+          1. A direction model is on disk (the known-good state).
+          2. _backup_model_file() snapshots the pkl + meta sidecar.
+          3. A drawdown_event retrain writes a new pkl and meta sidecar.
+          4. The retrain fails the quality gate → _restore_model_file() is called.
+          5. is_baseline_mode() must be False after the rollback because the
+             restored meta sidecar says 'direction' and LONG_TARGET_TYPE='direction'.
+        """
+        import json
+        import shutil
+        from ml import long_trend as lt
+        from ml.trainer import _backup_model_file, _restore_model_file
+
+        # ── Step 1: establish the known-good direction state ──────────────────
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        lt._META_PATH.write_text(json.dumps({"target_type": "direction"}))
+
+        # ── Step 2: back up before the retrain ───────────────────────────────
+        backup_path = _backup_model_file(lt.MODEL_PATH)
+        assert backup_path is not None, "backup must be created when a pkl exists"
+
+        # The meta backup must also have been created alongside the pkl backup.
+        meta_backup = lt._META_PATH.with_suffix(lt._META_PATH.suffix + ".bak")
+        assert meta_backup.exists(), (
+            "meta sidecar backup must exist after _backup_model_file — "
+            "_sidecar_files() must include _META_PATH"
+        )
+
+        # ── Step 3: simulate a drawdown_event retrain that's about to be rolled back
+        import time
+        time.sleep(0.01)  # ensure mtime differs from backup
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        lt._META_PATH.write_text(json.dumps({"target_type": "drawdown_event"}))
+
+        # ── Step 4: quality gate fails → rollback ────────────────────────────
+        restored = _restore_model_file(lt.MODEL_PATH, backup_path, "long_trend")
+        assert restored is True, "rollback must succeed when a backup exists"
+
+        # ── Step 5: verify no spurious mismatch ──────────────────────────────
+        # The restored meta sidecar must say 'direction', not 'drawdown_event'.
+        restored_meta = json.loads(lt._META_PATH.read_text())
+        assert restored_meta.get("target_type") == "direction", (
+            f"rollback must restore the direction meta sidecar, got {restored_meta!r}"
+        )
+
+        # LongTrendModel must NOT enter baseline mode when target types match.
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "direction")
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is False, (
+            "after rollback to direction model + direction meta sidecar, "
+            "is_baseline_mode() must return False (no spurious mismatch)"
+        )
+        assert m.model is not None

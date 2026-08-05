@@ -68,9 +68,11 @@ def _sidecar_files(model_path: Path) -> list:
     try:
         if model_path.name == "long_trend_model.pkl":
             from ml.calibration import calibrator_path, calibration_report_path
+            from ml.long_trend import _META_PATH
             return [
                 calibrator_path("long_trend"),
                 calibration_report_path("long_trend"),
+                _META_PATH,
             ]
         if model_path.name == "short_trend_model.pkl":
             from ml.calibration import (
