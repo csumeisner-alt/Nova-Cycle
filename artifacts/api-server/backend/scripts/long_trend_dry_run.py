@@ -1668,6 +1668,38 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
     print(f"📄 JSON results saved to: {summary_path}")
+
+    # ── Save drawdown gate summary to persistent models dir ───────────────────
+    # /api/healthz reads this file so operators can see the gate verdict in the
+    # operator dashboard without SSH access to the server.  The file is written
+    # only when the real models directory already exists (i.e. the server has
+    # been initialised at least once); it is never written to the temp dir.
+    _models_dir = BACKEND / "ml" / "models"
+    if _models_dir.is_dir():
+        _dd_eval = [r for r in dd_results if r.get("model") not in ("majority_class",)]
+        _best_dd = None
+        if _dd_eval:
+            _best_dd = max(
+                _dd_eval,
+                key=lambda r: (r.get("pr_auc_lift_vs_prevalence") or 0.0),
+            )
+        _passing_dd = [r for r in _dd_eval if r.get("passes_promotion_gate")]
+        _gate_summary = {
+            "run_timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "data_source": "yfinance" if args.yf else "db",
+            "total_configs_evaluated": len(_dd_eval),
+            "configs_passing_gate": len(_passing_dd),
+            "promotion_gate_description": (
+                "PR-AUC_lift>=2 AND precision_lift>=2 (no auto-promote)"
+            ),
+            "best_result": _best_dd,
+            "passing_results": _passing_dd,
+        }
+        _gate_path = _models_dir / "drawdown_dry_run.json"
+        with open(_gate_path, "w") as _gf:
+            json.dump(_gate_summary, _gf, indent=2, default=str)
+        print(f"📄 Drawdown gate summary saved to: {_gate_path}")
+
     if benchmark_result is not None:
         benchmark_path = _DRY_RUN_DIR / "strategy_benchmark.json"
         with open(benchmark_path, "w") as f:

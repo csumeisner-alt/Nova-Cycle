@@ -912,6 +912,212 @@ function BroaderContextAblationPanel({ health }: { health: any }) {
   );
 }
 
+// ─── DrawdownGatePanel ───────────────────────────────────────────────────────
+
+type DrawdownGateBestResult = {
+  label?: string;
+  horizon?: number;
+  drawdown_thresh?: number;
+  model?: string;
+  passes_promotion_gate?: boolean;
+  pr_auc_lift_vs_prevalence?: number | null;
+  precision_lift_vs_base_rate?: number | null;
+  avoided_drawdown_recall?: number | null;
+  positive_rate?: number | null;
+};
+
+type DrawdownGateReport = {
+  run_timestamp_utc?: string;
+  data_source?: string;
+  total_configs_evaluated?: number;
+  configs_passing_gate?: number;
+  promotion_gate_description?: string;
+  best_result?: DrawdownGateBestResult | null;
+  passing_results?: DrawdownGateBestResult[];
+};
+
+function DrawdownGatePanel({ health }: { health: any }) {
+  const report: DrawdownGateReport | null | undefined = health?.drawdown_gate;
+
+  if (report === undefined) return null; // key absent (older backend)
+  if (report === null) {
+    return (
+      <div
+        className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5"
+        data-testid="panel-drawdown-gate"
+      >
+        <div className="flex items-center space-x-2 text-muted-foreground mb-2">
+          <AlertTriangle className="w-4 h-4" />
+          <span className="text-sm font-medium tracking-wide">DRAWDOWN MODEL GATE</span>
+        </div>
+        <p className="text-xs font-mono text-muted-foreground" data-testid="drawdown-gate-not-run">
+          No dry-run report found. Run{' '}
+          <code className="text-primary/80">
+            python scripts/long_trend_dry_run.py --yf
+          </code>{' '}
+          to evaluate candidate drawdown models against the promotion gate.
+        </p>
+      </div>
+    );
+  }
+
+  const passes = (report.configs_passing_gate ?? 0) > 0;
+  const best = report.best_result;
+  const passing = report.passing_results ?? [];
+
+  const fmtLift = (v: number | null | undefined) =>
+    typeof v === 'number' && Number.isFinite(v) ? v.toFixed(3) : '—';
+  const fmtRecall = (v: number | null | undefined) =>
+    typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '—';
+  const fmtRate = (v: number | null | undefined) =>
+    typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '—';
+
+  return (
+    <div
+      className={`mt-8 p-4 rounded-lg border ${
+        passes ? 'bg-amber-400/5 border-amber-400/25' : 'bg-white/[0.02] border-white/5'
+      }`}
+      data-testid="panel-drawdown-gate"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center space-x-2">
+          <AlertTriangle className={`w-4 h-4 ${passes ? 'text-amber-400' : 'text-muted-foreground'}`} />
+          <span className={`text-sm font-medium tracking-wide ${passes ? 'text-amber-400' : 'text-muted-foreground'}`}>
+            DRAWDOWN MODEL GATE
+          </span>
+        </div>
+        <span
+          className={`inline-flex items-center text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+            passes
+              ? 'bg-amber-400/15 text-amber-400 border-amber-400/30'
+              : 'bg-white/5 text-muted-foreground border-white/10'
+          }`}
+          data-testid="drawdown-gate-badge"
+        >
+          {passes
+            ? `⚠ ${report.configs_passing_gate} CONFIG${(report.configs_passing_gate ?? 0) > 1 ? 'S' : ''} PASS — REVIEW REQUIRED`
+            : '✓ GATE FAIL — NO AUTO-PROMOTE'}
+        </span>
+      </div>
+
+      {/* Best candidate metrics */}
+      {best && (
+        <div className="mb-4">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 font-mono">
+            Best candidate (by PR-AUC lift)
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-sm">
+            <div className="p-3 rounded-lg bg-black/30 border border-white/5 space-y-1">
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">PR-AUC Lift</div>
+              <div
+                className={`text-base ${
+                  (best.pr_auc_lift_vs_prevalence ?? 0) >= 2
+                    ? 'text-emerald-400'
+                    : 'text-foreground'
+                }`}
+                data-testid="drawdown-gate-pr-auc-lift"
+              >
+                {fmtLift(best.pr_auc_lift_vs_prevalence)}×
+              </div>
+              <div className="text-[10px] text-muted-foreground">gate: 2.0×</div>
+            </div>
+            <div className="p-3 rounded-lg bg-black/30 border border-white/5 space-y-1">
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Precision Lift</div>
+              <div
+                className={`text-base ${
+                  (best.precision_lift_vs_base_rate ?? 0) >= 2
+                    ? 'text-emerald-400'
+                    : 'text-foreground'
+                }`}
+                data-testid="drawdown-gate-precision-lift"
+              >
+                {fmtLift(best.precision_lift_vs_base_rate)}×
+              </div>
+              <div className="text-[10px] text-muted-foreground">gate: 2.0×</div>
+            </div>
+            <div className="p-3 rounded-lg bg-black/30 border border-white/5 space-y-1">
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">DD Recall</div>
+              <div className="text-base" data-testid="drawdown-gate-dd-recall">
+                {fmtRecall(best.avoided_drawdown_recall)}
+              </div>
+              <div className="text-[10px] text-muted-foreground">events caught</div>
+            </div>
+            <div className="p-3 rounded-lg bg-black/30 border border-white/5 space-y-1">
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Event Rate</div>
+              <div className="text-base" data-testid="drawdown-gate-event-rate">
+                {fmtRate(best.positive_rate)}
+              </div>
+              <div className="text-[10px] text-muted-foreground">base prevalence</div>
+            </div>
+          </div>
+          {best.label && (
+            <div className="mt-2 text-[11px] font-mono text-muted-foreground truncate" data-testid="drawdown-gate-best-label">
+              Config: {best.label}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Passing configs list */}
+      {passing.length > 0 && (
+        <div className="mb-4" data-testid="drawdown-gate-passing-list">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 font-mono">
+            Configurations passing the gate (human review required before promoting)
+          </div>
+          <div className="space-y-2">
+            {passing.map((r, i) => (
+              <div
+                key={i}
+                className="p-3 rounded-lg border border-amber-400/20 bg-amber-400/5 font-mono text-[11px] space-y-1"
+                data-testid={`drawdown-gate-passing-${i}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-amber-300 truncate">{r.label}</span>
+                  <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-400/15 text-amber-400 border border-amber-400/30 shrink-0 ml-2">
+                    PASS
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground">
+                  <span>PR-AUC lift: <span className="text-emerald-400">{fmtLift(r.pr_auc_lift_vs_prevalence)}×</span></span>
+                  <span>Precision lift: <span className="text-emerald-400">{fmtLift(r.precision_lift_vs_base_rate)}×</span></span>
+                  <span>DD recall: {fmtRecall(r.avoided_drawdown_recall)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Metadata footer */}
+      <div className="pt-3 border-t border-white/5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono text-muted-foreground">
+        <span data-testid="drawdown-gate-data-source">
+          Source: {report.data_source ?? '—'}
+        </span>
+        <span data-testid="drawdown-gate-configs">
+          {report.total_configs_evaluated ?? 0} configs evaluated,{' '}
+          {report.configs_passing_gate ?? 0} passing gate
+        </span>
+        {report.run_timestamp_utc && (
+          <span data-testid="drawdown-gate-run-ts">
+            Run:{' '}
+            {new Date(report.run_timestamp_utc).toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            })}
+          </span>
+        )}
+      </div>
+
+      {/* Gate description */}
+      <p className="mt-2 text-[10px] font-mono text-muted-foreground leading-relaxed" data-testid="drawdown-gate-description">
+        Gate: {report.promotion_gate_description ?? 'PR-AUC_lift≥2 AND precision_lift≥2 (no auto-promote)'}
+      </p>
+    </div>
+  );
+}
+
 function PredictionsPanel() {
   return (
     <div className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5" data-testid="panel-predictions">
@@ -1152,6 +1358,8 @@ function StatusDashboard() {
             {!isLoading && !isError && health && <ContextFeedsPanel health={health} />}
 
             {!isLoading && !isError && health && <BroaderContextAblationPanel health={health} />}
+
+            {!isLoading && !isError && health && <DrawdownGatePanel health={health} />}
 
             {/* Raw JSON View */}
             {!isLoading && !isError && health && (

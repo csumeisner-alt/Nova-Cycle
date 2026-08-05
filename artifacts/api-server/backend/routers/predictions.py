@@ -2094,6 +2094,23 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     except Exception as _exc:
         logger.error("healthz: ablation report load failed: %s", _exc)
 
+    # ── Drawdown model gate dry-run summary ──────────────────────────────────
+    # Surfaces the latest dry-run drawdown evaluation (passes_promotion_gate,
+    # pr_auc_lift, precision_lift) written by long_trend_dry_run.py so failed
+    # candidate models don't silently disappear from operator visibility.
+    drawdown_gate = None
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _gate_path = (
+            _Path(__file__).resolve().parents[1] / "ml" / "models"
+            / "drawdown_dry_run.json"
+        )
+        if _gate_path.exists():
+            drawdown_gate = _json.loads(_gate_path.read_text())
+    except Exception as _exc:
+        logger.error("healthz: drawdown gate report load failed: %s", _exc)
+
     return {
         "status": "degraded" if degraded else "ok",
         "candle_feed_stale": bool(daily_candle_data and daily_candle_data.get("stale")),
@@ -2118,6 +2135,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "alerts": alerts,
         "fallback_stats_last_reset_at": fallback_last_reset_at,
         "broader_context_ablation": broader_context_ablation,
+        "drawdown_gate": drawdown_gate,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
     }
 
