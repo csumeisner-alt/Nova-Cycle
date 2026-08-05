@@ -942,7 +942,9 @@ class LongTrendModel:
             # ── Walk-forward evaluation + probability calibration ────────────
             # Honest out-of-sample metrics (purged chronological folds with a
             # 21-row embargo) plus a calibrator fitted on pooled OOS
-            # predictions. Never blocks training on failure.
+            # predictions. A failed evaluation is reported as failed evidence;
+            # the trainer must reject the candidate rather than promote its
+            # train-set score.
             calibration_summary: dict = {"calibrated": False}
             try:
                 def _factory():
@@ -1006,7 +1008,11 @@ class LongTrendModel:
                 )
             except Exception as exc:
                 logger.error("Long-trend calibration error: %s", exc)
-                calibration_summary = {"calibrated": False, "reason": str(exc)}
+                calibration_summary = {
+                    "evaluated": False,
+                    "calibrated": False,
+                    "reason": str(exc),
+                }
 
             # Save model
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -1041,11 +1047,11 @@ class LongTrendModel:
                 # Use purged walk-forward OOS as the headline when available.
                 # The chronological holdout is retained separately because it
                 # is useful for diagnostics but is not the acceptance metric.
-                "accuracy": oos_acc if oos_acc is not None else acc,
+                "accuracy": oos_acc if oos_acc is not None else 0.0,
                 "accuracy_metric": (
                     "purged_walk_forward_oos"
                     if oos_acc is not None
-                    else "train"
+                    else "walk_forward_failed"
                 ),
                 "train_accuracy": acc,
                 "target_horizon_days": horizon,
@@ -1190,7 +1196,11 @@ class LongTrendModel:
                 )
             except Exception as exc:
                 logger.error("Drawdown-event calibration error: %s", exc)
-                calibration_summary = {"calibrated": False, "reason": str(exc)}
+                calibration_summary = {
+                    "evaluated": False,
+                    "calibrated": False,
+                    "reason": str(exc),
+                }
 
             # Save model
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -1224,10 +1234,10 @@ class LongTrendModel:
                 else None
             )
             return {
-                "accuracy": oos_acc if oos_acc is not None else train_acc,
+                "accuracy": oos_acc if oos_acc is not None else 0.0,
                 "accuracy_metric": (
                     "purged_walk_forward_oos"
-                    if oos_acc is not None else "train"
+                    if oos_acc is not None else "walk_forward_failed"
                 ),
                 "train_accuracy": train_acc,
                 "target_type": "drawdown_event",
@@ -1344,7 +1354,11 @@ class LongTrendModel:
                 )
             except Exception as exc:
                 logger.error("Three-state walk-forward error: %s", exc)
-                calibration_summary = {"calibrated": False, "reason": str(exc)}
+                calibration_summary = {
+                    "evaluated": False,
+                    "calibrated": False,
+                    "reason": str(exc),
+                }
 
             # Save model
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -1368,10 +1382,11 @@ class LongTrendModel:
             )
             oos_acc = calibration_summary.get("oos_accuracy")
             return {
-                "accuracy": float(oos_acc) if oos_acc is not None else train_acc,
+                "accuracy": float(oos_acc) if oos_acc is not None else 0.0,
                 "accuracy_metric": (
                     "purged_walk_forward_multiclass"
-                    if calibration_summary.get("evaluated") else "train"
+                    if calibration_summary.get("evaluated")
+                    else "walk_forward_failed"
                 ),
                 "train_accuracy": train_acc,
                 "target_type": "three_state",

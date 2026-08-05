@@ -94,7 +94,12 @@ class TestRetrainRoundTrip:
         df = _daily_df()
 
         result = LongTrendModel().train(df, {})
-        assert result["accuracy"] > 0.0
+        # The fixture is intentionally too small for purged walk-forward
+        # evaluation.  Training may still write a usable artifact for the
+        # round-trip test, but it must not report train-set accuracy as honest
+        # promotion evidence.
+        assert result["accuracy"] == 0.0
+        assert result["accuracy_metric"] == "walk_forward_failed"
         assert set(result["feature_importances"].keys()) == set(LONG_FEATURES)
         assert long_path.exists()
 

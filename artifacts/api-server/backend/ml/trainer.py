@@ -101,6 +101,86 @@ def _is_metric_upgrade_transition(prev_metric, new_metric) -> bool:
     return new_metric == "purged_walk_forward_oos" and prev_metric in (None, "train")
 
 
+def _long_oos_gate_failure(long_result: dict) -> Optional[str]:
+    """Return a rejection reason when long-model OOS evidence is not usable.
+
+    A train-set score is never an acceptable promotion metric.  Keep this
+    check at the trainer boundary rather than relying on each target-specific
+    gate: direction, drawdown-event, and three-state models must all have a
+    completed purged walk-forward evaluation before any candidate is written
+    to the active-model state.
+    """
+    target_type = str(long_result.get("target_type") or settings.LONG_TARGET_TYPE)
+    expected_metric = (
+        "purged_walk_forward_multiclass"
+        if target_type == "three_state"
+        else "purged_walk_forward_oos"
+    )
+    actual_metric = long_result.get("accuracy_metric")
+    calibration = long_result.get("calibration")
+    if not isinstance(calibration, dict):
+        calibration = {}
+
+    if actual_metric != expected_metric:
+        return (
+            "Long-trend promotion blocked: honest purged walk-forward "
+            f"evaluation is required for target={target_type}; "
+            f"reported metric={actual_metric or 'missing'}"
+        )
+    if calibration.get("evaluated") is not True:
+        reason = calibration.get("reason") or "evaluation did not complete"
+        return (
+            "Long-trend promotion blocked: honest purged walk-forward "
+            f"evaluation was incomplete for target={target_type}: {reason}"
+        )
+    if calibration.get("oos_accuracy") is None:
+        return (
+            "Long-trend promotion blocked: purged walk-forward evaluation "
+            f"returned no OOS accuracy for target={target_type}"
+        )
+    if target_type == "three_state":
+        if (
+            long_result.get("macro_f1") is None
+            and calibration.get("macro_f1") is None
+        ) or not isinstance(
+            long_result.get("per_class", calibration.get("per_class")), list
+        ):
+            return (
+                "Long-trend promotion blocked: multiclass walk-forward "
+                "evaluation is missing macro-F1 or per-class metrics"
+            )
+    elif target_type == "drawdown_event":
+        missing = [
+            key for key, value in (
+                ("oos_accuracy", calibration.get("oos_accuracy")),
+                (
+                    "pr_auc_lift_vs_prevalence",
+                    long_result.get("pr_auc_lift_vs_prevalence"),
+                ),
+                (
+                    "precision_lift_vs_base_rate",
+                    calibration.get("precision_lift_vs_base_rate"),
+                ),
+            ) if value is None
+        ]
+        if missing:
+            return (
+                "Long-trend promotion blocked: purged walk-forward evaluation "
+                f"is missing metrics for target={target_type}: {', '.join(missing)}"
+            )
+    else:
+        missing = [
+            key for key in ("accuracy_lift_vs_majority",)
+            if calibration.get(key) is None
+        ]
+        if missing:
+            return (
+                "Long-trend promotion blocked: purged walk-forward evaluation "
+                f"is missing metrics for target={target_type}: {', '.join(missing)}"
+            )
+    return None
+
+
 def _backup_model_file(model_path: Path) -> Optional[Path]:
     """Copy the current model file aside before retraining.
 
@@ -490,7 +570,15 @@ class ModelTrainer:
                 regressed = False
                 reason = None
 
-                if target_type == "drawdown_event":
+                # Never promote a candidate on train-set accuracy or on a
+                # partially written/failed walk-forward report.  This check
+                # intentionally runs before target-specific quality gates.
+                oos_failure = _long_oos_gate_failure(long_result)
+                if oos_failure:
+                    regressed = True
+                    reason = oos_failure
+                    logger.error("Long-trend %s", reason)
+                elif target_type == "drawdown_event":
                     # Gate: PR-AUC lift ≥ 2× event prevalence AND precision lift ≥ 2×
                     pr_auc_lift = long_result.get("pr_auc_lift_vs_prevalence")
                     wf_precision_lift = walk_forward.get("precision_lift_vs_base_rate")

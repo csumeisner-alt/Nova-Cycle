@@ -138,7 +138,12 @@ class TestTrainerRollsBackOnFlaggedRetrain:
         LongTrendModel().train(df, {})
         assert long_path.exists()
         good_bytes = long_path.read_bytes()
-        ts.record_training_result("long_trend", success=True, accuracy=0.90)
+        ts.record_training_result(
+            "long_trend",
+            success=True,
+            accuracy=0.90,
+            accuracy_metric="purged_walk_forward_oos",
+        )
 
         trainer = self._make_trainer(monkeypatch, daily=df)
 
@@ -148,7 +153,17 @@ class TestTrainerRollsBackOnFlaggedRetrain:
             time.sleep(0.01)
             lt.MODEL_PATH.write_bytes(b"regressed-model-bytes")
             self.model = object()  # non-None so the trainer reaches the regression check
-            return {"accuracy": 0.10, "feature_importances": {}, "degenerate": False}
+            return {
+                "accuracy": 0.10,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "calibration": {
+                    "evaluated": True,
+                    "oos_accuracy": 0.10,
+                    "accuracy_lift_vs_majority": 0.10,
+                },
+            }
 
         monkeypatch.setattr(LongTrendModel, "train", _regressed_train)
 
@@ -180,7 +195,17 @@ class TestTrainerRollsBackOnFlaggedRetrain:
         # Long-trend retrain succeeds without touching anything.
         def _long_ok(self, d, indicators):
             self.model = object()
-            return {"accuracy": 0.90, "feature_importances": {}, "degenerate": False}
+            return {
+                "accuracy": 0.90,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "calibration": {
+                    "evaluated": True,
+                    "oos_accuracy": 0.90,
+                    "accuracy_lift_vs_majority": 0.10,
+                },
+            }
 
         # Short-trend retrain writes a broken pkl and is flagged degenerate.
         def _degenerate_train(self, d, indicators):
@@ -244,7 +269,12 @@ class TestFlaggedRetrainSkipsMetadata:
         df = _daily_df()
 
         LongTrendModel().train(df, {})
-        ts.record_training_result("long_trend", success=True, accuracy=0.90)
+        ts.record_training_result(
+            "long_trend",
+            success=True,
+            accuracy=0.90,
+            accuracy_metric="purged_walk_forward_oos",
+        )
 
         saved = []
         trainer = self._make_trainer(monkeypatch, saved, daily=df)
@@ -252,7 +282,17 @@ class TestFlaggedRetrainSkipsMetadata:
         def _regressed_train(self, d, indicators):
             lt.MODEL_PATH.write_bytes(b"regressed-model-bytes")
             self.model = object()
-            return {"accuracy": 0.10, "feature_importances": {}, "degenerate": False}
+            return {
+                "accuracy": 0.10,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "calibration": {
+                    "evaluated": True,
+                    "oos_accuracy": 0.10,
+                    "accuracy_lift_vs_majority": 0.10,
+                },
+            }
 
         monkeypatch.setattr(LongTrendModel, "train", _regressed_train)
 
@@ -276,7 +316,17 @@ class TestFlaggedRetrainSkipsMetadata:
 
         def _long_ok(self, d, indicators):
             self.model = object()
-            return {"accuracy": 0.90, "feature_importances": {}, "degenerate": False}
+            return {
+                "accuracy": 0.90,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "calibration": {
+                    "evaluated": True,
+                    "oos_accuracy": 0.90,
+                    "accuracy_lift_vs_majority": 0.10,
+                },
+            }
 
         def _degenerate_train(self, d, indicators):
             st.MODEL_PATH.write_bytes(b"degenerate-model-bytes")
@@ -311,7 +361,17 @@ class TestFlaggedRetrainSkipsMetadata:
 
         def _good_train(self, d, indicators):
             self.model = object()
-            return {"accuracy": 0.60, "feature_importances": {"rsi": 1.0}, "degenerate": False}
+            return {
+                "accuracy": 0.60,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {"rsi": 1.0},
+                "degenerate": False,
+                "calibration": {
+                    "evaluated": True,
+                    "oos_accuracy": 0.60,
+                    "accuracy_lift_vs_majority": 0.10,
+                },
+            }
 
         monkeypatch.setattr(LongTrendModel, "train", _good_train)
 
@@ -593,7 +653,7 @@ class TestThreeStateGate:
                     {"label": "neutral", "f1": 0.27},
                     {"label": "up", "f1": 0.35},
                 ],
-                "calibration": {"evaluated": True},
+                "calibration": {"evaluated": True, "oos_accuracy": 0.50},
             }
 
         monkeypatch.setattr(LongTrendModel, "train", _low_f1_train)
@@ -643,7 +703,7 @@ class TestThreeStateGate:
                     {"label": "neutral", "f1": 0.35},
                     {"label": "up", "f1": 0.60},
                 ],
-                "calibration": {"evaluated": True},
+                "calibration": {"evaluated": True, "oos_accuracy": 0.55},
             }
 
         monkeypatch.setattr(LongTrendModel, "train", _passing_f1_train)
@@ -688,7 +748,7 @@ class TestThreeStateGate:
                     {"label": "neutral", "f1": 0.50},
                     {"label": "up", "f1": 0.65},
                 ],
-                "calibration": {"evaluated": True},
+                "calibration": {"evaluated": True, "oos_accuracy": 0.52},
             }
 
         monkeypatch.setattr(LongTrendModel, "train", _low_class_f1_train)
@@ -731,6 +791,7 @@ class TestDrawdownEventGate:
                 "pr_auc_lift_vs_prevalence": 1.5,  # below 2.0 → gate must fire
                 "calibration": {
                     "evaluated": True,
+                    "oos_accuracy": 0.55,
                     "precision_lift_vs_base_rate": 2.5,
                 },
             }
@@ -771,6 +832,7 @@ class TestDrawdownEventGate:
                 "pr_auc_lift_vs_prevalence": 2.5,  # above 2.0 threshold
                 "calibration": {
                     "evaluated": True,
+                    "oos_accuracy": 0.55,
                     "precision_lift_vs_base_rate": 3.0,  # above 2.0 threshold
                 },
             }
