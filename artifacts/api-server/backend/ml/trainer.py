@@ -214,15 +214,29 @@ def _backup_model_file(model_path: Path) -> Optional[Path]:
         return None
 
 
-def _restore_model_file(model_path: Path, backup_path: Optional[Path], model_name: str) -> bool:
+def _restore_model_file(
+    model_path: Path,
+    backup_path: Optional[Path],
+    model_name: str,
+    reason: Optional[str] = None,
+) -> bool:
     """Restore the last known-good model file after a flagged retrain.
 
     Returns True when the previous model was restored. Never raises.
+    Appends an event to rollback_history.json whether or not the restore
+    succeeds (so repeated failed restores — e.g. no backup — are also visible).
     """
+    from ml.training_status import record_rollback_event  # local import to avoid circularity
+
     try:
         if backup_path is None or not backup_path.exists():
             logger.warning(
                 "ml_model_rollback_unavailable model=%s reason=no_backup", model_name
+            )
+            record_rollback_event(
+                model_name=model_name,
+                reason=reason or "no_backup_available",
+                restore_succeeded=False,
             )
             return False
         # Plain copy (not copy2): the restored file must get a *fresh* mtime so
@@ -247,9 +261,16 @@ def _restore_model_file(model_path: Path, backup_path: Optional[Path], model_nam
             model_name,
             model_path.name,
         )
+        # Successful restore is recorded in rollback_history via
+        # record_training_result(rolled_back=True); no duplicate call here.
         return True
     except Exception as exc:
         logger.error("_restore_model_file error for %s: %s", model_path, exc)
+        record_rollback_event(
+            model_name=model_name,
+            reason=reason or f"restore_error: {exc}",
+            restore_succeeded=False,
+        )
         return False
 
 

@@ -2141,6 +2141,14 @@ async def healthz(session: AsyncSession = Depends(get_session)):
     except Exception as _exc:
         logger.error("healthz: drawdown gate report load failed: %s", _exc)
 
+    # ── Rollback history ─────────────────────────────────────────────────────
+    rollback_history: list = []
+    try:
+        from ml.training_status import get_rollback_history as _get_rollback_history
+        rollback_history = _get_rollback_history(last_n=20)
+    except Exception as _exc:
+        logger.error("healthz: rollback history lookup failed: %s", _exc)
+
     return {
         "status": "degraded" if degraded else "ok",
         "candle_feed_stale": bool(daily_candle_data and daily_candle_data.get("stale")),
@@ -2152,6 +2160,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "retrain_skipped_at_startup": retrain_skipped_at_startup,
         "cleanup_pending": cleanup_pending,
         "models": models,
+        "rollback_history": rollback_history,
         "voo_daily": daily_candle_data,
         "spx_futures": spx_data,
         "vix": vix_data,

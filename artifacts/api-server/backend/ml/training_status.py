@@ -18,12 +18,75 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 STATUS_PATH = Path(__file__).parent / "models" / "training_status.json"
+ROLLBACK_HISTORY_PATH = Path(__file__).parent / "models" / "rollback_history.json"
 
 MODEL_NAMES = ("long_trend", "short_trend")
 
 # Number of consecutive failed training attempts after which the health
 # endpoint flags a model as "stuck" (retrying daily but never succeeding).
 CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 3
+
+# Maximum number of rollback events kept in rollback_history.json.
+ROLLBACK_HISTORY_MAX_EVENTS = 50
+
+
+def _load_rollback_history_raw() -> list:
+    """Load the raw rollback-history list. Returns [] on any error."""
+    try:
+        if ROLLBACK_HISTORY_PATH.exists():
+            with open(ROLLBACK_HISTORY_PATH, "r") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except Exception as exc:
+        logger.error("rollback_history read error: %s", exc)
+    return []
+
+
+def record_rollback_event(
+    model_name: str,
+    reason: Optional[str],
+    restore_succeeded: bool,
+    timestamp_iso: Optional[str] = None,
+) -> None:
+    """Append one rollback event to rollback_history.json.
+
+    Keeps at most ROLLBACK_HISTORY_MAX_EVENTS entries (oldest dropped first).
+    Never raises — failure to record must not break training itself.
+    """
+    try:
+        events = _load_rollback_history_raw()
+        event = {
+            "timestamp": timestamp_iso or datetime.now(timezone.utc).isoformat(),
+            "model_name": model_name,
+            "reason": str(reason)[:500] if reason else None,
+            "restore_succeeded": bool(restore_succeeded),
+        }
+        events.append(event)
+        # Trim to the configured cap (oldest-first list, so keep the tail).
+        events = events[-ROLLBACK_HISTORY_MAX_EVENTS:]
+        ROLLBACK_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(ROLLBACK_HISTORY_PATH, "w") as f:
+            json.dump(events, f, indent=2)
+    except Exception as exc:
+        logger.error("rollback_history write error: %s", exc)
+
+
+def get_rollback_history(last_n: int = 20) -> list:
+    """Return the most recent rollback events, newest first.
+
+    Args:
+        last_n: Maximum number of events to return (default 20).
+
+    Never raises.
+    """
+    try:
+        events = _load_rollback_history_raw()
+        # Events are stored oldest-first; reverse so newest comes first.
+        return list(reversed(events[-last_n:]))
+    except Exception as exc:
+        logger.error("rollback_history get error: %s", exc)
+    return []
 
 
 def _load_raw() -> dict:
@@ -97,6 +160,16 @@ def record_training_result(
         STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(STATUS_PATH, "w") as f:
             json.dump(data, f, indent=2)
+
+        # When a rollback succeeded, append to the persistent history so
+        # operators can see repeated rollbacks without digging through logs.
+        if not success and bool(rolled_back):
+            record_rollback_event(
+                model_name=model_name,
+                reason=error,
+                restore_succeeded=True,
+                timestamp_iso=data[model_name]["attempted_at"],
+            )
     except Exception as exc:
         logger.error("training_status write error: %s", exc)
 
