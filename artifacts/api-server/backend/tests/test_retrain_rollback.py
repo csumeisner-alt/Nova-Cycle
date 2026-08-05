@@ -500,7 +500,7 @@ class TestPredictReloadsRestoredModel:
         assert pred_after_rollback == pytest.approx(good_pred, abs=1e-9)
         assert model.model is not regressed_model
 
-    def test_short_trend_reloads_restored_model(self, isolated_paths):
+    def test_short_trend_reloads_restored_model(self, isolated_paths):  # noqa: E302
         _, short_path = isolated_paths
         df_good = _fivemin_df(seed=7)
         df_bad = _fivemin_df(seed=99)
@@ -528,3 +528,260 @@ class TestPredictReloadsRestoredModel:
         pred_after_rollback = model.predict(x)
         assert pred_after_rollback == pytest.approx(good_pred, abs=1e-9)
         assert model.model is not regressed_model
+
+
+# ---------------------------------------------------------------------------
+# Three-state and drawdown-event quality gates
+# ---------------------------------------------------------------------------
+
+def _make_gate_trainer(monkeypatch, daily=None):
+    """Shared trainer factory for gate tests: stubs all DB loaders and metadata."""
+    trainer = ModelTrainer()
+
+    async def _load_daily(db):
+        return daily if daily is not None else pd.DataFrame()
+
+    async def _load_fivemin(db):
+        return pd.DataFrame()
+
+    async def _load_vix(db):
+        return pd.DataFrame()
+
+    async def _load_spx(db):
+        return pd.Series(dtype=float)
+
+    async def _noop_meta(*a, **k):
+        return None
+
+    monkeypatch.setattr(ModelTrainer, "_load_daily_voo", staticmethod(_load_daily))
+    monkeypatch.setattr(ModelTrainer, "_load_fivemin_voo", staticmethod(_load_fivemin))
+    monkeypatch.setattr(ModelTrainer, "_load_vix", staticmethod(_load_vix))
+    monkeypatch.setattr(ModelTrainer, "_load_spx_close", staticmethod(_load_spx))
+    monkeypatch.setattr(ModelTrainer, "_save_metadata", staticmethod(_noop_meta))
+    return trainer
+
+
+class TestThreeStateGate:
+    """The three-state quality gate (macro-F1 > 0.40 AND each class F1 > 0.25)
+    must block promotion when it fails and allow it when it passes."""
+
+    def test_low_macro_f1_rolls_back_model(self, isolated_paths, monkeypatch):
+        """Three-state walk-forward reports macro_f1=0.30 (below 0.40 threshold).
+        The gate must reject the candidate and restore the pre-retrain model."""
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        LongTrendModel().train(df, {})
+        assert long_path.exists()
+        good_bytes = long_path.read_bytes()
+        ts.record_training_result("long_trend", success=True, accuracy=0.60)
+
+        trainer = _make_gate_trainer(monkeypatch, daily=df)
+
+        def _low_f1_train(self_m, d, indicators):
+            lt.MODEL_PATH.write_bytes(b"three-state-low-f1-candidate")
+            self_m.model = object()
+            return {
+                "accuracy": 0.50,
+                "accuracy_metric": "purged_walk_forward_multiclass",
+                "feature_importances": {},
+                "degenerate": False,
+                "target_type": "three_state",
+                "macro_f1": 0.30,  # below 0.40 threshold → gate must fire
+                "per_class": [
+                    {"label": "down", "f1": 0.28},
+                    {"label": "neutral", "f1": 0.27},
+                    {"label": "up", "f1": 0.35},
+                ],
+                "calibration": {"evaluated": True},
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _low_f1_train)
+        asyncio.run(trainer.run_initial_training(object()))
+
+        assert long_path.read_bytes() == good_bytes, (
+            "Pre-retrain model must be restored when macro-F1 is below threshold"
+        )
+        status = ts.get_training_status().get("long_trend", {})
+        assert status.get("success") is False
+        assert "Three-state quality gate" in (status.get("error") or ""), (
+            f"Expected three-state gate message, got: {status.get('error')}"
+        )
+
+    def test_passing_f1_promotes_model_and_writes_meta(
+        self, isolated_paths, monkeypatch
+    ):
+        """Three-state walk-forward reports macro_f1=0.45 and all class F1s > 0.25.
+        The gate must accept the candidate and write a meta sidecar with
+        target_type='three_state'."""
+        import json
+        from ml import long_trend as _lt_mod
+
+        long_path, _ = isolated_paths
+        meta_path = long_path.parent / "long_trend_meta.json"
+        monkeypatch.setattr(_lt_mod, "_META_PATH", meta_path)
+
+        df = _daily_df()
+        LongTrendModel().train(df, {})
+        ts.record_training_result("long_trend", success=True, accuracy=0.50)
+
+        trainer = _make_gate_trainer(monkeypatch, daily=df)
+        candidate_bytes = b"three-state-passing-candidate"
+
+        def _passing_f1_train(self_m, d, indicators):
+            lt.MODEL_PATH.write_bytes(candidate_bytes)
+            self_m.model = object()
+            return {
+                "accuracy": 0.55,
+                "accuracy_metric": "purged_walk_forward_multiclass",
+                "feature_importances": {},
+                "degenerate": False,
+                "target_type": "three_state",
+                "macro_f1": 0.45,  # above 0.40 threshold
+                "per_class": [
+                    {"label": "down", "f1": 0.40},
+                    {"label": "neutral", "f1": 0.35},
+                    {"label": "up", "f1": 0.60},
+                ],
+                "calibration": {"evaluated": True},
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _passing_f1_train)
+        asyncio.run(trainer.run_initial_training(object()))
+
+        assert long_path.read_bytes() == candidate_bytes, (
+            "Passing three-state model must be promoted (candidate bytes kept on disk)"
+        )
+        status = ts.get_training_status().get("long_trend", {})
+        assert status.get("success") is True, (
+            f"Expected success recorded for accepted three-state retrain, got: {status}"
+        )
+        assert meta_path.exists(), "Meta sidecar must be written after promotion"
+        meta = json.loads(meta_path.read_text())
+        assert meta.get("target_type") == "three_state", (
+            f"Expected target_type='three_state' in meta sidecar, got: {meta}"
+        )
+
+    def test_per_class_f1_below_threshold_rolls_back(self, isolated_paths, monkeypatch):
+        """macro_f1=0.45 but one class F1 = 0.20 (below 0.25). Gate must reject."""
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        LongTrendModel().train(df, {})
+        good_bytes = long_path.read_bytes()
+        ts.record_training_result("long_trend", success=True, accuracy=0.60)
+
+        trainer = _make_gate_trainer(monkeypatch, daily=df)
+
+        def _low_class_f1_train(self_m, d, indicators):
+            lt.MODEL_PATH.write_bytes(b"three-state-low-class-candidate")
+            self_m.model = object()
+            return {
+                "accuracy": 0.52,
+                "accuracy_metric": "purged_walk_forward_multiclass",
+                "feature_importances": {},
+                "degenerate": False,
+                "target_type": "three_state",
+                "macro_f1": 0.45,  # macro passes but one class fails
+                "per_class": [
+                    {"label": "down", "f1": 0.20},  # below 0.25 → gate fires
+                    {"label": "neutral", "f1": 0.50},
+                    {"label": "up", "f1": 0.65},
+                ],
+                "calibration": {"evaluated": True},
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _low_class_f1_train)
+        asyncio.run(trainer.run_initial_training(object()))
+
+        assert long_path.read_bytes() == good_bytes, (
+            "Pre-retrain model must be restored when a per-class F1 is below 0.25"
+        )
+        status = ts.get_training_status().get("long_trend", {})
+        assert status.get("success") is False
+        assert "Three-state quality gate" in (status.get("error") or "")
+
+
+class TestDrawdownEventGate:
+    """The drawdown-event gate (PR-AUC lift ≥ 2× AND precision lift ≥ 2×)
+    must block promotion when lifts are insufficient and allow it when they pass."""
+
+    def test_insufficient_pr_auc_lift_rolls_back(self, isolated_paths, monkeypatch):
+        """Drawdown-event retrain with PR-AUC lift = 1.5 (below 2.0 threshold)
+        must be rejected and the pre-retrain model restored."""
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        LongTrendModel().train(df, {})
+        assert long_path.exists()
+        good_bytes = long_path.read_bytes()
+        ts.record_training_result("long_trend", success=True, accuracy=0.60)
+
+        trainer = _make_gate_trainer(monkeypatch, daily=df)
+
+        def _low_lift_train(self_m, d, indicators):
+            lt.MODEL_PATH.write_bytes(b"drawdown-low-lift-candidate")
+            self_m.model = object()
+            return {
+                "accuracy": 0.55,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "target_type": "drawdown_event",
+                "pr_auc_lift_vs_prevalence": 1.5,  # below 2.0 → gate must fire
+                "calibration": {
+                    "evaluated": True,
+                    "precision_lift_vs_base_rate": 2.5,
+                },
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _low_lift_train)
+        asyncio.run(trainer.run_initial_training(object()))
+
+        assert long_path.read_bytes() == good_bytes, (
+            "Pre-retrain model must be restored when PR-AUC lift is below 2×"
+        )
+        status = ts.get_training_status().get("long_trend", {})
+        assert status.get("success") is False
+        assert "Drawdown-event quality gate" in (status.get("error") or ""), (
+            f"Expected drawdown gate message, got: {status.get('error')}"
+        )
+
+    def test_sufficient_lifts_promote_model(self, isolated_paths, monkeypatch):
+        """Drawdown-event retrain with PR-AUC lift = 2.5 and precision lift = 3.0
+        (both ≥ 2×) must be accepted and the model promoted."""
+        long_path, _ = isolated_paths
+        df = _daily_df()
+
+        LongTrendModel().train(df, {})
+        ts.record_training_result("long_trend", success=True, accuracy=0.50)
+
+        trainer = _make_gate_trainer(monkeypatch, daily=df)
+        candidate_bytes = b"drawdown-passing-candidate"
+
+        def _passing_lift_train(self_m, d, indicators):
+            lt.MODEL_PATH.write_bytes(candidate_bytes)
+            self_m.model = object()
+            return {
+                "accuracy": 0.60,
+                "accuracy_metric": "purged_walk_forward_oos",
+                "feature_importances": {},
+                "degenerate": False,
+                "target_type": "drawdown_event",
+                "pr_auc_lift_vs_prevalence": 2.5,  # above 2.0 threshold
+                "calibration": {
+                    "evaluated": True,
+                    "precision_lift_vs_base_rate": 3.0,  # above 2.0 threshold
+                },
+            }
+
+        monkeypatch.setattr(LongTrendModel, "train", _passing_lift_train)
+        asyncio.run(trainer.run_initial_training(object()))
+
+        assert long_path.read_bytes() == candidate_bytes, (
+            "Passing drawdown-event model must be promoted (candidate bytes kept on disk)"
+        )
+        status = ts.get_training_status().get("long_trend", {})
+        assert status.get("success") is True, (
+            f"Expected success recorded for accepted drawdown retrain, got: {status}"
+        )
