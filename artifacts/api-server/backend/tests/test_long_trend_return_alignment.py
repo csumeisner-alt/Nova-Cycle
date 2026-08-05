@@ -1124,3 +1124,67 @@ def test_promotion_gate_accepts_both_bars_cleared(monkeypatch):
         f"pr_auc_lift_vs_prevalence={result.get('pr_auc_lift_vs_prevalence')}, "
         f"precision_lift_vs_base_rate={result.get('precision_lift_vs_base_rate')}."
     )
+
+
+def test_promotion_gate_rejects_when_evaluated_false(monkeypatch):
+    """passes_promotion_gate must be False when both metric lifts clear their
+    thresholds but evaluated=False (walk-forward evaluation did not complete).
+
+    Directly exercises the third condition in the AND-chain at
+    long_trend_dry_run.py lines 767–771.  A regression that drops the
+    evaluated check would silently promote unevaluated candidates.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+    import ml.calibration as cal_mod
+
+    df = _make_dry_run_df(n=400, seed=504)
+
+    rng = np.random.default_rng(504)
+    n_fake = 200
+    X_fake = rng.random((n_fake, 5)).astype(np.float32)
+    w_fake = np.ones(n_fake, dtype=np.float32)
+    oos_probs_val  = np.array([0.6, 0.2, 0.3, 0.1, 0.4, 0.2, 0.3, 0.1], dtype=float)
+    oos_labels_val = np.array([1,   0,   0,   0,   0,   0,   0,   0  ], dtype=int)
+
+    def fake_build_features(self, df_arg, indicators):  # noqa: N802
+        return X_fake, w_fake, np.arange(n_fake)
+
+    def fake_wfe_not_evaluated(X, y, weights, model_factory, n_splits, embargo):  # noqa: N802
+        # Both metric lifts clear their bars, but evaluated=False.
+        metrics = {
+            "evaluated": False,          # <-- walk-forward did not complete
+            "oos_accuracy": 0.70,
+            "majority_baseline_accuracy": 0.80,
+            "accuracy_lift_vs_majority": -0.10,
+            "pr_auc": 0.999,             # → pr_auc_lift >> 2 for any prevalence < 0.5
+            "precision_lift_vs_base_rate": 2.5,  # → above 2× threshold
+        }
+        return metrics, oos_probs_val, oos_labels_val
+
+    monkeypatch.setattr(LongTrendModel, "build_features", fake_build_features)
+    monkeypatch.setattr(cal_mod, "walk_forward_evaluate", fake_wfe_not_evaluated)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.05,
+        feature_cols=None, model_type="xgboost",
+        label="test_evaluated_false",
+    )
+
+    assert "passes_promotion_gate" in result
+    assert result["passes_promotion_gate"] is False, (
+        f"passes_promotion_gate must be False when evaluated=False, even if "
+        f"pr_auc_lift and precision_lift both clear their thresholds. "
+        f"pr_auc_lift_vs_prevalence={result.get('pr_auc_lift_vs_prevalence')}, "
+        f"precision_lift_vs_base_rate={result.get('precision_lift_vs_base_rate')}, "
+        f"evaluated={result.get('evaluated')}. "
+        "The gate requires all three conditions (AND logic)."
+    )
+
+    # Confirm both metric conditions did clear so evaluated=False is the sole cause
+    assert (result.get("precision_lift_vs_base_rate") or 0) >= 2.0, (
+        "Test precondition: precision_lift must be >= 2 to isolate evaluated flag"
+    )
+    assert (result.get("pr_auc_lift_vs_prevalence") or 0) >= 2.0, (
+        "Test precondition: pr_auc_lift must be >= 2 to isolate evaluated flag"
+    )
