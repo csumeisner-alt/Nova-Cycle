@@ -249,13 +249,16 @@ def _build_matrices(
     return X_19, X_27, y, weights, timestamps, majority_baseline, _BASE_FEATURE_NAMES, _BROADER_CONTEXT_FEATURE_NAMES
 
 
-def _append_to_json(result: dict, out_path: Path) -> None:
+def _append_to_json(result: dict, out_path: Path, max_history: int = 52) -> None:
     """
     Append *result* to out_path as a JSON list entry.
 
     If the file already exists and contains a JSON object (legacy single-run
     format from the CLI script), it is promoted to a one-element list before
     appending.  If the file is absent, a new single-element list is written.
+
+    After appending, only the *max_history* most-recent entries are kept so
+    the file does not grow without bound across weekly retrains.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     existing: list = []
@@ -274,6 +277,8 @@ def _append_to_json(result: dict, out_path: Path) -> None:
                 out_path, exc,
             )
     existing.append(result)
+    if max_history > 0 and len(existing) > max_history:
+        existing = existing[-max_history:]
     with open(out_path, "w") as fh:
         json.dump(existing, fh, indent=2, default=str)
 
@@ -292,6 +297,7 @@ def run_broader_context_ablation(
     threshold: float = 0.02,
     n_splits: int = 5,
     out_path: Optional[Path] = None,
+    max_history: int = 52,
 ) -> dict:
     """
     Run the 19- vs 27-feature broader-context ablation on data already
@@ -311,6 +317,9 @@ def run_broader_context_ablation(
         threshold:       Meaningful-move threshold (default 0.02 = 2%).
         n_splits:        Walk-forward fold count (default 5).
         out_path:        Override the output JSON path.
+        max_history:     Maximum number of entries kept in the audit JSON
+                         (default 52 — roughly one year of weekly retrains).
+                         Oldest entries are trimmed when the cap is exceeded.
 
     Returns:
         The new ablation result dict that was appended to the JSON file.
@@ -489,7 +498,7 @@ def run_broader_context_ablation(
 
     # ── Append to audit JSON ──────────────────────────────────────────────────
     try:
-        _append_to_json(result, out_path)
+        _append_to_json(result, out_path, max_history=max_history)
         logger.info("ablation_report_appended path=%s passes_gate=%s", out_path, passes_gate)
     except Exception as exc:
         logger.error("ablation_report_write_failed path=%s error=%s", out_path, exc)

@@ -237,6 +237,44 @@ class TestAppendToJson:
         ablation_mod._append_to_json({"x": 9}, out)
         assert out.exists()
 
+    def test_cap_trims_oldest_entries(self, ablation_mod, tmp_path):
+        """When entries exceed max_history, the oldest are dropped."""
+        out = tmp_path / "capped.json"
+        for i in range(5):
+            ablation_mod._append_to_json({"run": i}, out, max_history=3)
+        data = json.loads(out.read_text())
+        assert len(data) == 3
+        # The three most-recent entries should be kept (run=2, 3, 4)
+        assert [d["run"] for d in data] == [2, 3, 4]
+
+    def test_cap_exact_boundary(self, ablation_mod, tmp_path):
+        """Writing exactly max_history entries leaves the list unchanged."""
+        out = tmp_path / "boundary.json"
+        for i in range(4):
+            ablation_mod._append_to_json({"run": i}, out, max_history=4)
+        data = json.loads(out.read_text())
+        assert len(data) == 4
+        assert [d["run"] for d in data] == [0, 1, 2, 3]
+
+    def test_cap_zero_means_no_trim(self, ablation_mod, tmp_path):
+        """max_history=0 disables trimming — all entries are kept."""
+        out = tmp_path / "unlimited.json"
+        for i in range(10):
+            ablation_mod._append_to_json({"run": i}, out, max_history=0)
+        data = json.loads(out.read_text())
+        assert len(data) == 10
+
+    def test_default_max_history_is_52(self, ablation_mod, tmp_path):
+        """Default cap is 52: writing 53 entries leaves exactly 52."""
+        out = tmp_path / "default_cap.json"
+        for i in range(53):
+            ablation_mod._append_to_json({"run": i}, out)
+        data = json.loads(out.read_text())
+        assert len(data) == 52
+        # Oldest entry (run=0) must have been dropped
+        assert data[0]["run"] == 1
+        assert data[-1]["run"] == 52
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # run_broader_context_ablation integration tests
