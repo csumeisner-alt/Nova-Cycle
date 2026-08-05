@@ -854,6 +854,42 @@ function BroaderContextAblationPanel({ health }: { health: any }) {
 
   if (report === undefined) return null;   // key absent (older backend)
 
+  if (report !== null && typeof report === 'object' && (report as any)._corrupt) {
+    // File exists on disk but was corrupt or truncated (e.g. caught mid-write).
+    return (
+      <div
+        className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-red-500/20"
+        data-testid="panel-broader-context-ablation"
+      >
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center space-x-2 text-muted-foreground">
+            <FlaskConical className="w-4 h-4" />
+            <span className="text-sm font-medium tracking-wide">BROADER CONTEXT ABLATION</span>
+          </div>
+          {!showPrompt && (
+            <button
+              onClick={openPrompt}
+              data-testid="button-run-ablation"
+              className="inline-flex items-center space-x-2 text-xs font-mono px-3 py-1.5 rounded-md border border-primary/30 text-primary bg-primary/5 hover:bg-primary/15 transition-colors"
+            >
+              <Play className="w-3 h-3" />
+              <span>Run ablation</span>
+            </button>
+          )}
+        </div>
+        <div className="flex items-start space-x-2 text-xs font-mono text-destructive" data-testid="ablation-corrupt-error">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>
+            Ablation report file is corrupt or was written mid-run. The backend logged the
+            error. Click <strong>Run ablation</strong> above to regenerate a clean report.
+          </span>
+        </div>
+        {tokenPrompt}
+        {successBanner}
+      </div>
+    );
+  }
+
   if (report === null) {
     // Key present but no report file — ablation has never been run.
     return (

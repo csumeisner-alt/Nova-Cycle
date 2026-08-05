@@ -2090,7 +2090,16 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             / "ablation_broader_context.json"
         )
         if _ablation_path.exists():
-            broader_context_ablation = _json.loads(_ablation_path.read_text())
+            try:
+                broader_context_ablation = _json.loads(_ablation_path.read_text())
+            except Exception as _parse_exc:
+                # File exists but is corrupt or truncated (e.g. mid-write).
+                # Return a sentinel so the dashboard can show a distinct error
+                # instead of silently falling through to "never run".
+                logger.error(
+                    "healthz: ablation report is corrupt or unreadable: %s", _parse_exc
+                )
+                broader_context_ablation = {"_corrupt": True}
     except Exception as _exc:
         logger.error("healthz: ablation report load failed: %s", _exc)
 

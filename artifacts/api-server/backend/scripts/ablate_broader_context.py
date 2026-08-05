@@ -603,8 +603,13 @@ def main() -> int:
         ),
     }
 
-    with open(out_path, "w") as fh:
+    # Write atomically: dump to a temp file in the same directory, then rename.
+    # This prevents the healthz reader from seeing a partially-written file if
+    # the process is killed or the OS flushes mid-write.
+    tmp_path = out_path.with_suffix(".tmp")
+    with open(tmp_path, "w") as fh:
         json.dump(report, fh, indent=2, default=str)
+    tmp_path.replace(out_path)  # atomic on POSIX; overwrites on Windows
     print(f"  📄 Auditable report saved → {out_path}")
     print()
 

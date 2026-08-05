@@ -1,10 +1,11 @@
 """
 /api/healthz broader_context_ablation field — surface & safety tests.
 
-Verifies three contracts:
+Verifies four contracts:
   1. Field is null when no ablation report file exists.
   2. Field carries the full report payload when the file exists.
-  3. Field stays null (never 500) when the file contains corrupt JSON.
+  3. Field is {"_corrupt": true} (never 500) when the file contains invalid JSON.
+  4. Field is {"_corrupt": true} (never 500) when the file is truncated mid-write.
 """
 
 import json
@@ -126,8 +127,12 @@ class TestHealthzBroaderContextAblation:
         assert result["passes_promotion_gate"] == ablation_report["passes_promotion_gate"]
 
     @pytest.mark.asyncio
-    async def test_field_is_null_on_corrupt_json(self):
-        """broader_context_ablation is null (no 500) when the file contains corrupt JSON."""
+    async def test_field_is_corrupt_sentinel_on_invalid_json(self):
+        """
+        broader_context_ablation is {"_corrupt": true} (no 500) when the file
+        contains syntactically invalid JSON.  The sentinel lets the dashboard
+        distinguish this case from "never run" (null).
+        """
         _ABLATION_PATH.write_text("{ INVALID JSON }")
 
         from main import app
@@ -139,4 +144,35 @@ class TestHealthzBroaderContextAblation:
         assert resp.status_code == 200
         body = resp.json()
         assert "broader_context_ablation" in body
-        assert body["broader_context_ablation"] is None
+        result = body["broader_context_ablation"]
+        assert result is not None, (
+            "Expected a corrupt-sentinel object, not null — null means 'never run'"
+        )
+        assert result.get("_corrupt") is True
+
+    @pytest.mark.asyncio
+    async def test_field_is_corrupt_sentinel_on_truncated_json(self):
+        """
+        broader_context_ablation is {"_corrupt": true} (no 500) when the file
+        is truncated mid-write (simulating a race between the script and the
+        healthz reader before the atomic rename lands).
+        """
+        # Simulate the server reading a partially-written JSON dump — the file
+        # contains valid-looking content that is cut off before it closes.
+        partial = '{"ablation": "broader_context_features", "run_timestamp_utc": "2026-'
+        _ABLATION_PATH.write_text(partial)
+
+        from main import app
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/healthz")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "broader_context_ablation" in body
+        result = body["broader_context_ablation"]
+        assert result is not None, (
+            "Truncated report should return the corrupt sentinel, not null"
+        )
+        assert result.get("_corrupt") is True
