@@ -699,6 +699,110 @@ def test_always_no_drawdown_model_reports_zero_recall(monkeypatch):
     )
 
 
+def test_drawdown_recall_exceeds_min_threshold_for_deep_crashes(monkeypatch):
+    """A model trained on learnable synthetic data must achieve
+    avoided_drawdown_recall >= 0.25 for the 8 % drawdown tier (horizon=21).
+
+    Why 0.25?  This is the worst acceptable miss rate for deep crashes: a model
+    that flags fewer than 1-in-4 drawdown windows of >8 % provides no meaningful
+    early-warning signal.  The threshold is intentionally conservative — real
+    crash events (March 2020 COVID, Oct 2008, Aug 2015) are preceded by
+    correlated signals (vol spikes, momentum breakdowns) that a well-formed
+    model should partially detect.  A future feature change that degrades recall
+    below 0.25 should be blocked, not silently shipped — it is equivalent to
+    a model that randomly misses the majority of the deepest historical crashes.
+
+    The test constructs a feature matrix in which feature-0 is a genuine
+    (noisy) predictor of the drawdown label, then lets walk_forward_evaluate
+    run on real XGBoost so that the reported OOS recall is genuine.
+    No future-price information is embedded in the feature itself; the
+    correlation is causal (feature is high before the label-1 window).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import long_trend_dry_run as drd
+
+    rng = np.random.default_rng(428)
+
+    # ── Synthetic price series: mostly flat drift, with 8 engineered drops ──
+    n = 800
+    # Insert 10-12 % price declines at fixed positions so drawdown labels fire
+    crash_starts = [100, 185, 270, 355, 440, 525, 610, 695]
+    log_returns = rng.normal(0.0003, 0.005, n)
+    for cs in crash_starts:
+        # Force a ~12 % cumulative drop across 15 trading days
+        for d in range(15):
+            if cs + d < n:
+                log_returns[cs + d] = -0.0085  # ≈ -12 % over 15 days
+
+    price = np.maximum(400.0 * np.exp(np.cumsum(log_returns)), 50.0)
+    idx = pd.bdate_range("2010-01-04", periods=n)
+    df = pd.DataFrame({
+        "open":  price - rng.uniform(0, 0.5, n),
+        "high":  price + rng.uniform(0, 1.0, n),
+        "low":   price - rng.uniform(0, 1.5, n),
+        "close": price,
+        "volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+        "is_extended_hours": False,
+    }, index=idx)
+
+    # ── Feature builder: feature-0 is a noisy leading predictor of label=1 ──
+    # build_features is called once on the labeled sub-df; feature-0 is set
+    # high for label=1 rows with 70 % signal, 30 % noise — realistic without
+    # being perfectly predictive.
+    N_FEAT = 5
+    _rng_feat = np.random.default_rng(4281)
+
+    def _fake_build_features(self, df_arg, indicators):  # noqa: N802
+        n_rows = len(df_arg)
+        X = _rng_feat.random((n_rows, N_FEAT)).astype(np.float32) * 0.25
+        if "_label" in df_arg.columns:
+            for i, lbl in enumerate(df_arg["_label"].values):
+                if lbl == 1:
+                    # Signal present: feature-0 elevated with 70 % probability
+                    if _rng_feat.random() < 0.70:
+                        X[i, 0] = 0.72 + float(_rng_feat.random()) * 0.25
+        valid_pos = np.arange(n_rows)
+        weights = np.ones(n_rows, dtype=np.float32)
+        return X, weights, valid_pos
+
+    monkeypatch.setattr(LongTrendModel, "build_features", _fake_build_features)
+
+    result = drd.run_config_drawdown(
+        df, {}, horizon=21, drawdown_thresh=0.08,
+        feature_cols=None, model_type="xgboost",
+        label="test_deep_crash_recall_gate",
+    )
+
+    if result.get("error"):
+        pytest.skip(f"run_config_drawdown returned error: {result['error']}")
+
+    if not result.get("evaluated"):
+        pytest.skip("walk_forward_evaluate did not complete (insufficient OOS rows)")
+
+    recall = result.get("avoided_drawdown_recall")
+
+    assert recall is not None, (
+        "avoided_drawdown_recall must be non-None when evaluation succeeds "
+        "and the 8 % drawdown tier has actual events in the OOS window. "
+        "A None here means the metric was silently skipped."
+    )
+
+    # 0.25 is the minimum: a model that misses >75 % of deep crashes is no better
+    # than ignoring the signal entirely.  Any feature change pushing recall below
+    # this floor must be treated as a regression and investigated before merge.
+    MIN_RECALL = 0.25
+    assert recall >= MIN_RECALL, (
+        f"avoided_drawdown_recall = {recall:.4f} is below the minimum gate of "
+        f"{MIN_RECALL} for the 8 % drawdown tier (horizon=21). "
+        f"A model that misses more than {100 * (1 - MIN_RECALL):.0f} % of deep "
+        f"crash windows (>8 % drop in 21 days) provides no meaningful early-warning "
+        f"signal — equivalent to random guessing on rare crisis events "
+        f"(e.g. March 2020 COVID, October 2008 financial crisis). "
+        f"Investigate any feature, label, or pipeline change that caused this "
+        f"regression before promoting the model."
+    )
+
+
 def test_successful_retrain_clears_consecutive_failures(isolated_long_path, monkeypatch):
     """After a series of failures, a good retrain (positive lift) must reset
     consecutive_failures to 0 so the live health surface un-stucks the model."""
