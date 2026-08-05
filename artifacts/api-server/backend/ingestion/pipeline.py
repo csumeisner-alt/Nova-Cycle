@@ -30,6 +30,10 @@ from ingestion.fetcher import DataFetcher, ohlc_validation_issue
 
 logger = logging.getLogger(__name__)
 
+# Maximum seconds to wait for a single yfinance backfill range fetch.
+# A hung vendor call must not delay the next scheduled ingestion tick.
+BACKFILL_FETCH_TIMEOUT_SECS: float = 30.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Last 5-min stall recovery attempt (module-level so /healthz can report it
 # regardless of which pipeline instance ran the recovery).
@@ -958,9 +962,15 @@ class IngestionPipeline:
                 start = _dt.combine(start_d, _time.min)
                 end = _dt.combine(end_d, _time.min)
                 if timeframe == "5min":
-                    df = await self.fetcher.fetch_5min_range(start, end)
+                    df = await asyncio.wait_for(
+                        self.fetcher.fetch_5min_range(start, end),
+                        timeout=BACKFILL_FETCH_TIMEOUT_SECS,
+                    )
                 else:
-                    df = await self.fetcher.fetch_daily_range(start, end)
+                    df = await asyncio.wait_for(
+                        self.fetcher.fetch_daily_range(start, end),
+                        timeout=BACKFILL_FETCH_TIMEOUT_SECS,
+                    )
                 if df.empty:
                     logger.warning(
                         "ingest_backfill_empty timeframe=%s range=%s→%s",
@@ -971,6 +981,13 @@ class IngestionPipeline:
                     df, db_session, timeframe=timeframe, _is_backfill=True
                 )
                 filled += 1
+            except asyncio.TimeoutError:
+                logger.error(
+                    "ingest_backfill_range_timeout timeframe=%s range=%s→%s "
+                    "timeout=%.0fs",
+                    timeframe, start_d.isoformat(), end_d.isoformat(),
+                    BACKFILL_FETCH_TIMEOUT_SECS,
+                )
             except Exception as exc:
                 logger.error(
                     "ingest_backfill_range_failed timeframe=%s range=%s→%s error=%s",
@@ -1406,8 +1423,11 @@ class IngestionPipeline:
             try:
                 start = _dt.combine(start_d, _time.min)
                 end = _dt.combine(end_d, _time.min)
-                df = await self.fetcher.fetch_context_ticker_range(
-                    ticker, start, end, is_index=is_index
+                df = await asyncio.wait_for(
+                    self.fetcher.fetch_context_ticker_range(
+                        ticker, start, end, is_index=is_index
+                    ),
+                    timeout=BACKFILL_FETCH_TIMEOUT_SECS,
                 )
                 if df.empty:
                     logger.warning(
@@ -1421,6 +1441,13 @@ class IngestionPipeline:
                     is_index=is_index, _is_backfill=True,
                 )
                 filled += 1
+            except asyncio.TimeoutError:
+                logger.error(
+                    "context_ingest_backfill_range_timeout label=%s "
+                    "range=%s→%s timeout=%.0fs",
+                    label, start_d.isoformat(), end_d.isoformat(),
+                    BACKFILL_FETCH_TIMEOUT_SECS,
+                )
             except Exception as exc:
                 logger.error(
                     "context_ingest_backfill_range_failed label=%s "
@@ -1456,7 +1483,10 @@ class IngestionPipeline:
             try:
                 start = _dt.combine(start_d, _time.min)
                 end = _dt.combine(end_d, _time.min)
-                df = await self.fetcher.fetch_vix_daily_range(start, end)
+                df = await asyncio.wait_for(
+                    self.fetcher.fetch_vix_daily_range(start, end),
+                    timeout=BACKFILL_FETCH_TIMEOUT_SECS,
+                )
                 if df.empty:
                     logger.warning(
                         "vix_ingest_backfill_empty range=%s→%s",
@@ -1467,6 +1497,12 @@ class IngestionPipeline:
                     df, db_session, timeframe="daily", _is_backfill=True
                 )
                 filled += 1
+            except asyncio.TimeoutError:
+                logger.error(
+                    "vix_ingest_backfill_range_timeout range=%s→%s timeout=%.0fs",
+                    start_d.isoformat(), end_d.isoformat(),
+                    BACKFILL_FETCH_TIMEOUT_SECS,
+                )
             except Exception as exc:
                 logger.error(
                     "vix_ingest_backfill_range_failed range=%s→%s error=%s",
