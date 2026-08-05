@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown, Rss, FlaskConical } from 'lucide-react';
+import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown, Rss, FlaskConical, Play, Loader2 } from 'lucide-react';
 import { PredictionCard } from '@/components/PredictionCard';
 import { PerformanceDashboard } from '@/components/PerformanceDashboard';
 import { TierTrackRecordPanel } from '@/components/TierTrackRecordPanel';
@@ -752,9 +752,108 @@ type AblationReport = {
 };
 
 function BroaderContextAblationPanel({ health }: { health: any }) {
+  const qc = useQueryClient();
   const report: AblationReport | null | undefined = health?.broader_context_ablation;
 
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [token, setToken] = useState('');
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const runMutation = useMutation({
+    mutationFn: async (adminToken: string) => {
+      const res = await fetch('/api/admin/run_ablation', {
+        method: 'POST',
+        headers: { 'X-Admin-Token': adminToken },
+      });
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const body = await res.json();
+          detail = body?.detail ?? '';
+        } catch { /* ignore */ }
+        if (res.status === 403) throw new Error(detail || 'Invalid admin token. Check the token and try again.');
+        if (res.status === 503) throw new Error(detail || 'Admin endpoints are disabled on the backend (no ADMIN_TOKEN or SESSION_SECRET configured).');
+        throw new Error(detail || `Request failed (HTTP ${res.status})`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      setShowPrompt(false);
+      setToken('');
+      setSuccessMsg('Ablation started — the panel will refresh automatically when the report is ready (1–3 min).');
+      // Immediately begin polling more aggressively so the UI updates promptly
+      qc.invalidateQueries({ queryKey: ['healthz'] });
+    },
+  });
+
+  const openPrompt = () => {
+    setSuccessMsg(null);
+    runMutation.reset();
+    setShowPrompt(true);
+  };
+
+  // Shared token-prompt form rendered inside any variant of the panel
+  const tokenPrompt = showPrompt ? (
+    <form
+      className="mt-4 p-3 bg-black/40 rounded-lg border border-white/10 space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (token.trim()) runMutation.mutate(token.trim());
+      }}
+    >
+      <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
+        <div className="flex items-center space-x-2">
+          <KeyRound className="w-3.5 h-3.5" />
+          <span>Enter admin token to start the ablation comparison</span>
+        </div>
+        <button
+          type="button"
+          aria-label="Cancel"
+          onClick={() => { setShowPrompt(false); setToken(''); runMutation.reset(); }}
+          className="p-1 rounded hover:bg-white/10 transition-colors"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="flex items-center space-x-2">
+        <input
+          type="password"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder="X-Admin-Token"
+          autoFocus
+          data-testid="input-ablation-admin-token"
+          className="flex-1 bg-background/80 border border-white/10 rounded-md px-3 py-1.5 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground/50"
+        />
+        <button
+          type="submit"
+          disabled={!token.trim() || runMutation.isPending}
+          data-testid="button-confirm-run-ablation"
+          className="text-xs font-mono px-3 py-1.5 rounded-md bg-primary/80 text-primary-foreground hover:bg-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center space-x-1.5"
+        >
+          {runMutation.isPending
+            ? <><Loader2 className="w-3 h-3 animate-spin" /><span>Starting…</span></>
+            : <><Play className="w-3 h-3" /><span>Run ablation</span></>}
+        </button>
+      </div>
+      {runMutation.isError && (
+        <div className="flex items-start space-x-2 text-xs font-mono text-destructive" data-testid="text-ablation-run-error">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>{runMutation.error instanceof Error ? runMutation.error.message : 'Request failed'}</span>
+        </div>
+      )}
+    </form>
+  ) : null;
+
+  const successBanner = successMsg && !showPrompt ? (
+    <div className="mt-3 flex items-center space-x-2 text-xs font-mono text-primary" data-testid="text-ablation-run-success">
+      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+      <span>{successMsg}</span>
+    </div>
+  ) : null;
+
   if (report === undefined) return null;   // key absent (older backend)
+
   if (report === null) {
     // Key present but no report file — ablation has never been run.
     return (
@@ -762,17 +861,27 @@ function BroaderContextAblationPanel({ health }: { health: any }) {
         className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5"
         data-testid="panel-broader-context-ablation"
       >
-        <div className="flex items-center space-x-2 text-muted-foreground mb-2">
-          <FlaskConical className="w-4 h-4" />
-          <span className="text-sm font-medium tracking-wide">BROADER CONTEXT ABLATION</span>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center space-x-2 text-muted-foreground">
+            <FlaskConical className="w-4 h-4" />
+            <span className="text-sm font-medium tracking-wide">BROADER CONTEXT ABLATION</span>
+          </div>
+          {!showPrompt && (
+            <button
+              onClick={openPrompt}
+              data-testid="button-run-ablation"
+              className="inline-flex items-center space-x-2 text-xs font-mono px-3 py-1.5 rounded-md border border-primary/30 text-primary bg-primary/5 hover:bg-primary/15 transition-colors"
+            >
+              <Play className="w-3 h-3" />
+              <span>Run ablation</span>
+            </button>
+          )}
         </div>
         <p className="text-xs font-mono text-muted-foreground" data-testid="ablation-not-run">
-          No ablation report found. Run{' '}
-          <code className="text-primary/80">
-            python scripts/ablate_broader_context.py --yf
-          </code>{' '}
-          to compare 19-feat vs 27-feat OOS accuracy.
+          No ablation report found — click <strong>Run ablation</strong> above to compare 19-feat vs 27-feat OOS accuracy.
         </p>
+        {tokenPrompt}
+        {successBanner}
       </div>
     );
   }
@@ -816,16 +925,28 @@ function BroaderContextAblationPanel({ health }: { health: any }) {
             BROADER CONTEXT ABLATION
           </span>
         </div>
-        <span
-          className={`inline-flex items-center text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-            passes
-              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-              : 'bg-white/5 text-muted-foreground border-white/10'
-          }`}
-          data-testid="ablation-gate-badge"
-        >
-          {passes ? '✅ GATE PASS' : '— GATE FAIL'}
-        </span>
+        <div className="flex items-center space-x-2">
+          <span
+            className={`inline-flex items-center text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+              passes
+                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                : 'bg-white/5 text-muted-foreground border-white/10'
+            }`}
+            data-testid="ablation-gate-badge"
+          >
+            {passes ? '✅ GATE PASS' : '— GATE FAIL'}
+          </span>
+          {!showPrompt && (
+            <button
+              onClick={openPrompt}
+              data-testid="button-run-ablation"
+              className="inline-flex items-center space-x-1.5 text-[10px] font-mono px-2.5 py-1 rounded-md border border-primary/30 text-primary bg-primary/5 hover:bg-primary/15 transition-colors"
+            >
+              <Play className="w-2.5 h-2.5" />
+              <span>Re-run</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* OOS accuracy comparison */}
@@ -908,6 +1029,9 @@ function BroaderContextAblationPanel({ health }: { health: any }) {
       >
         {report.recommendation}
       </p>
+
+      {tokenPrompt}
+      {successBanner}
     </div>
   );
 }

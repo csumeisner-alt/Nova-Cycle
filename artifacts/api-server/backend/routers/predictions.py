@@ -2247,6 +2247,58 @@ async def cleanup_malformed_candles_endpoint(session: AsyncSession = Depends(get
     }
 
 
+# ---------------------------------------------------------------------------
+# POST /admin/run_ablation  (operator-only)
+# ---------------------------------------------------------------------------
+@router.post("/admin/run_ablation", dependencies=[Depends(_require_admin_token)])
+async def run_ablation_endpoint():
+    """
+    Operator action: kick off the broader-context ablation comparison
+    (19-feat vs 27-feat) in the background.
+
+    The script writes ml/models/ablation_broader_context.json when it
+    finishes; the /api/healthz broader_context_ablation field will update
+    on the next healthz poll once the file exists.
+
+    Returns immediately with {"status": "started"} — the job runs async.
+    """
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "ablate_broader_context.py"
+    backend_dir = Path(__file__).resolve().parents[1]
+
+    async def _run_ablation() -> None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, str(script), "--yf",
+                cwd=str(backend_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error(
+                    "run_ablation: script exited %d — stderr tail: %s",
+                    proc.returncode,
+                    stderr.decode(errors="replace")[-2000:],
+                )
+            else:
+                logger.info("run_ablation: script completed successfully")
+        except Exception as exc:
+            logger.error("run_ablation: unexpected error: %s", exc)
+
+    asyncio.create_task(_run_ablation())
+    return {
+        "status": "started",
+        "message": (
+            "Ablation comparison running in the background. "
+            "The dashboard will update automatically when the report is ready "
+            "(usually 1–3 minutes)."
+        ),
+    }
+
+
 def _record_ohlc_quarantine(ts: str, reason: str) -> None:
     """Record that a malformed OHLC candle was detected at prediction time.
 
