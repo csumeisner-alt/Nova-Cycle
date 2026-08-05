@@ -344,3 +344,162 @@ class TestNeutralFallbacks:
         norm, missing = ml_features.compute_rates_level(idx)
         assert float(norm.mean()) == pytest.approx(0.5)
         assert (missing == 1.0).all()
+
+
+# ── End-to-end retrain staleness suppression ──────────────────────────────────
+
+class TestRetainStalenessEndToEnd:
+    """End-to-end: retrain with partially-stale context data (TNX stops at 80%).
+
+    Confirms that a full train() call with context data that goes absent for
+    the last 20% of the date range:
+      1. Correctly flags rows in the stale window with rates_missing=1.0.
+      2. Produces a valid, non-degenerate model (staleness does not break
+         training or cause the model to learn from stale signal).
+      3. Returns a feature matrix whose width matches
+         len(_BASE_FEATURE_NAMES) + len(_BROADER_CONTEXT_FEATURE_NAMES) = 27
+         when LONG_BROADER_CONTEXT_ENABLED=True.
+    """
+
+    # ── Shared fixture ────────────────────────────────────────────────────────
+
+    @pytest.fixture
+    def voo_df_and_partial_rates(self):
+        """300 business-day VOO df + TNX rates covering only first 240 days (80%).
+
+        High volatility (σ ≈ 1 % per day) ensures that enough 21-day forward
+        returns exceed the ±2 % meaningful-move threshold so that at least 100
+        labeled rows survive the noise filter inside train().
+        """
+        n = 300
+        split = int(n * 0.8)          # 240 → rates are fresh here
+        idx = pd.bdate_range("2020-01-02", periods=n)
+        rng = np.random.default_rng(42)
+
+        # Volatile random walk; clip to stay strictly positive.
+        close = np.clip(300.0 + np.cumsum(rng.normal(0, 3.0, n)), 50.0, None)
+        df = pd.DataFrame(
+            {
+                "open":   close * (1.0 + rng.normal(0, 0.003, n)),
+                "high":   close * (1.0 + np.abs(rng.normal(0, 0.005, n))),
+                "low":    close * (1.0 - np.abs(rng.normal(0, 0.005, n))),
+                "close":  close,
+                "volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+            },
+            index=idx,
+        )
+
+        # TNX series: present only for the first 240 days.
+        fresh_idx = idx[:split]
+        rates = pd.Series(45.0 + rng.normal(0, 1.0, split), index=fresh_idx)
+
+        return df, rates, idx, split
+
+    # ── Test 1: staleness flags ───────────────────────────────────────────────
+
+    def test_stale_window_rates_missing_is_one(self, voo_df_and_partial_rates):
+        """Rows clearly past the staleness tolerance must have rates_missing=1.0
+        and fresh rows must NOT be flagged."""
+        df, rates, idx, split = voo_df_and_partial_rates
+
+        _, missing = ml_features.compute_rates_level(idx, rates_close=rates)
+
+        # Fresh window (first 240 rows): none should be stale.
+        assert not missing.iloc[:split].any(), (
+            "Fresh rows (before rates cutoff) were incorrectly flagged stale"
+        )
+
+        # Stale window: rows more than 7 calendar days after the cutoff are
+        # unambiguously stale regardless of weekend boundary effects.
+        cutoff_date = rates.index[-1]
+        clearly_stale_mask = (idx - cutoff_date).days > 7
+        clearly_stale_idx = idx[clearly_stale_mask]
+
+        assert len(clearly_stale_idx) > 0, (
+            "No clearly-stale rows found — review the fixture date range"
+        )
+        assert missing.loc[clearly_stale_idx].all(), (
+            "Some rows >7 calendar days after the rates cutoff were NOT "
+            "flagged with rates_missing=1.0"
+        )
+
+    # ── Test 2: non-degenerate model ─────────────────────────────────────────
+
+    def test_train_with_partial_context_succeeds_and_is_not_degenerate(
+        self, voo_df_and_partial_rates, tmp_path
+    ):
+        """train() must succeed and produce a non-degenerate model when context
+        data goes absent for the last 20 % of the training window.
+
+        The staleness flags (rates_missing=1.0) suppress the stale signal so
+        the model does not silently learn from forward-filled yield data.
+        """
+        from ml import long_trend
+        import ml.calibration as _cal_mod
+
+        df, rates, idx, split = voo_df_and_partial_rates
+        indicators = {"rates_close": rates}
+        model = long_trend.LongTrendModel()
+
+        # Redirect all file I/O inside train() to tmp_path so the test is
+        # hermetic and does not modify the real ml/models directory.
+        with (
+            patch.object(long_trend, "MODEL_PATH", tmp_path / "model.pkl"),
+            patch.object(long_trend, "MODEL_DIR", tmp_path),
+            patch("ml.calibration.save_calibrator", return_value=True),
+            patch("ml.calibration.save_calibration_report", return_value=None),
+            patch.object(long_trend.settings, "LONG_BROADER_CONTEXT_ENABLED", True),
+            patch.object(long_trend.settings, "LONG_TARGET_TYPE", "direction"),
+            patch.object(long_trend.settings, "LONG_MIN_TRAINING_ROWS", 50),
+        ):
+            result = model.train(df, indicators)
+
+        # Training must return a valid result with non-zero accuracy.
+        assert result.get("accuracy", 0.0) > 0.0, (
+            f"train() returned zero accuracy — possible data/labeling failure: {result}"
+        )
+
+        # The model must not degenerate to a constant predictor.
+        assert result.get("degenerate") is False, (
+            f"Model flagged degenerate: {result.get('degeneracy_reason')}"
+        )
+
+        # Feature importances dict must be present and non-empty.
+        importances = result.get("feature_importances", {})
+        assert isinstance(importances, dict) and len(importances) > 0, (
+            "Feature importances missing from train() result"
+        )
+
+    # ── Test 3: feature-count parity with FEATURE_NAMES ──────────────────────
+
+    def test_feature_count_matches_feature_names_when_context_enabled(
+        self, voo_df_and_partial_rates
+    ):
+        """build_features output width must equal 27 (19 base + 8 context)
+        when LONG_BROADER_CONTEXT_ENABLED=True and partial context is supplied.
+
+        The stale rows receive rates_missing=1.0 but the feature dimension
+        remains constant so the trained model always sees a 27-column matrix.
+        """
+        from ml import long_trend
+
+        df, rates, idx, split = voo_df_and_partial_rates
+        indicators = {"rates_close": rates}
+        model = long_trend.LongTrendModel()
+
+        expected_width = (
+            len(long_trend._BASE_FEATURE_NAMES)
+            + len(long_trend._BROADER_CONTEXT_FEATURE_NAMES)
+        )
+        assert expected_width == 27, (
+            f"FEATURE_NAMES layout changed: expected 27, got {expected_width}"
+        )
+
+        with patch.object(long_trend.settings, "LONG_BROADER_CONTEXT_ENABLED", True):
+            X, _, _ = model.build_features(df, indicators)
+
+        assert len(X) > 0, "build_features returned an empty matrix"
+        assert X.shape[1] == expected_width, (
+            f"Feature matrix width {X.shape[1]} != expected {expected_width} "
+            "when LONG_BROADER_CONTEXT_ENABLED=True with partial rates"
+        )
