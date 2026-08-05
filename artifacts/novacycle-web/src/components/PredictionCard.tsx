@@ -34,6 +34,17 @@ export type PredictionDisplay = {
   /** "trained" when a gate-passing model is active; "baseline" when the signal
    *  falls back to the calibrated majority-class base rate (~73% bull bias). */
   long_signal_mode?: 'trained' | 'baseline';
+  /**
+   * Three-class softmax probabilities from the long-trend model when it is
+   * operating in three_state mode.  Order: [P(risk-off), P(neutral), P(risk-on)].
+   * Null / absent when the model is in direction mode or unavailable.
+   */
+  long_class_probabilities?: [number, number, number] | null;
+  /**
+   * "three_state" when the long model outputs risk-off / neutral / risk-on
+   * probabilities; "direction" for the default binary gauge.
+   */
+  long_target_type?: 'three_state' | 'direction';
 };
 
 const MODEL_STATE_SUMMARIES: Record<string, string> = {
@@ -86,6 +97,57 @@ function CandidateBadge({ direction, name }: { direction: string; name: string }
       <Zap className="w-3 h-3" />
       <span>{dirLabel} CANDIDATE</span>
     </span>
+  );
+}
+
+const CLASS_LABELS = ['Risk-Off', 'Neutral', 'Risk-On'] as const;
+const CLASS_COLORS = [
+  { bar: 'bg-red-400', text: 'text-red-400' },
+  { bar: 'bg-slate-400', text: 'text-slate-400' },
+  { bar: 'bg-emerald-400', text: 'text-emerald-400' },
+] as const;
+
+function ClassProbabilityBars({
+  probabilities,
+  name,
+}: {
+  probabilities: [number, number, number];
+  name: string;
+}) {
+  const maxIdx = probabilities.indexOf(Math.max(...probabilities));
+  return (
+    <div className="space-y-1.5" data-testid={`class-probabilities-${name}`}>
+      <p className="text-[10px] font-mono tracking-wide uppercase text-muted-foreground">
+        Regime Breakdown
+      </p>
+      {CLASS_LABELS.map((label, i) => {
+        const pct = Math.round(probabilities[i] * 100);
+        const { bar, text } = CLASS_COLORS[i];
+        return (
+          <div key={label} className="flex items-center gap-2">
+            <span
+              className={`w-16 text-[10px] font-mono text-right shrink-0 ${maxIdx === i ? text : 'text-muted-foreground'}`}
+              data-testid={`class-label-${name}-${i}`}
+            >
+              {label}
+            </span>
+            <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${maxIdx === i ? bar : 'bg-white/20'}`}
+                style={{ width: `${pct}%` }}
+                data-testid={`class-bar-${name}-${i}`}
+              />
+            </div>
+            <span
+              className={`w-9 text-[10px] font-mono text-right shrink-0 tabular-nums ${maxIdx === i ? text : 'text-muted-foreground'}`}
+              data-testid={`class-pct-${name}-${i}`}
+            >
+              {pct}%
+            </span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -209,6 +271,12 @@ export function PredictionCard({ name, label }: { name: string; label: string })
           data-testid={`bar-confidence-${name}`}
         />
       </div>
+      {data?.long_target_type === 'three_state' && Array.isArray(data?.long_class_probabilities) && data.long_class_probabilities.length === 3 && (
+        <ClassProbabilityBars
+          probabilities={data.long_class_probabilities as [number, number, number]}
+          name={name}
+        />
+      )}
       {data?.prediction_reliable === false &&
         data?.model_state &&
         MODEL_STATE_LABELS[data.model_state] &&

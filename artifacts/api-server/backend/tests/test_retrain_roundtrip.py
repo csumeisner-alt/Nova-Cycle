@@ -68,6 +68,7 @@ def isolated_model_paths(tmp_path, monkeypatch):
     short_path = tmp_path / "short_trend_model.pkl"
     monkeypatch.setattr(lt, "MODEL_PATH", long_path)
     monkeypatch.setattr(lt, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(lt, "_META_PATH", tmp_path / "long_trend_meta.json")
     monkeypatch.setattr(st, "MODEL_PATH", short_path)
     monkeypatch.setattr(st, "MODEL_DIR", tmp_path)
 
