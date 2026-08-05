@@ -484,22 +484,61 @@ class ModelTrainer:
                 new_metric = long_result.get("accuracy_metric")
                 prev_metric = get_last_successful_accuracy_metric("long_trend")
                 walk_forward = long_result.get("calibration") or {}
-                oos_lift = walk_forward.get("accuracy_lift_vs_majority")
+                target_type = long_result.get("target_type", settings.LONG_TARGET_TYPE)
                 regressed = False
                 reason = None
-                if (
-                    new_metric == "purged_walk_forward_oos"
-                    and oos_lift is not None
-                    and float(oos_lift)
-                    <= float(settings.LONG_MIN_OOS_ACCURACY_LIFT)
-                ):
-                    regressed = True
-                    reason = (
-                        "OOS quality gate: accuracy lift versus majority baseline "
-                        f"is {float(oos_lift):.4f}, required > "
-                        f"{float(settings.LONG_MIN_OOS_ACCURACY_LIFT):.4f}"
-                    )
-                    logger.error("Long-trend %s", reason)
+
+                if target_type == "drawdown_event":
+                    # Gate: PR-AUC lift ≥ 2× event prevalence AND precision lift ≥ 2×
+                    pr_auc_lift = long_result.get("pr_auc_lift_vs_prevalence")
+                    wf_precision_lift = walk_forward.get("precision_lift_vs_base_rate")
+                    if new_metric == "purged_walk_forward_oos" and (
+                        pr_auc_lift is None
+                        or float(pr_auc_lift) < 2.0
+                        or wf_precision_lift is None
+                        or float(wf_precision_lift) < 2.0
+                    ):
+                        regressed = True
+                        reason = (
+                            "Drawdown-event quality gate: "
+                            f"PR-AUC lift={pr_auc_lift} (required ≥ 2.0), "
+                            f"precision lift={wf_precision_lift} (required ≥ 2.0)"
+                        )
+                        logger.error("Long-trend %s", reason)
+                elif target_type == "three_state":
+                    # Gate: macro-F1 > 0.40 AND each class F1 > 0.25
+                    macro_f1 = long_result.get("macro_f1") or walk_forward.get("macro_f1") or 0.0
+                    per_class = long_result.get("per_class") or walk_forward.get("per_class") or []
+                    per_class_f1s = [pc.get("f1", 0.0) for pc in per_class]
+                    if new_metric == "purged_walk_forward_multiclass" and (
+                        float(macro_f1) <= 0.40
+                        or not all(f > 0.25 for f in per_class_f1s)
+                    ):
+                        regressed = True
+                        reason = (
+                            "Three-state quality gate: "
+                            f"macro_F1={macro_f1:.4f} (required > 0.40), "
+                            f"per-class F1s={[round(f, 4) for f in per_class_f1s]} "
+                            "(each required > 0.25)"
+                        )
+                        logger.error("Long-trend %s", reason)
+                else:
+                    # direction: existing OOS accuracy lift gate
+                    oos_lift = walk_forward.get("accuracy_lift_vs_majority")
+                    if (
+                        new_metric == "purged_walk_forward_oos"
+                        and oos_lift is not None
+                        and float(oos_lift)
+                        <= float(settings.LONG_MIN_OOS_ACCURACY_LIFT)
+                    ):
+                        regressed = True
+                        reason = (
+                            "OOS quality gate: accuracy lift versus majority baseline "
+                            f"is {float(oos_lift):.4f}, required > "
+                            f"{float(settings.LONG_MIN_OOS_ACCURACY_LIFT):.4f}"
+                        )
+                        logger.error("Long-trend %s", reason)
+
                 # The existing 0.56 value is a legacy train-set metric. It is
                 # not comparable to a new purged OOS result and must not block
                 # migration to the honest metric.
@@ -521,7 +560,11 @@ class ModelTrainer:
                                 "regression check still applies",
                                 prev_metric, new_metric,
                             )
-                        regressed, reason = check_accuracy_regression(new_acc, prev_acc)
+                        # Only run the accuracy-regression comparison for
+                        # direction models; drawdown and three-state use their
+                        # own gate metrics (PR-AUC lift / macro-F1).
+                        if target_type == "direction":
+                            regressed, reason = check_accuracy_regression(new_acc, prev_acc)
                 if regressed:
                     logger.error("Long-trend %s", reason)
                     restored = _restore_model_file(LONG_MODEL_PATH, long_backup, "long_trend")
@@ -534,6 +577,10 @@ class ModelTrainer:
                         rolled_back=restored,
                     )
                 else:
+                    # Gate passed — write the target_type meta sidecar so
+                    # load_model() can verify alignment on the next startup.
+                    from ml.long_trend import LongTrendModel as _LTM
+                    _LTM.save_promotion_meta(target_type)
                     record_training_result(
                         "long_trend",
                         success=True,

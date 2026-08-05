@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 MODEL_DIR = Path(__file__).parent / "models"
 MODEL_PATH = MODEL_DIR / "long_trend_model.pkl"
+# Sidecar JSON that records the target_type the active pkl was trained for.
+# Written on every successful promotion; read during load_model() to detect
+# mismatches when LONG_TARGET_TYPE changes between retrains.
+_META_PATH = MODEL_DIR / "long_trend_meta.json"
 
 VIX_REGIME_MAP = {"LOW": 0, "NORMAL": 1, "HIGH": 2, "EXTREME": 3}
 
@@ -97,6 +101,111 @@ FEATURE_NAMES: list[str] = _BASE_FEATURE_NAMES + (
 )
 
 
+def _walk_forward_multiclass(
+    X: np.ndarray,
+    y: np.ndarray,
+    weights: Optional[np.ndarray],
+    model_factory,
+    n_splits: int = 5,
+    embargo: int = 21,
+) -> dict:
+    """Purged chronological walk-forward for a three-state classifier.
+
+    Returns a metrics dict with ``evaluated``, ``macro_f1``,
+    ``oos_balanced_accuracy``, ``per_class``, and ``folds``.
+    Uses the same split logic as the binary walk_forward_evaluate so results
+    are directly comparable between target types.
+    """
+    try:
+        from sklearn.metrics import (
+            f1_score as _f1,
+            precision_recall_fscore_support as _prf,
+            balanced_accuracy_score as _bal_acc,
+        )
+    except ImportError:
+        return {"evaluated": False, "reason": "sklearn not available"}
+
+    n = len(X)
+    min_train = max(100, embargo * 3)
+    if n < min_train + embargo + n_splits:
+        return {
+            "evaluated": False,
+            "reason": f"not enough rows ({n}) for multiclass walk-forward",
+        }
+
+    test_start = max(min_train + embargo, int(n * 0.5))
+    fold_edges = np.linspace(test_start, n, n_splits + 1, dtype=int)
+
+    oos_preds: list = []
+    oos_labels: list = []
+    fold_stats = []
+
+    for k in range(n_splits):
+        t0, t1 = int(fold_edges[k]), int(fold_edges[k + 1])
+        if t1 <= t0:
+            continue
+        train_end = t0 - embargo
+        if train_end < min_train:
+            continue
+        model = model_factory()
+        w = None
+        if weights is not None and len(weights) == n:
+            w = weights[:train_end].copy()
+            mw = float(w.mean())
+            if mw > 0:
+                w = w / mw
+        model.fit(X[:train_end], y[:train_end], sample_weight=w, verbose=False)
+        preds = model.predict(X[t0:t1])
+        oos_preds.append(preds)
+        oos_labels.append(y[t0:t1])
+        fold_acc = float((preds == y[t0:t1]).mean())
+        fold_stats.append({
+            "fold": k + 1,
+            "train_rows": int(train_end),
+            "test_rows": int(t1 - t0),
+            "accuracy": fold_acc,
+        })
+
+    if not oos_preds:
+        return {"evaluated": False, "reason": "no valid walk-forward folds"}
+
+    all_preds = np.concatenate(oos_preds)
+    all_labels = np.concatenate(oos_labels).astype(int)
+
+    classes = sorted(np.unique(np.concatenate([all_labels, all_preds])).tolist())
+    macro_f1 = float(_f1(all_labels, all_preds, average="macro", zero_division=0))
+    bal_acc = float(_bal_acc(all_labels, all_preds))
+    overall_acc = float((all_preds == all_labels).mean())
+
+    prec, rec, f1_scores, support = _prf(
+        all_labels, all_preds, labels=classes, average=None, zero_division=0
+    )
+    class_names = {0: "risk_off", 1: "neutral", 2: "risk_on"}
+    per_class = []
+    for i, cls in enumerate(classes):
+        per_class.append({
+            "class": int(cls),
+            "name": class_names.get(cls, str(cls)),
+            "precision": round(float(prec[i]), 4),
+            "recall": round(float(rec[i]), 4),
+            "f1": round(float(f1_scores[i]), 4),
+            "support": int(support[i]),
+        })
+
+    return {
+        "evaluated": True,
+        "method": "purged_walk_forward_multiclass",
+        "n_splits": len(fold_stats),
+        "embargo_rows": int(embargo),
+        "oos_samples": int(len(all_labels)),
+        "oos_accuracy": round(overall_acc, 4),
+        "oos_balanced_accuracy": round(bal_acc, 4),
+        "macro_f1": round(macro_f1, 4),
+        "per_class": per_class,
+        "folds": fold_stats,
+    }
+
+
 class LongTrendModel:
     """XGBoost model predicting 21-day forward return direction for VOO."""
 
@@ -114,7 +223,22 @@ class LongTrendModel:
         self._baseline_mode: bool = False
         # Set by predict() on each call; lets predict_long detect a silent 0.5.
         self.last_prediction_was_fallback: bool = False
+        # Target type reported by the last successful promotion (loaded from
+        # the meta sidecar on each load_model() call).  Falls back to
+        # settings.LONG_TARGET_TYPE when no sidecar exists.
+        self._promoted_target_type: Optional[str] = None
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def target_type(self) -> str:
+        """Target type the model was promoted for (direction | drawdown_event | three_state).
+
+        Reads the value recorded by the last successful training run from the
+        meta sidecar.  Falls back to settings.LONG_TARGET_TYPE when the sidecar
+        is absent so a freshly deployed instance with no trained model uses the
+        configured target.
+        """
+        return self._promoted_target_type or settings.LONG_TARGET_TYPE
 
     def _maybe_reload(self) -> None:
         """
@@ -176,7 +300,7 @@ class LongTrendModel:
         legacy models and neutral fallbacks retain the old behavior.
         """
         self._maybe_reload()
-        return self.calibration_base_rate or 0.5
+        return self._target_aware_base_rate() or 0.5
 
     def is_baseline_mode(self) -> bool:
         """True when no gate-passing trained model is available.
@@ -194,13 +318,43 @@ class LongTrendModel:
         return self._baseline_mode
 
     def get_baseline_probability(self) -> float:
-        """Return the calibrated majority-class base rate (≈0.73 for VOO/21d/2%).
+        """Return the target-appropriate base rate as a directional ml_confidence.
 
-        Sourced from the calibration report's ``positive_rate`` field at runtime;
-        never hardcoded.  Falls back to 0.5 when no report is available.
+        For direction models: calibration report ``positive_rate`` = historical
+        P(BUY label) ≈ 0.73 for VOO/21d/2% — mildly bullish, reflects the
+        equity risk premium.
+
+        For drawdown_event models: ``1 − positive_rate`` = historical
+        P(no drawdown) — typically high (≈0.92 for a 5% threshold), which is the
+        correct majority-class prediction in "no drawdown" space.
+
+        For three_state models: 0.5 (neutral), since no binary base rate applies.
+
+        Sourced from the calibration report at runtime; never hardcoded.
+        Falls back to 0.5 when no report is available.
         """
         self._maybe_reload()
-        return self.calibration_base_rate or 0.5
+        return self._target_aware_base_rate() or 0.5
+
+    def _target_aware_base_rate(self) -> Optional[float]:
+        """Return a valid (0,1)-bounded base rate adjusted for the active target type.
+
+        Returns None when no calibration base rate has been loaded yet.
+        """
+        rate = self.calibration_base_rate  # positive_rate from calibration report
+        if rate is None:
+            return None
+        target = self.target_type
+        if target == "drawdown_event":
+            # positive_rate is drawdown event prevalence; ml_confidence semantics
+            # are inverted (high = no drawdown = bullish).
+            return min(0.99, max(0.01, 1.0 - rate))
+        elif target == "three_state":
+            # No meaningful binary base rate; return neutral.
+            return 0.5
+        else:
+            # direction: positive_rate directly represents bullish probability.
+            return rate
 
     # ──────────────────────────────────────────────────────────────────────────
     # Feature engineering
@@ -688,6 +842,25 @@ class LongTrendModel:
                 df["_rates_level_norm"] = _ctx_rs
                 df["_rates_missing"] = _ctx_rm
 
+            # ── Target branching ─────────────────────────────────────────────
+            # Drawdown-event and three-state targets use different label
+            # schemes; they branch here and return early with their own
+            # metric dicts so the rest of this method (direction logic) is
+            # preserved unchanged.
+            _target = settings.LONG_TARGET_TYPE
+
+            if _target == "drawdown_event":
+                return self._train_drawdown_event(
+                    df, indicators,
+                    _ds_total_candles, _ds_date_start, _ds_date_end,
+                )
+            elif _target == "three_state":
+                return self._train_three_state(
+                    df, indicators,
+                    _ds_total_candles, _ds_date_start, _ds_date_end,
+                )
+            # else: fall through to the existing direction logic below.
+
             horizon = int(getattr(settings, "LONG_LABEL_HORIZON_DAYS", 21))
             threshold = float(
                 getattr(settings, "LONG_MEANINGFUL_MOVE_THRESHOLD", 0.02)
@@ -891,12 +1064,347 @@ class LongTrendModel:
             return {"accuracy": 0.0, "feature_importances": {}}
 
     # ──────────────────────────────────────────────────────────────────────────
+    # Alternative-target training helpers
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def save_promotion_meta(target_type: str) -> None:
+        """Persist the target_type of the just-promoted model to the meta sidecar.
+
+        Called by the trainer immediately after a gate-passing model is written
+        to MODEL_PATH.  Safe to call from outside the class (e.g. from trainer.py).
+        Never raises.
+        """
+        import json as _json
+        try:
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            with open(_META_PATH, "w") as _mf:
+                _json.dump({"target_type": target_type}, _mf)
+            logger.info(
+                "ml_model_meta_saved model=long_trend target_type=%s", target_type
+            )
+        except Exception as exc:
+            logger.error("save_promotion_meta error: %s", exc)
+
+    def _train_drawdown_event(
+        self,
+        df: pd.DataFrame,
+        indicators: dict,
+        ds_total_candles: int,
+        ds_date_start: Optional[str],
+        ds_date_end: Optional[str],
+    ) -> dict:
+        """Train a binary drawdown-event classifier.
+
+        y=1 when the minimum close price in the next LONG_DRAWDOWN_HORIZON
+        trading days falls at least LONG_DRAWDOWN_THRESHOLD below today's close.
+        Promotion gate: PR-AUC lift ≥ 2× AND precision lift ≥ 2× on purged OOS.
+        """
+        try:
+            import xgboost as xgb
+
+            horizon = int(getattr(settings, "LONG_DRAWDOWN_HORIZON", 21))
+            dd_thresh = float(getattr(settings, "LONG_DRAWDOWN_THRESHOLD", 0.05))
+
+            # Build future minimum close and drawdown labels (strictly future)
+            future_cols = pd.concat(
+                [df["close"].shift(-k) for k in range(1, horizon + 1)], axis=1
+            )
+            df = df.copy()
+            df["_future_min_close"] = future_cols.min(axis=1, skipna=False)
+            df.dropna(subset=["_future_min_close"], inplace=True)
+            df["_max_drawdown"] = df["_future_min_close"] / df["close"] - 1.0
+            df["label"] = (df["_max_drawdown"] <= -dd_thresh).astype(int)
+            _ds_labeled_rows = len(df)
+
+            trimmed_indicators = {
+                k: v.reindex(df.index) if isinstance(v, pd.Series) else v
+                for k, v in indicators.items()
+            }
+            X, weights, valid_pos = self.build_features(df, trimmed_indicators)
+            y = df["label"].values[valid_pos]
+
+            min_rows = int(getattr(settings, "LONG_MIN_TRAINING_ROWS", 100))
+            if len(X) < min_rows:
+                logger.warning(
+                    "Not enough data for drawdown-event model (%d rows)", len(X)
+                )
+                return {"accuracy": 0.0, "feature_importances": {}}
+
+            # Class-balance: drawdown events are the minority class
+            class_counts = np.bincount(y.astype(int), minlength=2)
+            class_weights = np.ones(2, dtype=np.float32)
+            for cid, cnt in enumerate(class_counts):
+                if cnt > 0:
+                    class_weights[cid] = len(y) / (2.0 * cnt)
+            weights = weights * class_weights[y.astype(int)]
+            mean_w = float(weights.mean())
+            if mean_w > 0:
+                weights = weights / mean_w
+
+            from sklearn.model_selection import train_test_split
+            from sklearn.metrics import accuracy_score
+            X_train, X_test, y_train, y_test, w_train, _ = train_test_split(
+                X, y, weights, test_size=0.2, shuffle=False
+            )
+            model = xgb.XGBClassifier(
+                n_estimators=200, max_depth=3, learning_rate=0.05,
+                subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+                reg_lambda=2.0, eval_metric="logloss",
+                use_label_encoder=False, random_state=42,
+            )
+            model.fit(X_train, y_train, sample_weight=w_train,
+                      eval_set=[(X_test, y_test)], verbose=False)
+            train_acc = float(accuracy_score(y_test, model.predict(X_test)))
+
+            # Walk-forward OOS evaluation (same binary evaluator as direction)
+            calibration_summary: dict = {"calibrated": False}
+            try:
+                def _factory():
+                    return xgb.XGBClassifier(
+                        n_estimators=200, max_depth=3, learning_rate=0.05,
+                        subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+                        reg_lambda=2.0, eval_metric="logloss",
+                        use_label_encoder=False, random_state=42,
+                    )
+                wf_metrics, oos_probs, oos_labels = ml_calibration.walk_forward_evaluate(
+                    X, y, weights, model_factory=_factory,
+                )
+                calibration_summary.update(wf_metrics)
+                if wf_metrics.get("evaluated"):
+                    cal = ml_calibration.fit_calibrator(oos_probs, oos_labels)
+                    if cal is not None:
+                        calibration_summary["calibrated"] = True
+                        calibration_summary["calibration_method"] = cal.method
+                        if ml_calibration.save_calibrator(cal):
+                            self.calibrator = cal
+                            self._calibrator_mtime = None
+                ml_calibration.save_calibration_report(
+                    calibration_summary,
+                    dataset_meta={
+                        "total_candles": ds_total_candles,
+                        "labeled_rows": _ds_labeled_rows,
+                        "date_start": ds_date_start,
+                        "date_end": ds_date_end,
+                    },
+                )
+            except Exception as exc:
+                logger.error("Drawdown-event calibration error: %s", exc)
+                calibration_summary = {"calibrated": False, "reason": str(exc)}
+
+            # Save model
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            with open(MODEL_PATH, "wb") as f:
+                pickle.dump(model, f)
+            self.model = model
+            self._model_loaded = True
+
+            importances = dict(zip(FEATURE_NAMES, model.feature_importances_.tolist()))
+            degenerate, degeneracy_reason = check_model_degeneracy(model, X)
+            if degenerate:
+                logger.error(
+                    "ml_model_degenerate model=long_trend target=drawdown_event reason=%s",
+                    degeneracy_reason,
+                )
+
+            event_rate = float(y.mean())
+            pr_auc = calibration_summary.get("pr_auc")
+            pr_auc_lift = (
+                pr_auc / event_rate if pr_auc is not None and event_rate > 0 else None
+            )
+            logger.info(
+                "Drawdown-event model trained: train_acc=%.4f event_rate=%.4f "
+                "pr_auc=%s pr_auc_lift=%s",
+                train_acc, event_rate, pr_auc, pr_auc_lift,
+            )
+            oos_acc = (
+                float(calibration_summary["oos_accuracy"])
+                if calibration_summary.get("evaluated")
+                and calibration_summary.get("oos_accuracy") is not None
+                else None
+            )
+            return {
+                "accuracy": oos_acc if oos_acc is not None else train_acc,
+                "accuracy_metric": (
+                    "purged_walk_forward_oos"
+                    if oos_acc is not None else "train"
+                ),
+                "train_accuracy": train_acc,
+                "target_type": "drawdown_event",
+                "target_horizon_days": horizon,
+                "drawdown_threshold": dd_thresh,
+                "training_rows": int(len(X)),
+                "positive_label_rate": event_rate,
+                "pr_auc_lift_vs_prevalence": pr_auc_lift,
+                "feature_importances": importances,
+                "degenerate": degenerate,
+                "degeneracy_reason": degeneracy_reason,
+                "calibration": calibration_summary,
+            }
+        except Exception as exc:
+            logger.error("Drawdown-event training error: %s", exc)
+            return {"accuracy": 0.0, "feature_importances": {}}
+
+    def _train_three_state(
+        self,
+        df: pd.DataFrame,
+        indicators: dict,
+        ds_total_candles: int,
+        ds_date_start: Optional[str],
+        ds_date_end: Optional[str],
+    ) -> dict:
+        """Train a three-state (risk-off / neutral / risk-on) classifier.
+
+        Labels: 2=risk-on (fwd_return > threshold), 1=neutral (|return| <= threshold),
+        0=risk-off (fwd_return < -threshold).
+        Promotion gate: macro-F1 > 0.40 AND each class F1 > 0.25.
+        """
+        try:
+            import xgboost as xgb
+
+            horizon = int(getattr(settings, "LONG_THREE_STATE_HORIZON", 21))
+            threshold = float(getattr(settings, "LONG_THREE_STATE_THRESHOLD", 0.02))
+
+            df = df.copy()
+            df["_future_close"] = df["close"].shift(-horizon)
+            df.dropna(subset=["_future_close"], inplace=True)
+            df["_fwd_return"] = df["_future_close"] / df["close"] - 1.0
+            conditions = [df["_fwd_return"] > threshold, df["_fwd_return"] < -threshold]
+            df["label"] = np.select(conditions, [2, 0], default=1)
+            _ds_labeled_rows = len(df)
+
+            trimmed_indicators = {
+                k: v.reindex(df.index) if isinstance(v, pd.Series) else v
+                for k, v in indicators.items()
+            }
+            X, weights, valid_pos = self.build_features(df, trimmed_indicators)
+            y = df["label"].values[valid_pos].astype(int)
+
+            min_rows = int(getattr(settings, "LONG_MIN_TRAINING_ROWS", 100))
+            if len(X) < min_rows:
+                logger.warning(
+                    "Not enough data for three-state model (%d rows)", len(X)
+                )
+                return {"accuracy": 0.0, "feature_importances": {}}
+
+            # Three-class balanced weights
+            class_counts = np.bincount(y, minlength=3)
+            class_weights = np.ones(3, dtype=np.float32)
+            for cid, cnt in enumerate(class_counts):
+                if cnt > 0:
+                    class_weights[cid] = len(y) / (3.0 * cnt)
+            weights = weights * class_weights[y]
+            mean_w = float(weights.mean())
+            if mean_w > 0:
+                weights = weights / mean_w
+
+            from sklearn.model_selection import train_test_split
+            from sklearn.metrics import accuracy_score
+            X_train, X_test, y_train, y_test, w_train, _ = train_test_split(
+                X, y, weights, test_size=0.2, shuffle=False
+            )
+            model = xgb.XGBClassifier(
+                objective="multi:softprob", num_class=3,
+                n_estimators=200, max_depth=3, learning_rate=0.05,
+                subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+                reg_lambda=2.0, eval_metric="mlogloss",
+                use_label_encoder=False, random_state=42,
+            )
+            model.fit(X_train, y_train, sample_weight=w_train,
+                      eval_set=[(X_test, y_test)], verbose=False)
+            train_acc = float(accuracy_score(y_test, model.predict(X_test)))
+
+            # Walk-forward multiclass evaluation
+            calibration_summary: dict = {"calibrated": False}
+            try:
+                def _factory():
+                    return xgb.XGBClassifier(
+                        objective="multi:softprob", num_class=3,
+                        n_estimators=200, max_depth=3, learning_rate=0.05,
+                        subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+                        reg_lambda=2.0, eval_metric="mlogloss",
+                        use_label_encoder=False, random_state=42,
+                    )
+                wf_metrics = _walk_forward_multiclass(
+                    X, y, weights, model_factory=_factory,
+                    embargo=max(horizon, 21),
+                )
+                calibration_summary.update(wf_metrics)
+                # No probability calibrator for multi-class (collapsed scalar
+                # is used directly; isotonic regression is binary-only).
+                # Save a calibration report so the staleness auditor has data.
+                ml_calibration.save_calibration_report(
+                    calibration_summary,
+                    dataset_meta={
+                        "total_candles": ds_total_candles,
+                        "labeled_rows": _ds_labeled_rows,
+                        "date_start": ds_date_start,
+                        "date_end": ds_date_end,
+                    },
+                )
+            except Exception as exc:
+                logger.error("Three-state walk-forward error: %s", exc)
+                calibration_summary = {"calibrated": False, "reason": str(exc)}
+
+            # Save model
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            with open(MODEL_PATH, "wb") as f:
+                pickle.dump(model, f)
+            self.model = model
+            self._model_loaded = True
+
+            importances = dict(zip(FEATURE_NAMES, model.feature_importances_.tolist()))
+            degenerate, degeneracy_reason = check_model_degeneracy(model, X)
+            if degenerate:
+                logger.error(
+                    "ml_model_degenerate model=long_trend target=three_state reason=%s",
+                    degeneracy_reason,
+                )
+
+            macro_f1 = calibration_summary.get("macro_f1")
+            logger.info(
+                "Three-state model trained: train_acc=%.4f macro_f1=%s",
+                train_acc, macro_f1,
+            )
+            oos_acc = calibration_summary.get("oos_accuracy")
+            return {
+                "accuracy": float(oos_acc) if oos_acc is not None else train_acc,
+                "accuracy_metric": (
+                    "purged_walk_forward_multiclass"
+                    if calibration_summary.get("evaluated") else "train"
+                ),
+                "train_accuracy": train_acc,
+                "target_type": "three_state",
+                "target_horizon_days": horizon,
+                "three_state_threshold": threshold,
+                "training_rows": int(len(X)),
+                "macro_f1": macro_f1,
+                "per_class": calibration_summary.get("per_class"),
+                "feature_importances": importances,
+                "degenerate": degenerate,
+                "degeneracy_reason": degeneracy_reason,
+                "calibration": calibration_summary,
+            }
+        except Exception as exc:
+            logger.error("Three-state training error: %s", exc)
+            return {"accuracy": 0.0, "feature_importances": {}}
+
+    # ──────────────────────────────────────────────────────────────────────────
     # Prediction
     # ──────────────────────────────────────────────────────────────────────────
 
     def predict(self, features: np.ndarray) -> float:
         """
-        Return BUY probability in [0, 1].
+        Return a directional confidence score in [0, 1] where > 0.5 is bullish.
+
+        Interpretation by target_type:
+          direction      — P(BUY) exactly as before.
+          drawdown_event — 1 − calibrated_P(drawdown): calibrate raw P(drawdown)
+                           first (the calibrator is fitted on those raw values),
+                           then invert so a high score = no drawdown expected.
+          three_state    — P(risk-on) + 0.5 × P(neutral): risk-on pushes the
+                           score above 0.5; risk-off pushes it below. No
+                           probability calibrator (binary-only fitting).
 
         Loads model from disk if not already loaded.
 
@@ -928,16 +1436,38 @@ class LongTrendModel:
                         f"model expects {expected} features, got {features.shape[1]}"
                     )
 
-            prob = float(self.model.predict_proba(features)[0][1])
+            raw_proba = self.model.predict_proba(features)[0]
+            target = self.target_type
 
-            # Apply the persisted probability calibrator when available so the
-            # gauge consumes an honest confidence. Raw probability is the
-            # fallback — calibration must never break prediction.
-            if self.calibrator is not None:
-                try:
-                    prob = self.calibrator.transform(prob)
-                except Exception as exc:
-                    logger.error("Long-trend calibration apply error: %s", exc)
+            if target == "three_state":
+                # raw_proba: [P(0=risk-off), P(1=neutral), P(2=risk-on)]
+                # Collapse to a single [0,1] score where > 0.5 = bullish.
+                # No calibrator: isotonic regression is binary-only.
+                prob = float(raw_proba[2]) + 0.5 * float(raw_proba[1])
+
+            elif target == "drawdown_event":
+                # Calibrator was fitted on raw P(drawdown) with label=1 meaning
+                # drawdown.  Apply it to the RAW value first so calibration is
+                # consistent with training, then invert so > 0.5 = bullish.
+                raw_dd = float(raw_proba[1])
+                if self.calibrator is not None:
+                    try:
+                        raw_dd = self.calibrator.transform(raw_dd)
+                    except Exception as exc:
+                        logger.error("Long-trend drawdown calibration apply error: %s", exc)
+                prob = 1.0 - raw_dd
+
+            else:
+                # direction (binary): P(BUY = class 1)
+                prob = float(raw_proba[1])
+                # Apply the persisted probability calibrator when available.
+                # Raw probability is the fallback — calibration must never
+                # break prediction.
+                if self.calibrator is not None:
+                    try:
+                        prob = self.calibrator.transform(prob)
+                    except Exception as exc:
+                        logger.error("Long-trend calibration apply error: %s", exc)
 
             self.last_prediction_was_fallback = False
             return float(prob)
@@ -945,6 +1475,31 @@ class LongTrendModel:
             logger.error("Long-trend predict error: %s", exc)
             self.last_prediction_was_fallback = True
             return 0.5
+
+    def predict_class_probs(self, features: np.ndarray) -> Optional[list]:
+        """Return raw class probabilities for three_state models, None otherwise.
+
+        For direction and drawdown_event models, callers should use predict()
+        which returns an already-collapsed directional confidence.
+
+        Args:
+            features: 1D or 2D ndarray of shape (n_features,) or (1, n_features)
+
+        Returns:
+            List of floats [P(risk-off), P(neutral), P(risk-on)] for three_state,
+            or None for other target types or when the model is unavailable.
+        """
+        try:
+            self._maybe_reload()
+            if self.model is None or self.target_type != "three_state":
+                return None
+            if features.ndim == 1:
+                features = features.reshape(1, -1)
+            raw = self.model.predict_proba(features)[0]
+            return [round(float(p), 4) for p in raw]
+        except Exception as exc:
+            logger.error("predict_class_probs error: %s", exc)
+            return None
 
     # ──────────────────────────────────────────────────────────────────────────
     # Model persistence
@@ -974,6 +1529,9 @@ class LongTrendModel:
             "purged_walk_forward_oos" and overwrites the pkl.
           - 19-feature pkl loaded and last successful metric is
             "purged_walk_forward_oos" → _baseline_mode = False.
+          - Meta sidecar target_type differs from settings.LONG_TARGET_TYPE →
+            _baseline_mode = True, model = None.  Forces a retrain with the
+            new target before the gauge switches behaviour.
         """
         try:
             if MODEL_PATH.exists():
@@ -1017,7 +1575,7 @@ class LongTrendModel:
                 # "purged_walk_forward_oos" means the "last good" model predates
                 # the gate and has never been validated against it.
                 last_metric = get_last_successful_accuracy_metric("long_trend")
-                if last_metric != "purged_walk_forward_oos":
+                if last_metric not in ("purged_walk_forward_oos", "purged_walk_forward_multiclass"):
                     logger.warning(
                         "ml_model_baseline_mode model=long_trend "
                         "last_success_metric=%s "
@@ -1030,10 +1588,50 @@ class LongTrendModel:
                     self._baseline_mode = True
                     self._model_loaded = True
                     return False
+
+                # Target-type alignment: read the meta sidecar written by the
+                # last successful promotion and compare to the configured target.
+                # A mismatch forces baseline mode until a retrain for the new
+                # target completes — this prevents a direction model from being
+                # served as a drawdown/three_state model (wrong output semantics).
+                try:
+                    import json as _json
+                    if _META_PATH.exists():
+                        with open(_META_PATH) as _mf:
+                            _meta = _json.load(_mf)
+                        _promoted = str(_meta.get("target_type", "direction"))
+                    else:
+                        _promoted = "direction"  # pre-meta pkl defaults to direction
+                    self._promoted_target_type = _promoted
+                    configured = settings.LONG_TARGET_TYPE
+                    if _promoted != configured:
+                        logger.warning(
+                            "ml_model_baseline_mode model=long_trend "
+                            "promoted_target=%s configured_target=%s "
+                            "reason=target_type_mismatch action=baseline_await_retrain",
+                            _promoted, configured,
+                        )
+                        self.model = None
+                        self._model_feature_count = None
+                        self._baseline_mode = True
+                        self._model_loaded = True
+                        return False
+                except Exception as _meta_exc:
+                    logger.warning(
+                        "ml_model_meta_read_error model=long_trend error=%s "
+                        "— assuming direction target",
+                        _meta_exc,
+                    )
+                    self._promoted_target_type = "direction"
+
                 self.model = model
                 self._baseline_mode = False
                 self._model_loaded = True
-                logger.info("Long-trend model loaded from %s", MODEL_PATH)
+                logger.info(
+                    "Long-trend model loaded from %s target_type=%s",
+                    MODEL_PATH,
+                    self.target_type,
+                )
                 return True
             else:
                 logger.info(

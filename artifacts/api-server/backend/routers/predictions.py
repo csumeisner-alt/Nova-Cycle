@@ -813,6 +813,7 @@ async def predict_long(
         # Build features and run ML model
         ml_fallback = False
         long_signal_mode = "trained"
+        _class_probs = None  # raw [P(risk-off), P(neutral), P(risk-on)] for three_state
         try:
             features = _long_model.build_latest_features(daily_df, indicators)
             if features is None:
@@ -846,6 +847,9 @@ async def predict_long(
                     ml_fallback = True
                     long_signal_mode = "baseline"
                     _record_ml_fallback("long_trend", "predict() error fallback (see model logs)")
+                # For three_state models, also capture raw class probabilities
+                # so the dashboard can display risk-off / neutral / risk-on breakdown.
+                _class_probs = _long_model.predict_class_probs(features)
         except Exception as e:
             ml_confidence = _long_model.get_baseline_probability()
             ml_fallback = True
@@ -992,6 +996,13 @@ async def predict_long(
             "ml_confidence": ml_confidence,
             "ml_fallback": ml_fallback,
             "long_signal_mode": long_signal_mode,
+            # Target type the active model was promoted for.  Consumers can
+            # use this to adapt their display (e.g. show risk-off probability
+            # instead of BUY probability when target_type != "direction").
+            "long_target_type": _long_model.target_type,
+            # Raw class probabilities — only present for three_state models.
+            # Order: [P(risk-off), P(neutral), P(risk-on)]
+            "long_class_probabilities": _class_probs,
             **model_reliability,
             "liquidity_score": 1.0,
             "gap_type": str(latest.get("gap_type", "none")),

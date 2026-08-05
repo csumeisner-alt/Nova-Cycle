@@ -149,6 +149,26 @@ class Settings(BaseSettings):
     # classifier instead of being forced into BUY/SELL labels.
     LONG_LABEL_HORIZON_DAYS: int = 21
     LONG_MEANINGFUL_MOVE_THRESHOLD: float = 0.02
+
+    # Target type for the long-trend model.  Supported values:
+    #   direction      — binary BUY/SELL classifier (default, production)
+    #   drawdown_event — binary classifier predicting a significant intra-horizon
+    #                    drawdown; promoted when PR-AUC lift >= 2× AND
+    #                    precision lift >= 2× on purged OOS evaluation.
+    #   three_state    — three-class classifier (risk-off / neutral / risk-on);
+    #                    promoted when macro-F1 > 0.40 AND each class F1 > 0.25.
+    # Changing this puts the current model pkl into baseline mode until a
+    # gate-passing retrain for the new target is completed.
+    LONG_TARGET_TYPE: str = "direction"
+
+    # Horizon and depth threshold for the drawdown_event target.
+    LONG_DRAWDOWN_HORIZON: int = 21
+    LONG_DRAWDOWN_THRESHOLD: float = 0.05  # 5 % intra-horizon drop
+
+    # Horizon and return threshold for the three_state target neutral band.
+    LONG_THREE_STATE_HORIZON: int = 21
+    LONG_THREE_STATE_THRESHOLD: float = 0.02
+
     # ── Baseline-mode duration alert ──────────────────────────────────────────
     # Fire a one-time operator alert when the long-trend model stays in baseline
     # mode (no gate-passing trained model) for at least this many calendar days.
