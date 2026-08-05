@@ -124,6 +124,11 @@ def isolated(tmp_path, monkeypatch):
     it correctly clear baseline mode.  Tests that specifically need to verify
     the pre-gate path override this by calling monkeypatch.setattr again with
     a lambda that returns "train" or None.
+
+    _META_PATH is also redirected to tmp_path so that target-type mismatch
+    tests never read from or write to the real ml/models directory.  This also
+    ensures that any real long_trend_meta.json on disk does not interfere with
+    the pre-meta-sidecar code paths tested here.
     """
     from ml import long_trend as lt
 
@@ -133,6 +138,7 @@ def isolated(tmp_path, monkeypatch):
 
     monkeypatch.setattr(lt, "MODEL_DIR", tmp_path)
     monkeypatch.setattr(lt, "MODEL_PATH", tmp_path / "long_trend_model.pkl")
+    monkeypatch.setattr(lt, "_META_PATH", tmp_path / "long_trend_meta.json")
     monkeypatch.setattr(cal, "MODEL_DIR", tmp_path)
     monkeypatch.setattr(cal, "CALIBRATOR_PATH", tmp_path / "long_trend_calibrator.pkl")
     monkeypatch.setattr(cal, "REPORT_PATH", tmp_path / "long_trend_calibration.json")
@@ -415,3 +421,208 @@ class TestNeutralFallbackConsistency:
         m = LongTrendModel()  # no pkl → baseline
         assert m.is_baseline_mode() is True
         assert m.is_neutral_fallback() is True
+
+
+# ---------------------------------------------------------------------------
+# 6. Target-type mismatch: switching LONG_TARGET_TYPE without retraining
+# ---------------------------------------------------------------------------
+
+class TestTargetTypeMismatch:
+    """Confirm that changing LONG_TARGET_TYPE in config without completing a
+    retrain causes load_model() to enter baseline mode rather than serving
+    a direction model under drawdown / three-state semantics."""
+
+    def _write_meta(self, path, target_type: str) -> None:
+        """Write a minimal meta sidecar JSON."""
+        import json
+        path.write_text(json.dumps({"target_type": target_type}))
+
+    def test_direction_model_with_drawdown_config_is_baseline(
+        self, isolated, monkeypatch
+    ):
+        """Train a direction model (meta sidecar says 'direction'), then switch
+        LONG_TARGET_TYPE to 'drawdown_event' without retraining.
+        load_model() must detect the mismatch and enter baseline mode."""
+        from ml import long_trend as lt
+
+        # Promote a valid 19-feature direction model
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "direction")
+
+        # Change config without running a new retrain
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "drawdown_event")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is True, (
+            "Switching LONG_TARGET_TYPE from direction → drawdown_event "
+            "without retraining must force baseline mode"
+        )
+        assert m.model is None
+
+    def test_direction_model_with_three_state_config_is_baseline(
+        self, isolated, monkeypatch
+    ):
+        """Same safety check when switching to three_state."""
+        from ml import long_trend as lt
+
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "direction")
+
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "three_state")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is True, (
+            "Switching LONG_TARGET_TYPE from direction → three_state "
+            "without retraining must force baseline mode"
+        )
+        assert m.model is None
+
+    def test_matching_target_type_does_not_force_baseline(
+        self, isolated, monkeypatch
+    ):
+        """When the meta sidecar and LONG_TARGET_TYPE agree (both 'direction'),
+        no mismatch → baseline mode must NOT be set."""
+        from ml import long_trend as lt
+
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "direction")
+
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "direction")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is False
+        assert m.model is not None
+
+    def test_absent_meta_sidecar_defaults_to_direction(
+        self, isolated, monkeypatch
+    ):
+        """When no meta sidecar exists, load_model() assumes 'direction'.
+        A valid 19-feature pkl with LONG_TARGET_TYPE='direction' must load
+        successfully (no baseline mode)."""
+        from ml import long_trend as lt
+
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        # _META_PATH does not exist (isolated fixture points it to an empty tmp_path)
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "direction")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is False
+        assert m.model is not None
+
+    def test_absent_meta_sidecar_with_drawdown_config_is_baseline(
+        self, isolated, monkeypatch
+    ):
+        """No sidecar defaults to 'direction'; if LONG_TARGET_TYPE='drawdown_event'
+        that is a mismatch → baseline mode."""
+        from ml import long_trend as lt
+
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        # No meta sidecar written; absent sidecar defaults to direction
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "drawdown_event")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is True, (
+            "No meta sidecar (defaults to direction) + LONG_TARGET_TYPE=drawdown_event "
+            "must force baseline mode"
+        )
+        assert m.model is None
+
+    def test_baseline_clears_after_matching_retrain(
+        self, isolated, monkeypatch
+    ):
+        """After entering mismatch baseline mode, a retrain that writes a new
+        pkl + matching meta sidecar must clear baseline on the next reload."""
+        from ml import long_trend as lt
+
+        # Start: direction pkl + drawdown_event config → mismatch → baseline
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "direction")
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "drawdown_event")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is True
+
+        # Simulate a successful drawdown_event retrain: update pkl + sidecar
+        import time
+        time.sleep(0.01)  # ensure mtime differs
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        self._write_meta(lt._META_PATH, "drawdown_event")
+
+        # Force mtime-based reload
+        m._loaded_mtime = None
+        m._maybe_reload()
+
+        assert m.is_baseline_mode() is False, (
+            "After a matching drawdown_event retrain, baseline mode must clear"
+        )
+        assert m.model is not None
+
+
+# ---------------------------------------------------------------------------
+# 7. save_promotion_meta: meta sidecar written correctly after gate-passing
+# ---------------------------------------------------------------------------
+
+class TestSavePromotionMeta:
+    """Confirm that save_promotion_meta() writes the correct target_type to the
+    meta sidecar and that load_model() then reads it back accurately."""
+
+    def test_direction_sidecar_written(self, isolated):
+        """save_promotion_meta('direction') must write target_type=direction."""
+        import json
+        from ml import long_trend as lt
+
+        LongTrendModel.save_promotion_meta("direction")
+
+        assert lt._META_PATH.exists(), "Meta sidecar must be created"
+        data = json.loads(lt._META_PATH.read_text())
+        assert data.get("target_type") == "direction"
+
+    def test_drawdown_event_sidecar_written(self, isolated):
+        """save_promotion_meta('drawdown_event') must write the correct target_type.
+        This covers the gate-passing promotion path in trainer.py."""
+        import json
+        from ml import long_trend as lt
+
+        LongTrendModel.save_promotion_meta("drawdown_event")
+
+        assert lt._META_PATH.exists(), "Meta sidecar must be created"
+        data = json.loads(lt._META_PATH.read_text())
+        assert data.get("target_type") == "drawdown_event", (
+            f"Expected target_type='drawdown_event', got {data!r}"
+        )
+
+    def test_three_state_sidecar_written(self, isolated):
+        """save_promotion_meta('three_state') must write the correct target_type."""
+        import json
+        from ml import long_trend as lt
+
+        LongTrendModel.save_promotion_meta("three_state")
+
+        data = json.loads(lt._META_PATH.read_text())
+        assert data.get("target_type") == "three_state"
+
+    def test_sidecar_overwritten_on_second_promotion(self, isolated):
+        """A second promotion overwrites the previous sidecar with the new type."""
+        import json
+        from ml import long_trend as lt
+
+        LongTrendModel.save_promotion_meta("direction")
+        LongTrendModel.save_promotion_meta("drawdown_event")
+
+        data = json.loads(lt._META_PATH.read_text())
+        assert data.get("target_type") == "drawdown_event"
+
+    def test_load_model_reads_sidecar_written_by_save_promotion_meta(
+        self, isolated, monkeypatch
+    ):
+        """Integration: save_promotion_meta followed by load_model() correctly
+        surfaces the promoted target_type on the model instance."""
+        from ml import long_trend as lt
+
+        _write_pkl(lt.MODEL_PATH, _XGBLike19())
+        LongTrendModel.save_promotion_meta("direction")
+        monkeypatch.setattr(lt.settings, "LONG_TARGET_TYPE", "direction")
+
+        m = LongTrendModel()
+        assert m.is_baseline_mode() is False
+        assert m._promoted_target_type == "direction"
