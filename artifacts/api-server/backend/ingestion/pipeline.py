@@ -20,7 +20,11 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from database.models import VooCandle, VixCandle, SpxCandle
+from database.models import (
+    VooCandle, VixCandle, SpxCandle,
+    VixShortCandle, VixLongCandle, RatesCandle,
+    CreditHyCandle, CreditIgCandle, BreadthCandle,
+)
 from ingestion import market_calendar
 from ingestion.fetcher import DataFetcher, ohlc_validation_issue
 
@@ -393,6 +397,9 @@ class IngestionPipeline:
         if not spx_df.empty:
             await self.store_spx_candles(spx_df, db_session, timeframe="daily")
 
+        # ── Broader market context (VIX9D, VIX3M, TNX, HYG, LQD, NYAD) ──────
+        await self._ingest_context_tickers(db_session, years=settings.HISTORY_YEARS)
+
         logger.info("Full historical fetch complete.")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -466,6 +473,15 @@ class IngestionPipeline:
         spx_df = await self.fetcher.fetch_historical_spx(years=spx_years)
         if not spx_df.empty:
             await self.store_spx_candles(spx_df, db_session, timeframe="daily")
+
+        # ── Broader market context (VIX9D, VIX3M, TNX, HYG, LQD, NYAD) ──────
+        await self._ingest_context_tickers(db_session, years=1)
+
+        # ── Broader context staleness check ───────────────────────────────────
+        try:
+            await check_context_staleness(db_session)
+        except Exception as exc:
+            logger.error("context_staleness_check_failed error=%s", exc)
 
         # ── SPX staleness check ───────────────────────────────────────────────
         # If yfinance quietly stops returning ES=F data, the macro signal
@@ -1140,6 +1156,150 @@ class IngestionPipeline:
             timeframe, inserted, skipped,
         )
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Broader market context ingestion
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Mapping: config ticker → (ORM model, label, is_index)
+    # is_index=True  → zero-volume bars are allowed (^VIX9D, ^VIX3M, ^TNX, ^NYAD)
+    # is_index=False → zero-volume bars filtered (HYG, LQD are ETFs)
+    _CONTEXT_SOURCES = [
+        # (attr_name_on_settings, model_class, label, is_index)
+        ("VIX_SHORT_TICKER",  VixShortCandle,  "VIX9D",  True),
+        ("VIX_LONG_TICKER",   VixLongCandle,   "VIX3M",  True),
+        ("RATES_TICKER",      RatesCandle,     "TNX",    True),
+        ("CREDIT_HY_TICKER",  CreditHyCandle,  "HYG",    False),
+        ("CREDIT_IG_TICKER",  CreditIgCandle,  "LQD",    False),
+        ("BREADTH_TICKER",    BreadthCandle,   "NYAD",   True),
+    ]
+
+    async def _ingest_context_tickers(
+        self,
+        db_session: AsyncSession,
+        years: int = 10,
+    ) -> None:
+        """Fetch and store daily candles for all six broader-context tickers.
+
+        Each source is fetched independently; a single vendor failure for one
+        ticker never aborts the others.  Empty tickers (settings value "")
+        are silently skipped.
+        """
+        for attr, model, label, is_index in self._CONTEXT_SOURCES:
+            ticker = getattr(settings, attr, "")
+            if not ticker:
+                logger.debug(
+                    "context_ingest_skipped label=%s reason=empty_ticker", label
+                )
+                continue
+            try:
+                df = await self.fetcher.fetch_historical_context_ticker(
+                    ticker, years=years, is_index=is_index
+                )
+                if not df.empty:
+                    await self.store_context_candles(
+                        df, db_session,
+                        model=model, ticker=ticker, label=label,
+                    )
+                else:
+                    logger.warning(
+                        "context_ingest_empty label=%s ticker=%s", label, ticker
+                    )
+            except Exception as exc:
+                logger.error(
+                    "context_ingest_failed label=%s ticker=%s error=%s",
+                    label, ticker, exc,
+                )
+
+    async def store_context_candles(
+        self,
+        candles: pd.DataFrame,
+        db_session: AsyncSession,
+        *,
+        model,
+        ticker: str,
+        label: str,
+    ) -> None:
+        """
+        Persist daily broader-context candles to DB, skipping duplicates.
+
+        Generic helper shared by all six context feeds (VIX9D, VIX3M, TNX,
+        HYG, LQD, NYAD).  Follows the same pattern as store_spx_candles:
+        simple duplicate-skip, no gap detection, no session classification.
+        Invalid OHLC rows are skipped with a warning.
+
+        Args:
+            model:  SQLAlchemy ORM class (e.g. VixShortCandle).
+            ticker: The canonical ticker string stored in the model's ticker
+                    column (matches the config setting, e.g. "^VIX9D").
+            label:  Short human-readable name for log messages (e.g. "VIX9D").
+        """
+        if candles.empty:
+            return
+
+        inserted = 0
+        skipped = 0
+
+        result = await db_session.execute(
+            select(model.timestamp).where(
+                model.ticker == ticker,
+                model.timeframe == "daily",
+            )
+        )
+        existing_timestamps = set(row[0] for row in result.fetchall())
+
+        for ts, row in candles.sort_index().iterrows():
+            ts_naive = ts.to_pydatetime()
+            if ts_naive.tzinfo is not None:
+                ts_naive = ts_naive.replace(tzinfo=None)
+
+            if ts_naive in existing_timestamps:
+                skipped += 1
+                continue
+
+            try:
+                open_p  = float(row.get("open",  0.0))
+                high_p  = float(row.get("high",  0.0))
+                low_p   = float(row.get("low",   0.0))
+                close_p = float(row.get("close", 0.0))
+                raw_vol = row.get("volume", 0.0)
+                volume  = 0.0 if pd.isna(raw_vol) else float(raw_vol)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "ingest_ohlc_anomaly ticker=%s ts=%s issue=non_numeric",
+                    ticker, ts_naive.isoformat(),
+                )
+                skipped += 1
+                continue
+
+            issue = ohlc_validation_issue(open_p, high_p, low_p, close_p)
+            if issue or volume < 0:
+                logger.warning(
+                    "ingest_ohlc_anomaly ticker=%s ts=%s issue=%s",
+                    ticker, ts_naive.isoformat(), issue or "negative_volume",
+                )
+                skipped += 1
+                continue
+
+            candle = model(
+                ticker=ticker,
+                timestamp=ts_naive,
+                open=open_p,
+                high=high_p,
+                low=low_p,
+                close=close_p,
+                volume=volume,
+                timeframe="daily",
+            )
+            db_session.add(candle)
+            existing_timestamps.add(ts_naive)
+            inserted += 1
+
+        await db_session.flush()
+        logger.info(
+            "%s daily candles: inserted=%d, skipped=%d (duplicates)",
+            label, inserted, skipped,
+        )
+
     async def _backfill_missing_vix_days(
         self,
         missing_days: list,
@@ -1287,6 +1447,131 @@ async def _check_feed_staleness(
             lag, max_lag, status["detail"],
         )
     return status
+
+
+async def check_context_staleness(db_session: AsyncSession) -> list[dict]:
+    """
+    Detect quietly-stale broader-context feeds (VIX9D, VIX3M, TNX, HYG, LQD, NYAD).
+
+    Each source is compared against the latest VOO trading day using
+    _check_feed_staleness.  Returns a list of one status dict per source;
+    stale feeds log a WARNING.  Never raises.
+    """
+    from config import settings as _s
+
+    sources = [
+        dict(
+            model=VixShortCandle,
+            ticker=_s.VIX_SHORT_TICKER,
+            feed_key="vix_short",
+            missing_detail=(
+                "No VIX9D candles stored while VOO data exists — "
+                "vix_term_ratio context feature will fire missing=1.0."
+            ),
+            lag_detail=(
+                "Latest VIX9D candle ({latest_feed}) lags the latest "
+                "VOO trading day ({latest_voo}) by {lag} trading days "
+                "(max {max_lag}) — vix_term_ratio context feature degraded."
+            ),
+            log_event="vix_short_data_stale",
+        ),
+        dict(
+            model=VixLongCandle,
+            ticker=_s.VIX_LONG_TICKER,
+            feed_key="vix_long",
+            missing_detail=(
+                "No VIX3M candles stored while VOO data exists — "
+                "vix_term_ratio context feature will fire missing=1.0."
+            ),
+            lag_detail=(
+                "Latest VIX3M candle ({latest_feed}) lags the latest "
+                "VOO trading day ({latest_voo}) by {lag} trading days "
+                "(max {max_lag}) — vix_term_ratio context feature degraded."
+            ),
+            log_event="vix_long_data_stale",
+        ),
+        dict(
+            model=RatesCandle,
+            ticker=_s.RATES_TICKER,
+            feed_key="rates",
+            missing_detail=(
+                "No TNX candles stored while VOO data exists — "
+                "rates_change context feature will fire missing=1.0."
+            ),
+            lag_detail=(
+                "Latest TNX candle ({latest_feed}) lags the latest "
+                "VOO trading day ({latest_voo}) by {lag} trading days "
+                "(max {max_lag}) — rates_change context feature degraded."
+            ),
+            log_event="rates_data_stale",
+        ),
+        dict(
+            model=CreditHyCandle,
+            ticker=_s.CREDIT_HY_TICKER,
+            feed_key="credit_hy",
+            missing_detail=(
+                "No HYG candles stored while VOO data exists — "
+                "credit_spread context feature will fire missing=1.0."
+            ),
+            lag_detail=(
+                "Latest HYG candle ({latest_feed}) lags the latest "
+                "VOO trading day ({latest_voo}) by {lag} trading days "
+                "(max {max_lag}) — credit_spread context feature degraded."
+            ),
+            log_event="credit_hy_data_stale",
+        ),
+        dict(
+            model=CreditIgCandle,
+            ticker=_s.CREDIT_IG_TICKER,
+            feed_key="credit_ig",
+            missing_detail=(
+                "No LQD candles stored while VOO data exists — "
+                "credit_spread context feature will fire missing=1.0."
+            ),
+            lag_detail=(
+                "Latest LQD candle ({latest_feed}) lags the latest "
+                "VOO trading day ({latest_voo}) by {lag} trading days "
+                "(max {max_lag}) — credit_spread context feature degraded."
+            ),
+            log_event="credit_ig_data_stale",
+        ),
+        dict(
+            model=BreadthCandle,
+            ticker=_s.BREADTH_TICKER,
+            feed_key="breadth",
+            missing_detail=(
+                "No NYAD candles stored while VOO data exists — "
+                "breadth context feature will fire missing=1.0."
+            ),
+            lag_detail=(
+                "Latest NYAD candle ({latest_feed}) lags the latest "
+                "VOO trading day ({latest_voo}) by {lag} trading days "
+                "(max {max_lag}) — breadth context feature degraded."
+            ),
+            log_event="breadth_data_stale",
+        ),
+    ]
+
+    results = []
+    for src in sources:
+        try:
+            status = await _check_feed_staleness(
+                db_session,
+                model=src["model"],
+                ticker=src["ticker"],
+                max_lag=_s.LONG_CONTEXT_STALENESS_MAX_DAYS,
+                feed_key=src["feed_key"],
+                missing_detail=src["missing_detail"],
+                lag_detail=src["lag_detail"],
+                log_event=src["log_event"],
+            )
+            results.append(status)
+        except Exception as exc:
+            logger.error(
+                "context_staleness_check_failed ticker=%s error=%s",
+                src["ticker"], exc,
+            )
+    return results
 
 
 async def check_spx_staleness(db_session: AsyncSession) -> dict:

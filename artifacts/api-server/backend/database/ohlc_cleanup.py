@@ -33,7 +33,11 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import VooCandle, SpxCandle, VixCandle
+from database.models import (
+    VooCandle, SpxCandle, VixCandle,
+    VixShortCandle, VixLongCandle, RatesCandle,
+    CreditHyCandle, CreditIgCandle, BreadthCandle,
+)
 from ingestion.ohlc_validator import validate_ohlc_row
 
 logger = logging.getLogger(__name__)
@@ -43,6 +47,13 @@ _CANDLE_TABLES: list[tuple[Any, str]] = [
     (VooCandle, "voo_candles"),
     (VixCandle, "vix_candles"),
     (SpxCandle, "spx_candles"),
+    # Broader market context tables
+    (VixShortCandle, "vix_short_candles"),
+    (VixLongCandle, "vix_long_candles"),
+    (RatesCandle, "rates_candles"),
+    (CreditHyCandle, "credit_hy_candles"),
+    (CreditIgCandle, "credit_ig_candles"),
+    (BreadthCandle, "breadth_candles"),
 ]
 
 

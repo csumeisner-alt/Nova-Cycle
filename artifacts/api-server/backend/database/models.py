@@ -225,6 +225,103 @@ class ModelMetadata(Base):
 # Stores FCM registration tokens for push notification delivery.
 # One row per physical device. Token is refreshed automatically by Firebase SDK.
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Broader market context candles
+# Six daily-only series used by the long-trend broader-context feature layer.
+# All follow the same minimal schema as SpxCandle (no gap/session columns).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class VixShortCandle(Base):
+    """^VIX9D – 9-day VIX (term-structure numerator)."""
+    __tablename__ = "vix_short_candles"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    ticker    = Column(String(16), nullable=False, default="^VIX9D", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open      = Column(Float, nullable=False)
+    high      = Column(Float, nullable=False)
+    low       = Column(Float, nullable=False)
+    close     = Column(Float, nullable=False)
+    volume    = Column(Float, nullable=True, default=0.0)
+    timeframe = Column(String(8), nullable=False, default="daily")
+
+
+class VixLongCandle(Base):
+    """^VIX3M – 3-month VIX (term-structure denominator)."""
+    __tablename__ = "vix_long_candles"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    ticker    = Column(String(16), nullable=False, default="^VIX3M", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open      = Column(Float, nullable=False)
+    high      = Column(Float, nullable=False)
+    low       = Column(Float, nullable=False)
+    close     = Column(Float, nullable=False)
+    volume    = Column(Float, nullable=True, default=0.0)
+    timeframe = Column(String(8), nullable=False, default="daily")
+
+
+class RatesCandle(Base):
+    """^TNX – 10-year Treasury yield (value ÷ 10 = %)."""
+    __tablename__ = "rates_candles"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    ticker    = Column(String(16), nullable=False, default="^TNX", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open      = Column(Float, nullable=False)
+    high      = Column(Float, nullable=False)
+    low       = Column(Float, nullable=False)
+    close     = Column(Float, nullable=False)
+    volume    = Column(Float, nullable=True, default=0.0)
+    timeframe = Column(String(8), nullable=False, default="daily")
+
+
+class CreditHyCandle(Base):
+    """HYG – iShares iBoxx HY Corporate Bond ETF."""
+    __tablename__ = "credit_hy_candles"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    ticker    = Column(String(16), nullable=False, default="HYG", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open      = Column(Float, nullable=False)
+    high      = Column(Float, nullable=False)
+    low       = Column(Float, nullable=False)
+    close     = Column(Float, nullable=False)
+    volume    = Column(Float, nullable=True, default=0.0)
+    timeframe = Column(String(8), nullable=False, default="daily")
+
+
+class CreditIgCandle(Base):
+    """LQD – iShares iBoxx IG Corporate Bond ETF."""
+    __tablename__ = "credit_ig_candles"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    ticker    = Column(String(16), nullable=False, default="LQD", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open      = Column(Float, nullable=False)
+    high      = Column(Float, nullable=False)
+    low       = Column(Float, nullable=False)
+    close     = Column(Float, nullable=False)
+    volume    = Column(Float, nullable=True, default=0.0)
+    timeframe = Column(String(8), nullable=False, default="daily")
+
+
+class BreadthCandle(Base):
+    """^NYAD – NYSE Advance-Decline line."""
+    __tablename__ = "breadth_candles"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    ticker    = Column(String(16), nullable=False, default="^NYAD", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open      = Column(Float, nullable=False)
+    high      = Column(Float, nullable=False)
+    low       = Column(Float, nullable=False)
+    close     = Column(Float, nullable=False)
+    volume    = Column(Float, nullable=True, default=0.0)
+    timeframe = Column(String(8), nullable=False, default="daily")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 class DeviceToken(Base):
     __tablename__ = "device_tokens"
 

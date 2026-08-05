@@ -250,6 +250,51 @@ class DataFetcher:
             logger.error("Error fetching SPX futures data: %s", exc)
             return pd.DataFrame()
 
+    async def fetch_historical_context_ticker(
+        self,
+        ticker: str,
+        years: int = 10,
+        *,
+        is_index: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Fetch `years` years of daily data for a broader-context ticker.
+
+        Used for VIX9D, VIX3M, TNX, HYG, LQD, and NYAD ingestion.
+
+        Args:
+            ticker:   yfinance symbol (e.g. "^VIX9D", "HYG").
+            years:    Number of calendar years of history to fetch.
+            is_index: When True, zero-volume bars are accepted (indices such as
+                      ^VIX9D and ^NYAD always report volume 0 from Yahoo).
+                      When False, zero-volume bars are filtered out.
+
+        Returns:
+            pd.DataFrame (may be empty on error).
+        """
+        logger.info("Fetching %d years of daily context data: %s", years, ticker)
+        try:
+            df = await self._run_sync(
+                yf.download,
+                ticker,
+                period=f"{years}y",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+            # Indices always report zero-volume; ETFs (HYG, LQD) have real
+            # volume but may occasionally emit glitch zero-vol bars.
+            df = self._normalise_columns(
+                df,
+                drop_zero_volume=not is_index,
+                spike_threshold=0.0,  # disable cross-bar spike filter for context tickers
+            )
+            logger.info("Fetched %d daily candles for %s", len(df), ticker)
+            return df
+        except Exception as exc:
+            logger.error("Error fetching context data for %s: %s", ticker, exc)
+            return pd.DataFrame()
+
     async def fetch_vix_daily_range(self, start: datetime, end: datetime) -> pd.DataFrame:
         """
         Fetch daily VIX candles for a specific [start, end] date range.

@@ -1130,15 +1130,68 @@ class ModelTrainer:
         if not settings.LONG_BROADER_CONTEXT_ENABLED:
             # Short-circuit: flag off → context ignored downstream anyway.
             return result
-        # Future: add per-source loaders here as DB tables become available.
-        # Pattern:
-        #   from database.models import VixShortCandle
-        #   result["vix_short_close"] = await _load_close_series(
-        #       db_session, VixShortCandle, settings.VIX_SHORT_TICKER
-        #   )
-        logger.debug(
-            "ml_trainer_broader_context: flag enabled; no DB tables yet — "
-            "all context features will fire missing=1.0 during training"
+
+        from database.models import (
+            VixShortCandle, VixLongCandle, RatesCandle,
+            CreditHyCandle, CreditIgCandle, BreadthCandle,
+        )
+
+        async def _load_close_series(model, ticker: str, key: str) -> pd.Series:
+            """Load a daily close series from a context candle table.
+
+            Returns an empty Series (triggers missing=1.0 in the feature
+            layer) when the table has no rows or the query fails.
+            """
+            try:
+                res = await db_session.execute(
+                    select(model).where(
+                        model.ticker == ticker,
+                        model.timeframe == "daily",
+                    ).order_by(model.timestamp.asc())
+                )
+                rows = res.scalars().all()
+                if not rows:
+                    logger.info(
+                        "ml_trainer_context_unavailable key=%s ticker=%s — "
+                        "missing feature will fire 1.0",
+                        key, ticker,
+                    )
+                    return pd.Series(dtype=float)
+                series = pd.Series(
+                    [r.close for r in rows],
+                    index=pd.to_datetime([r.timestamp for r in rows]),
+                    dtype=float,
+                )
+                series = series[~series.index.duplicated(keep="last")]
+                logger.info(
+                    "ml_trainer_context_loaded key=%s ticker=%s rows=%d",
+                    key, ticker, len(series),
+                )
+                return series
+            except Exception as exc:
+                logger.error(
+                    "ml_trainer_context_load_error key=%s ticker=%s error=%s",
+                    key, ticker, exc,
+                )
+                return pd.Series(dtype=float)
+
+        result["vix_short_close"] = await _load_close_series(
+            VixShortCandle, settings.VIX_SHORT_TICKER, "vix_short_close"
+        )
+        result["vix_long_close"] = await _load_close_series(
+            VixLongCandle, settings.VIX_LONG_TICKER, "vix_long_close"
+        )
+        result["rates_close"] = await _load_close_series(
+            RatesCandle, settings.RATES_TICKER, "rates_close"
+        )
+        result["credit_hy_close"] = await _load_close_series(
+            CreditHyCandle, settings.CREDIT_HY_TICKER, "credit_hy_close"
+        )
+        result["credit_ig_close"] = await _load_close_series(
+            CreditIgCandle, settings.CREDIT_IG_TICKER, "credit_ig_close"
+        )
+        result["breadth_close"] = await _load_close_series(
+            BreadthCandle, settings.BREADTH_TICKER, "breadth_close"
         )
         return result
 
