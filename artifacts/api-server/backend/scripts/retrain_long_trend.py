@@ -172,6 +172,44 @@ async def main():
     else:
         logger.error("Calibration report file not found at %s", report_path)
 
+    # ── Post-retrain broader-context ablation (success-gated) ────────────────
+    # Only runs when the long-trend retrain produced a valid, non-degenerate
+    # model.  Runs the 19- vs 27-feature comparison and appends a timestamped
+    # record to ml/models/ablation_broader_context.json.
+    # Broader-context series are not yet stored in the DB, so an empty dict
+    # is passed; the ablation gracefully falls back to neutral/missing values
+    # for the 8 context features — the same behaviour as the standalone script
+    # when run without --yf.
+    retrain_succeeded = model.model is not None and not result.get("degenerate")
+    if not retrain_succeeded:
+        logger.warning(
+            "Skipping post-retrain ablation: retrain did not produce a valid "
+            "model (degenerate=%s, model_is_none=%s).",
+            result.get("degenerate"),
+            model.model is None,
+        )
+    else:
+        logger.info("Running post-retrain broader-context ablation…")
+        try:
+            from ml.post_retrain_ablation import run_broader_context_ablation
+            ablation_result = run_broader_context_ablation(
+                daily_df,
+                vix_df,
+                spx_close,
+                broader_context={},
+            )
+            if ablation_result:
+                passes = ablation_result.get("passes_promotion_gate")
+                delta  = ablation_result.get("accuracy_delta_27_minus_19")
+                logger.info(
+                    "Ablation complete: passes_gate=%s accuracy_delta_27_minus_19=%s",
+                    passes, delta,
+                )
+            else:
+                logger.warning("Ablation returned no result (see earlier errors).")
+        except Exception as exc:
+            logger.error("post_retrain_ablation_error: %s", exc)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

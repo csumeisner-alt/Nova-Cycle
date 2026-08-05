@@ -618,6 +618,19 @@ class ModelTrainer:
         await self._maybe_send_stuck_alert(db_session, "long_trend")
         await self._track_and_alert_baseline_duration(db_session, "long_trend")
 
+        # ── Post-retrain broader-context ablation (non-blocking) ──────────────
+        # Runs only when the long-trend retrain succeeded (long_flagged=False).
+        # A failed ablation is logged but never raises — it must not abort the
+        # rest of training or delay the short-trend model.
+        if not long_flagged:
+            try:
+                from ml.post_retrain_ablation import run_broader_context_ablation  # noqa: PLC0415
+                run_broader_context_ablation(
+                    daily_df, vix_df, spx_close, broader_context
+                )
+            except Exception as _abl_exc:
+                logger.error("post_retrain_ablation_error error=%s", _abl_exc)
+
         # ── Load 5-min VOO candles ─────────────────────────────────────────────
         fivemin_df = await self._load_fivemin_voo(db_session)
 
