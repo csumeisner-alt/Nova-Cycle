@@ -1096,7 +1096,7 @@ type DrawdownGateReport = {
   passing_results?: DrawdownGateBestResult[];
 };
 
-function DrawdownGatePanel({ health }: { health: any }) {
+export function DrawdownGatePanel({ health }: { health: any }) {
   const report: DrawdownGateReport | null | undefined = health?.drawdown_gate;
 
   if (report === undefined) return null; // key absent (older backend)
