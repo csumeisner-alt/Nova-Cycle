@@ -20,3 +20,4 @@
 - [Calibration report staleness](calibration-report-staleness.md) — stale-flag contract for reports; test fixtures must patch cal.MODEL_DIR or suites overwrite real ml/models files
 - [Missed-rally monitoring](missed-rally-monitoring.md) — signal-free windows still need independent rally detection instead of silently reporting zero
 - [Long-trend no directional edge](long-trend-no-edge.md) — 128-config dry-run grid: nothing beats the majority baseline; recommend calibrated base-rate fallback for the long signal
+- [Long-model promotion fire drill](long-model-fire-drill.md) — restart-safe promotion requires model, calibrator, report, semantic metadata, and status to move together
