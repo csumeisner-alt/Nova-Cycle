@@ -1199,6 +1199,7 @@ class IngestionPipeline:
                     await self.store_context_candles(
                         df, db_session,
                         model=model, ticker=ticker, label=label,
+                        is_index=is_index,
                     )
                 else:
                     logger.warning(
@@ -1218,20 +1219,27 @@ class IngestionPipeline:
         model,
         ticker: str,
         label: str,
+        is_index: bool = True,
+        _is_backfill: bool = False,
     ) -> None:
         """
         Persist daily broader-context candles to DB, skipping duplicates.
 
         Generic helper shared by all six context feeds (VIX9D, VIX3M, TNX,
-        HYG, LQD, NYAD).  Follows the same pattern as store_spx_candles:
-        simple duplicate-skip, no gap detection, no session classification.
-        Invalid OHLC rows are skipped with a warning.
+        HYG, LQD, NYAD).  Missing trading days inside the covered window are
+        detected (same trading-day calendar logic as VOO and VIX) and
+        re-fetched via a targeted backfill.  Backfill failures are logged and
+        never abort the main run.
 
         Args:
-            model:  SQLAlchemy ORM class (e.g. VixShortCandle).
-            ticker: The canonical ticker string stored in the model's ticker
-                    column (matches the config setting, e.g. "^VIX9D").
-            label:  Short human-readable name for log messages (e.g. "VIX9D").
+            model:       SQLAlchemy ORM class (e.g. VixShortCandle).
+            ticker:      The canonical ticker string stored in the model's
+                         ticker column (matches the config setting).
+            label:       Short human-readable name for log messages.
+            is_index:    When True, zero-volume bars are accepted (indices
+                         such as ^VIX9D report volume 0 from Yahoo).
+            _is_backfill: When True, skip the gap-detection pass so backfill
+                          frames never trigger a recursive second round.
         """
         if candles.empty:
             return
@@ -1246,6 +1254,44 @@ class IngestionPipeline:
             )
         )
         existing_timestamps = set(row[0] for row in result.fetchall())
+
+        # ── Missing-candle detection (daily only, non-backfill) ───────────────
+        # Detect trading days with no candle inside the fetched frame window.
+        # Days already in the DB are merged into `have` so that downtime holes
+        # (days in neither the DB nor this frame) are also detected.
+        missing_days: list = []
+        try:
+            if not _is_backfill and len(candles) >= 1:
+                if not isinstance(candles.index, pd.DatetimeIndex):
+                    candles = candles.copy()
+                    candles.index = pd.to_datetime(candles.index)
+                idx = candles.sort_index().index
+                have = {ts.date() for ts in idx}
+                # Include days already in the DB so outage holes (days absent
+                # from both the DB and this fetched frame) are caught.
+                have |= {ts.date() for ts in existing_timestamps}
+                win_start = idx[0].date()
+                win_end = idx[-1].date()
+
+                if win_start <= win_end:
+                    missing_days = [
+                        d.date()
+                        for d in pd.date_range(win_start, win_end, freq="D")
+                        if market_calendar.is_trading_day(d.date())
+                        and d.date() not in have
+                    ]
+                if missing_days:
+                    logger.warning(
+                        "context_ingest_missing_candles label=%s count=%d days=%s",
+                        label,
+                        len(missing_days),
+                        ",".join(d.isoformat() for d in missing_days[:20]),
+                    )
+        except Exception as exc:
+            logger.error(
+                "context_ingest_missing_check_failed label=%s error=%s", label, exc
+            )
+            missing_days = []
 
         for ts, row in candles.sort_index().iterrows():
             ts_naive = ts.to_pydatetime()
@@ -1298,6 +1344,74 @@ class IngestionPipeline:
         logger.info(
             "%s daily candles: inserted=%d, skipped=%d (duplicates)",
             label, inserted, skipped,
+        )
+
+        # ── Targeted backfill of missing context trading days ─────────────────
+        if missing_days:
+            try:
+                await self._backfill_missing_context_days(
+                    missing_days, db_session,
+                    model=model, ticker=ticker, label=label, is_index=is_index,
+                )
+            except Exception as exc:
+                logger.error(
+                    "context_ingest_backfill_failed label=%s error=%s", label, exc
+                )
+
+    async def _backfill_missing_context_days(
+        self,
+        missing_days: list,
+        db_session: AsyncSession,
+        *,
+        model,
+        ticker: str,
+        label: str,
+        is_index: bool = True,
+    ) -> None:
+        """
+        Re-fetch and store daily candles for the given missing trading days
+        for a single broader-context feed (VIX9D, VIX3M, TNX, HYG, LQD, or
+        NYAD).  Failures are logged per range and never propagate to the
+        caller's regular ingestion flow.
+        """
+        from datetime import datetime as _dt, time as _time
+
+        ranges = self._group_contiguous_days(missing_days)
+        logger.info(
+            "context_ingest_backfill_start label=%s days=%d ranges=%d",
+            label, len(missing_days), len(ranges),
+        )
+
+        filled = 0
+        for start_d, end_d in ranges:
+            try:
+                start = _dt.combine(start_d, _time.min)
+                end = _dt.combine(end_d, _time.min)
+                df = await self.fetcher.fetch_context_ticker_range(
+                    ticker, start, end, is_index=is_index
+                )
+                if df.empty:
+                    logger.warning(
+                        "context_ingest_backfill_empty label=%s range=%s→%s",
+                        label, start_d.isoformat(), end_d.isoformat(),
+                    )
+                    continue
+                await self.store_context_candles(
+                    df, db_session,
+                    model=model, ticker=ticker, label=label,
+                    is_index=is_index, _is_backfill=True,
+                )
+                filled += 1
+            except Exception as exc:
+                logger.error(
+                    "context_ingest_backfill_range_failed label=%s "
+                    "range=%s→%s error=%s",
+                    label, start_d.isoformat(), end_d.isoformat(), exc,
+                )
+
+        logger.info(
+            "context_ingest_backfill_complete label=%s ranges_ok=%d ranges_total=%d",
+            label, filled, len(ranges),
         )
 
     async def _backfill_missing_vix_days(

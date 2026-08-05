@@ -295,6 +295,61 @@ class DataFetcher:
             logger.error("Error fetching context data for %s: %s", ticker, exc)
             return pd.DataFrame()
 
+    async def fetch_context_ticker_range(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        *,
+        is_index: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Fetch daily candles for a broader-context ticker over a specific
+        [start, end] date range.  Used for targeted backfill of missing
+        context-feed trading days (VIX9D, VIX3M, TNX, HYG, LQD, NYAD).
+
+        yfinance's ``end`` is exclusive, so one day is added to include it.
+
+        Args:
+            ticker:   yfinance symbol (e.g. "^VIX9D", "HYG").
+            start:    First day of the desired range (inclusive).
+            end:      Last day of the desired range (inclusive).
+            is_index: When True, zero-volume bars are accepted.
+
+        Returns:
+            pd.DataFrame (may be empty on error).
+        """
+        start_str = start.strftime("%Y-%m-%d")
+        end_str = (end + timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.info(
+            "Backfill fetch: %s daily %s → %s", ticker, start_str, end_str
+        )
+        try:
+            df = await self._run_sync(
+                yf.download,
+                ticker,
+                start=start_str,
+                end=end_str,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+            df = self._normalise_columns(
+                df,
+                drop_zero_volume=not is_index,
+                spike_threshold=0.0,
+            )
+            logger.info(
+                "Backfill fetch: %d daily candles for %s", len(df), ticker
+            )
+            return df
+        except Exception as exc:
+            logger.error(
+                "Error in backfill context fetch %s %s→%s: %s",
+                ticker, start_str, end_str, exc,
+            )
+            return pd.DataFrame()
+
     async def fetch_vix_daily_range(self, start: datetime, end: datetime) -> pd.DataFrame:
         """
         Fetch daily VIX candles for a specific [start, end] date range.
