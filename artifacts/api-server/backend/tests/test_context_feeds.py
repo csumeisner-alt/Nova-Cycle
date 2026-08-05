@@ -481,6 +481,17 @@ class TestIngestContextTickers:
             assert result.scalar() == 1, f"Expected 1 row for {attr}"
 
     @pytest.mark.asyncio
+    async def test_result_includes_ticker_and_feed_key(self, db_session):
+        """Each entry returned by check_context_staleness has ticker and feed_key."""
+        results = await check_context_staleness(db_session)
+        assert len(results) == 6
+        for status in results:
+            assert "ticker" in status, f"Missing 'ticker' in {status}"
+            assert "feed_key" in status, f"Missing 'feed_key' in {status}"
+            assert status["ticker"], "ticker must be a non-empty string"
+            assert status["feed_key"], "feed_key must be a non-empty string"
+
+    @pytest.mark.asyncio
     async def test_empty_fetch_result_warns_and_continues(self, db_session):
         """When the fetcher returns an empty DataFrame no rows are inserted."""
         pipeline = IngestionPipeline()
@@ -501,3 +512,100 @@ class TestIngestContextTickers:
         ):
             result = await db_session.execute(select(func.count(model.id)))
             assert result.scalar() == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /api/healthz context_feeds integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestHealthzContextFeeds:
+    """Verify that /api/healthz surfaces context-feed staleness correctly."""
+
+    @pytest.mark.asyncio
+    async def test_healthz_includes_context_feeds_block(self, db_session):
+        """/healthz response always contains a context_feeds list."""
+        from routers.predictions import healthz
+
+        body = await healthz(session=db_session)
+        assert "context_feeds" in body
+        assert isinstance(body["context_feeds"], list)
+
+    @pytest.mark.asyncio
+    async def test_healthz_context_feeds_stale_sets_degraded_and_alert(self, db_session):
+        """When a feed is stale, healthz status is degraded and alerts contains the feed."""
+        from routers.predictions import healthz
+
+        # Insert VOO data so staleness checks have a reference date.
+        days = _recent_trading_days(3)
+        for ts in days:
+            db_session.add(_voo(ts))
+        await db_session.flush()
+        # No context candles → every feed should be stale.
+
+        body = await healthz(session=db_session)
+
+        assert body["status"] == "degraded", (
+            "Expected status=degraded when context feeds are stale"
+        )
+        # At least one context_feed alert must appear.
+        context_alerts = [a for a in body["alerts"] if a.startswith("context_feed ")]
+        assert context_alerts, (
+            f"Expected at least one 'context_feed ...' alert; got alerts={body['alerts']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_healthz_fresh_feeds_no_context_alert(self, db_session):
+        """When all six feeds are current there are no context_feed alerts."""
+        from routers.predictions import healthz
+
+        days = _recent_trading_days(5)
+        for ts in days:
+            db_session.add(_voo(ts))
+            db_session.add(VixShortCandle(
+                ticker=settings.VIX_SHORT_TICKER, timestamp=ts,
+                open=1, high=1, low=1, close=1, volume=0.0, timeframe="daily",
+            ))
+            db_session.add(VixLongCandle(
+                ticker=settings.VIX_LONG_TICKER, timestamp=ts,
+                open=1, high=1, low=1, close=1, volume=0.0, timeframe="daily",
+            ))
+            db_session.add(RatesCandle(
+                ticker=settings.RATES_TICKER, timestamp=ts,
+                open=1, high=1, low=1, close=1, volume=0.0, timeframe="daily",
+            ))
+            db_session.add(CreditHyCandle(
+                ticker=settings.CREDIT_HY_TICKER, timestamp=ts,
+                open=1, high=1, low=1, close=1, volume=100.0, timeframe="daily",
+            ))
+            db_session.add(CreditIgCandle(
+                ticker=settings.CREDIT_IG_TICKER, timestamp=ts,
+                open=1, high=1, low=1, close=1, volume=100.0, timeframe="daily",
+            ))
+            db_session.add(BreadthCandle(
+                ticker=settings.BREADTH_TICKER, timestamp=ts,
+                open=1, high=1, low=1, close=1, volume=0.0, timeframe="daily",
+            ))
+        await db_session.flush()
+
+        body = await healthz(session=db_session)
+
+        context_alerts = [a for a in body["alerts"] if a.startswith("context_feed ")]
+        assert not context_alerts, (
+            f"Expected no context_feed alerts when all feeds are fresh; got {context_alerts}"
+        )
+        # All six feeds should report stale=False.
+        for feed in body["context_feeds"]:
+            assert feed["stale"] is False, f"Expected stale=False for {feed.get('ticker')}"
+
+    @pytest.mark.asyncio
+    async def test_healthz_context_feeds_carry_ticker_and_feed_key(self, db_session):
+        """Each entry in context_feeds has non-empty ticker and feed_key fields."""
+        from routers.predictions import healthz
+
+        body = await healthz(session=db_session)
+        feeds = body["context_feeds"]
+        assert len(feeds) == 6, f"Expected 6 context feeds, got {len(feeds)}"
+        for feed in feeds:
+            assert feed.get("ticker"), f"Missing ticker in {feed}"
+            assert feed.get("feed_key"), f"Missing feed_key in {feed}"

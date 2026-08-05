@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown } from 'lucide-react';
+import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown, Rss } from 'lucide-react';
 import { PredictionCard } from '@/components/PredictionCard';
 import { PerformanceDashboard } from '@/components/PerformanceDashboard';
 import { TierTrackRecordPanel } from '@/components/TierTrackRecordPanel';
@@ -588,6 +588,144 @@ function OhlcQuarantinePanel({ health }: { health: any }) {
   );
 }
 
+// ── Context-feed labels ────────────────────────────────────────────────────
+const FEED_LABELS: Record<string, string> = {
+  vix_short: 'VIX9D',
+  vix_long: 'VIX3M',
+  rates: 'TNX',
+  credit_hy: 'HYG',
+  credit_ig: 'LQD',
+  breadth: 'NYAD',
+};
+
+type ContextFeedEntry = {
+  ticker?: string;
+  feed_key?: string;
+  stale: boolean;
+  lag_trading_days?: number | null;
+  max_lag_trading_days?: number;
+  detail?: string | null;
+  [key: string]: unknown; // latest_<feed_key> dynamic key
+};
+
+function ContextFeedsPanel({ health }: { health: any }) {
+  const feeds: ContextFeedEntry[] = Array.isArray(health?.context_feeds)
+    ? health.context_feeds
+    : [];
+
+  if (feeds.length === 0) return null;
+
+  const anyStale = feeds.some((f) => f.stale);
+
+  return (
+    <div
+      className={`mt-8 p-4 rounded-lg border ${
+        anyStale ? 'bg-amber-400/5 border-amber-400/25' : 'bg-white/[0.02] border-white/5'
+      }`}
+      data-testid="panel-context-feeds"
+    >
+      <div className="flex items-center space-x-2 mb-4">
+        {anyStale ? (
+          <AlertTriangle className="w-4 h-4 text-amber-400" />
+        ) : (
+          <Rss className="w-4 h-4 text-muted-foreground" />
+        )}
+        <span
+          className={`text-sm font-medium tracking-wide ${
+            anyStale ? 'text-amber-400' : 'text-muted-foreground'
+          }`}
+        >
+          CONTEXT FEED HEALTH
+        </span>
+        {anyStale && (
+          <span className="ml-auto inline-flex items-center text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-400/15 text-amber-400 border border-amber-400/30">
+            {feeds.filter((f) => f.stale).length} stale
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono text-sm">
+        {feeds.map((feed) => {
+          const key = feed.feed_key ?? '';
+          const label = FEED_LABELS[key] ?? feed.ticker ?? key;
+          const latestKey = `latest_${key}`;
+          const latestDate = feed[latestKey] as string | null | undefined;
+          const lag = feed.lag_trading_days;
+          const maxLag = feed.max_lag_trading_days;
+          const stale = feed.stale;
+
+          return (
+            <div
+              key={key || label}
+              className={`p-3 rounded-lg border space-y-1.5 ${
+                stale
+                  ? 'bg-amber-400/5 border-amber-400/25'
+                  : 'bg-black/30 border-white/5'
+              }`}
+              data-testid={`context-feed-${key}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold tracking-wider uppercase">
+                  {label}
+                </span>
+                {stale ? (
+                  <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-400/15 text-amber-400 border border-amber-400/30">
+                    <AlertTriangle className="w-2.5 h-2.5" />
+                    STALE
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                    <CheckCircle2 className="w-2.5 h-2.5" />
+                    FRESH
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-1 text-[11px]">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Latest</span>
+                  <span
+                    className={stale ? 'text-amber-300' : ''}
+                    data-testid={`context-feed-latest-${key}`}
+                  >
+                    {latestDate ?? '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Lag</span>
+                  <span
+                    className={stale ? 'text-amber-300' : ''}
+                    data-testid={`context-feed-lag-${key}`}
+                  >
+                    {lag != null
+                      ? `${lag}d${maxLag != null ? ` / ${maxLag}d max` : ''}`
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+
+              {stale && feed.detail && (
+                <p
+                  className="text-[10px] text-amber-200/70 leading-snug pt-0.5 border-t border-amber-400/15"
+                  data-testid={`context-feed-detail-${key}`}
+                >
+                  {feed.detail}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {!anyStale && (
+        <p className="mt-3 text-xs text-muted-foreground font-mono" data-testid="text-context-feeds-ok">
+          All six broader-context feeds are current. Missing-feature flags will not fire.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function PredictionsPanel() {
   return (
     <div className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5" data-testid="panel-predictions">
@@ -824,6 +962,8 @@ function StatusDashboard() {
             {!isLoading && !isError && health && <FallbackHistoryPanel health={health} />}
 
             {!isLoading && !isError && health && <OhlcQuarantinePanel health={health} />}
+
+            {!isLoading && !isError && health && <ContextFeedsPanel health={health} />}
 
             {/* Raw JSON View */}
             {!isLoading && !isError && health && (

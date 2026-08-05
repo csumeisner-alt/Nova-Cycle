@@ -1795,6 +1795,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         check_spx_staleness, check_vix_staleness, check_5min_staleness,
         check_daily_candle_staleness,
         get_5min_recovery_status,
+        check_context_staleness,
     )
 
     spx_data = None
@@ -1813,6 +1814,18 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             degraded = True
     except Exception as exc:
         logger.error("healthz: VIX staleness check failed: %s", exc)
+
+    # ── Broader context-feed staleness (VIX9D, VIX3M, TNX, HYG, LQD, NYAD) ──
+    # Collect feeds now; alert messages are appended after `alerts` is initialised
+    # below (alerts = [] appears after the notification-readiness block).
+    context_feeds: list[dict] = []
+    try:
+        context_feeds = await check_context_staleness(session)
+        for feed in context_feeds:
+            if feed.get("stale"):
+                degraded = True
+    except Exception as exc:
+        logger.error("healthz: context feed staleness check failed: %s", exc)
 
     # ── Daily candle feed staleness ───────────────────────────────────────
     daily_candle_data = None
@@ -1871,6 +1884,13 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         )
 
     alerts = []
+    # Emit context-feed alerts now that `alerts` is initialised.
+    for _feed in context_feeds:
+        if _feed.get("stale"):
+            alerts.append(
+                f"context_feed {_feed.get('ticker', _feed.get('feed_key', '?'))}: "
+                f"{_feed.get('detail', 'stale')}"
+            )
     # Current-feed freshness does not prove that VIX covers the complete VOO
     # training history. Keep this separate so a one-year VIX table cannot
     # silently look healthy beside a decade of VOO candles.
@@ -2071,6 +2091,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "voo_daily": daily_candle_data,
         "spx_futures": spx_data,
         "vix": vix_data,
+        "context_feeds": context_feeds,
         "vix_training_coverage": vix_training_coverage,
         "voo_5min": fivemin_data,
         "voo_5min_recovery": fivemin_recovery,

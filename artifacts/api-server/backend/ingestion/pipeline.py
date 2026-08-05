@@ -1565,6 +1565,9 @@ async def check_context_staleness(db_session: AsyncSession) -> list[dict]:
                 lag_detail=src["lag_detail"],
                 log_event=src["log_event"],
             )
+            # Enrich with human-readable ticker and feed_key for the health endpoint.
+            status["ticker"] = src["ticker"]
+            status["feed_key"] = src["feed_key"]
             results.append(status)
         except Exception as exc:
             logger.error(
