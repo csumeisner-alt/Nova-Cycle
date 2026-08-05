@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown, Rss } from 'lucide-react';
+import { Activity, Server, Clock, Download, ExternalLink, Terminal, AlertTriangle, CheckCircle2, RotateCcw, KeyRound, X, Minus, Gauge, TrendingUp, TrendingDown, Rss, FlaskConical } from 'lucide-react';
 import { PredictionCard } from '@/components/PredictionCard';
 import { PerformanceDashboard } from '@/components/PerformanceDashboard';
 import { TierTrackRecordPanel } from '@/components/TierTrackRecordPanel';
@@ -726,6 +726,192 @@ function ContextFeedsPanel({ health }: { health: any }) {
   );
 }
 
+// ─── BroaderContextAblationPanel ────────────────────────────────────────────
+
+type AblationArm = {
+  n_features: number;
+  oos_accuracy: number;
+  oos_lift_vs_majority: number;
+  oos_balanced_accuracy?: number | null;
+  context_feature_importances?: Record<string, number>;
+};
+
+type AblationReport = {
+  ablation: string;
+  run_timestamp_utc: string;
+  data_source: string;
+  n_labeled_rows: number;
+  majority_baseline: number;
+  LONG_MIN_OOS_ACCURACY_LIFT: number;
+  baseline_19feat: AblationArm;
+  candidate_27feat: AblationArm;
+  accuracy_delta_27_minus_19: number;
+  passes_promotion_gate: boolean;
+  recommendation: string;
+  promotion_record: { date: string; accuracy_delta: number; lift_27feat: number } | null;
+};
+
+function BroaderContextAblationPanel({ health }: { health: any }) {
+  const report: AblationReport | null | undefined = health?.broader_context_ablation;
+
+  if (report === undefined) return null;   // key absent (older backend)
+  if (report === null) {
+    // Key present but no report file — ablation has never been run.
+    return (
+      <div
+        className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5"
+        data-testid="panel-broader-context-ablation"
+      >
+        <div className="flex items-center space-x-2 text-muted-foreground mb-2">
+          <FlaskConical className="w-4 h-4" />
+          <span className="text-sm font-medium tracking-wide">BROADER CONTEXT ABLATION</span>
+        </div>
+        <p className="text-xs font-mono text-muted-foreground" data-testid="ablation-not-run">
+          No ablation report found. Run{' '}
+          <code className="text-primary/80">
+            python scripts/ablate_broader_context.py --yf
+          </code>{' '}
+          to compare 19-feat vs 27-feat OOS accuracy.
+        </p>
+      </div>
+    );
+  }
+
+  const passes = report.passes_promotion_gate;
+  const delta  = report.accuracy_delta_27_minus_19;
+  const arm19  = report.baseline_19feat;
+  const arm27  = report.candidate_27feat;
+  const gate   = report.LONG_MIN_OOS_ACCURACY_LIFT;
+
+  // Sort context feature importances descending for display
+  const importances: [string, number][] = Object.entries(
+    arm27.context_feature_importances ?? {}
+  ).sort(([, a], [, b]) => b - a);
+  const maxImp = importances.length > 0 ? importances[0][1] : 1;
+
+  // Human-readable labels for the 8 context feature names
+  const FEAT_LABELS: Record<string, string> = {
+    vix_term_slope:        'VIX term slope',
+    vix_term_missing:      'VIX term (missing)',
+    credit_stress_score:   'Credit stress',
+    credit_stress_missing: 'Credit stress (missing)',
+    breadth_score:         'Market breadth',
+    breadth_missing:       'Breadth (missing)',
+    rates_level_norm:      'Rates level',
+    rates_missing:         'Rates (missing)',
+  };
+
+  return (
+    <div
+      className={`mt-8 p-4 rounded-lg border ${
+        passes ? 'bg-emerald-500/5 border-emerald-500/25' : 'bg-white/[0.02] border-white/5'
+      }`}
+      data-testid="panel-broader-context-ablation"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center space-x-2">
+          <FlaskConical className={`w-4 h-4 ${passes ? 'text-emerald-400' : 'text-muted-foreground'}`} />
+          <span className={`text-sm font-medium tracking-wide ${passes ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+            BROADER CONTEXT ABLATION
+          </span>
+        </div>
+        <span
+          className={`inline-flex items-center text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+            passes
+              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+              : 'bg-white/5 text-muted-foreground border-white/10'
+          }`}
+          data-testid="ablation-gate-badge"
+        >
+          {passes ? '✅ GATE PASS' : '— GATE FAIL'}
+        </span>
+      </div>
+
+      {/* OOS accuracy comparison */}
+      <div className="grid grid-cols-3 gap-3 font-mono text-sm mb-4">
+        <div className="p-3 rounded-lg bg-black/30 border border-white/5 space-y-1">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider">19-feat OOS</div>
+          <div className="text-base" data-testid="ablation-acc-19">{(arm19.oos_accuracy * 100).toFixed(2)}%</div>
+          <div className={`text-[11px] ${arm19.oos_lift_vs_majority >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {arm19.oos_lift_vs_majority >= 0 ? '+' : ''}{(arm19.oos_lift_vs_majority * 100).toFixed(2)}% vs majority
+          </div>
+        </div>
+        <div className={`p-3 rounded-lg border space-y-1 ${passes ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-black/30 border-white/5'}`}>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider">27-feat OOS</div>
+          <div className={`text-base ${passes ? 'text-emerald-400' : ''}`} data-testid="ablation-acc-27">
+            {(arm27.oos_accuracy * 100).toFixed(2)}%
+          </div>
+          <div className={`text-[11px] ${arm27.oos_lift_vs_majority >= gate ? 'text-emerald-400' : 'text-amber-400'}`}>
+            {arm27.oos_lift_vs_majority >= 0 ? '+' : ''}{(arm27.oos_lift_vs_majority * 100).toFixed(2)}% vs majority
+          </div>
+        </div>
+        <div className="p-3 rounded-lg bg-black/30 border border-white/5 space-y-1">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Δ (27−19)</div>
+          <div className={`text-base ${delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-red-400' : ''}`} data-testid="ablation-delta">
+            {delta >= 0 ? '+' : ''}{(delta * 100).toFixed(2)}%
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            gate: {gate >= 0 ? '+' : ''}{(gate * 100).toFixed(2)}%
+          </div>
+        </div>
+      </div>
+
+      {/* Context feature importances */}
+      {importances.length > 0 && (
+        <div className="mb-4" data-testid="ablation-feature-importances">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 font-mono">
+            Context feature importances (full-data model)
+          </div>
+          <div className="space-y-1.5">
+            {importances.map(([feat, imp]) => {
+              const barPct = maxImp > 0 ? Math.round((imp / maxImp) * 100) : 0;
+              const label  = FEAT_LABELS[feat] ?? feat;
+              const isMissing = feat.endsWith('_missing');
+              return (
+                <div key={feat} className="flex items-center gap-2 font-mono text-[11px]">
+                  <span
+                    className={`w-36 shrink-0 truncate ${isMissing ? 'text-muted-foreground' : 'text-foreground'}`}
+                    title={feat}
+                  >
+                    {label}
+                  </span>
+                  <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${isMissing ? 'bg-white/20' : 'bg-primary/60'}`}
+                      style={{ width: `${barPct}%` }}
+                    />
+                  </div>
+                  <span className="w-14 text-right text-muted-foreground shrink-0">
+                    {(imp * 100).toFixed(2)}%
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Metadata footer */}
+      <div className="pt-3 border-t border-white/5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono text-muted-foreground">
+        <span data-testid="ablation-data-source">Source: {report.data_source}</span>
+        <span data-testid="ablation-n-rows">{report.n_labeled_rows} labeled rows</span>
+        <span data-testid="ablation-run-ts">
+          Run: {new Date(report.run_timestamp_utc).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+        </span>
+      </div>
+
+      {/* Recommendation */}
+      <p
+        className={`mt-3 text-xs font-mono ${passes ? 'text-emerald-300/80' : 'text-muted-foreground'}`}
+        data-testid="ablation-recommendation"
+      >
+        {report.recommendation}
+      </p>
+    </div>
+  );
+}
+
 function PredictionsPanel() {
   return (
     <div className="mt-8 p-4 bg-white/[0.02] rounded-lg border border-white/5" data-testid="panel-predictions">
@@ -964,6 +1150,8 @@ function StatusDashboard() {
             {!isLoading && !isError && health && <OhlcQuarantinePanel health={health} />}
 
             {!isLoading && !isError && health && <ContextFeedsPanel health={health} />}
+
+            {!isLoading && !isError && health && <BroaderContextAblationPanel health={health} />}
 
             {/* Raw JSON View */}
             {!isLoading && !isError && health && (

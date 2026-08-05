@@ -2077,6 +2077,23 @@ async def healthz(session: AsyncSession = Depends(get_session)):
             "cleanly — models may be stale; retrain will run on the next weekly schedule"
         )
 
+    # ── Broader-context ablation report ─────────────────────────────────────
+    # Surface the most recent ablation comparison (19-feat vs 27-feat) so the
+    # operator dashboard can show OOS accuracy, gate pass/fail, and context
+    # feature importances without requiring manual SSH access to the server.
+    broader_context_ablation = None
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _ablation_path = (
+            _Path(__file__).resolve().parents[1] / "ml" / "models"
+            / "ablation_broader_context.json"
+        )
+        if _ablation_path.exists():
+            broader_context_ablation = _json.loads(_ablation_path.read_text())
+    except Exception as _exc:
+        logger.error("healthz: ablation report load failed: %s", _exc)
+
     return {
         "status": "degraded" if degraded else "ok",
         "candle_feed_stale": bool(daily_candle_data and daily_candle_data.get("stale")),
@@ -2100,6 +2117,7 @@ async def healthz(session: AsyncSession = Depends(get_session)):
         "vix_zero_volume_filter": vix_zero_volume_filter,
         "alerts": alerts,
         "fallback_stats_last_reset_at": fallback_last_reset_at,
+        "broader_context_ablation": broader_context_ablation,
         "note": "Pipeline currently fetches only VOO. Multi-ticker ingestion will be added later."
     }
 

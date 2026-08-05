@@ -210,6 +210,24 @@ class TestEndToEnd:
         passes_gate = (lift_27 >= oos_gate) and (delta > 0.0)
 
         import datetime, json
+        # Extract context feature importances the same way the real script does
+        import xgboost as xgb_mod
+        from ml.long_trend import _BASE_FEATURE_NAMES as _BASE19, _BROADER_CONTEXT_FEATURE_NAMES as _CTX8
+        _full_model = xgb_mod.XGBClassifier(
+            n_estimators=50, max_depth=3, learning_rate=0.05,
+            eval_metric="logloss", use_label_encoder=False, random_state=42,
+        )
+        _y = y  # already computed above
+        _w = weights
+        _full_model.fit(X_27, _y, sample_weight=_w)
+        _all_names = _BASE19 + _CTX8
+        _all_imps  = _full_model.feature_importances_.tolist()
+        context_fi = {
+            name: round(float(imp), 6)
+            for name, imp in zip(_all_names, _all_imps)
+            if name in _CTX8
+        }
+
         rpt = {
             "ablation": "broader_context_features",
             "run_timestamp_utc": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
@@ -226,6 +244,7 @@ class TestEndToEnd:
                 "n_features": 27,
                 "oos_accuracy": round(acc_27, 4),
                 "oos_lift_vs_majority": round(lift_27, 4),
+                "context_feature_importances": context_fi,
             },
             "accuracy_delta_27_minus_19": round(delta, 4),
             "passes_promotion_gate": passes_gate,
@@ -278,6 +297,21 @@ class TestEndToEnd:
             assert "accuracy_delta" in rpt["promotion_record"]
         else:
             assert rpt["promotion_record"] is None
+
+    def test_context_feature_importances_present(self, report):
+        """candidate_27feat must include context_feature_importances dict."""
+        rpt, _ = report
+        arm27 = rpt["candidate_27feat"]
+        assert "context_feature_importances" in arm27, (
+            "candidate_27feat is missing 'context_feature_importances'"
+        )
+        fi = arm27["context_feature_importances"]
+        assert isinstance(fi, dict), "context_feature_importances must be a dict"
+        # May be empty when XGBoost is unavailable; if non-empty check structure
+        for name, imp in fi.items():
+            assert isinstance(name, str)
+            assert isinstance(imp, float)
+            assert 0.0 <= imp <= 1.0, f"importance for {name} out of [0,1]: {imp}"
 
     def test_delta_equals_difference_in_oos_accuracies(self, report):
         rpt, _ = report

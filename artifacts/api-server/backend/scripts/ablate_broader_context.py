@@ -467,6 +467,36 @@ def main() -> int:
     #   (b) beat the 19-feature baseline in OOS accuracy
     passes_gate = (lift_27 >= oos_gate) and (delta > 0.0)
 
+    # ── Full-data feature importances for the 8 context features ────────────
+    # Fit one model on all labeled rows so operators can see which context
+    # features drove the 27-feat result.  This is a diagnostic pass only —
+    # the OOS walk-forward accuracy is the canonical gate metric.
+    context_feature_importances: dict = {}
+    try:
+        import xgboost as xgb  # noqa: PLC0415
+        full_model = xgb.XGBClassifier(
+            n_estimators=200,
+            max_depth=3,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            min_child_weight=5,
+            reg_lambda=2.0,
+            eval_metric="logloss",
+            use_label_encoder=False,
+            random_state=42,
+        )
+        full_model.fit(X_27, y, sample_weight=weights)
+        all_names = _BASE_FEATURE_NAMES + _BROADER_CONTEXT_FEATURE_NAMES
+        all_imps  = full_model.feature_importances_.tolist()
+        context_feature_importances = {
+            name: round(float(imp), 6)
+            for name, imp in zip(all_names, all_imps)
+            if name in _BROADER_CONTEXT_FEATURE_NAMES
+        }
+    except Exception as exc:
+        logger.warning("Could not extract full-data feature importances: %s", exc)
+
     # ── Print table ───────────────────────────────────────────────────────────
     print()
     print(f"  {'Metric':<38} {'19-feat':>9} {'27-feat':>9} {'Δ (27−19)':>10}")
@@ -478,6 +508,12 @@ def main() -> int:
     print(f"  {'Majority baseline':<38} {majority_baseline:>9.4f}")
     print(f"  {'LONG_MIN_OOS_ACCURACY_LIFT gate':<38} {oos_gate:>+9.4f}")
     print()
+
+    if context_feature_importances:
+        print("  Context feature importances (full-data 27-feat model):")
+        for feat, imp in sorted(context_feature_importances.items(), key=lambda kv: -kv[1]):
+            print(f"    {feat:<35} {imp:.6f}")
+        print()
 
     if passes_gate:
         print(f"  ✅ PASS — 27-feature model beats 19-feature baseline by {delta:+.4f}")
@@ -534,6 +570,10 @@ def main() -> int:
             "oos_lift_vs_majority": round(lift_27, 4),
             "oos_balanced_accuracy": round(float(bal_27), 4) if bal_27 is not None else None,
             "folds": metrics_27.get("folds"),
+            # Full-data feature importances for the 8 context features only.
+            # Diagnostic: shows which context features the model relied on.
+            # The OOS walk-forward accuracy above is the canonical gate metric.
+            "context_feature_importances": context_feature_importances,
         },
         "accuracy_delta_27_minus_19": round(delta, 4),
         "balanced_accuracy_delta": round(bal_delta, 4) if bal_delta is not None else None,
