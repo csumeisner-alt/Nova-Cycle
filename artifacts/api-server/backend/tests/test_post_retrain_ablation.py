@@ -400,6 +400,118 @@ class TestRunBroaderContextAblation:
         assert isinstance(result, dict)
 
 
+class TestStandaloneScriptPath:
+    """
+    Verify the broader_context={} path used by scripts/retrain_long_trend.py.
+
+    The standalone script passes broader_context={} because the DB tables for
+    context tickers (VIX term-structure, credit, breadth, rates) are not
+    populated during a manual run.  All 8 context features must fall back to
+    missing/neutral constants (0.5 or 1.0), which means XGBoost sees zero
+    variance in those columns and should assign them near-zero importance.
+
+    This test catches regressions where the empty-context path silently fails
+    (returns {}) or writes corrupt JSON.
+    """
+
+    @pytest.fixture(scope="class")
+    def standalone_result(self, ablation_mod, synthetic_voo, synthetic_vix,
+                          empty_spx, tmp_path_factory):
+        out = tmp_path_factory.mktemp("standalone") / "ablation_standalone.json"
+        result = ablation_mod.run_broader_context_ablation(
+            synthetic_voo,
+            synthetic_vix,
+            empty_spx,
+            broader_context={},          # exactly what retrain_long_trend.py passes
+            horizon=21,
+            threshold=0.02,
+            n_splits=3,
+            out_path=out,
+        )
+        return result, out
+
+    def test_returns_non_empty_dict(self, standalone_result):
+        result, _ = standalone_result
+        assert isinstance(result, dict) and result, (
+            "broader_context={} path returned empty dict — ablation likely failed silently"
+        )
+
+    def test_passes_promotion_gate_is_bool(self, standalone_result):
+        result, _ = standalone_result
+        val = result.get("passes_promotion_gate")
+        assert isinstance(val, bool), (
+            f"passes_promotion_gate must be a bool, got {type(val).__name__!r}: {val!r}"
+        )
+
+    def test_timestamp_present_and_non_empty(self, standalone_result):
+        result, _ = standalone_result
+        ts = result.get("run_timestamp_utc", "")
+        assert ts, "run_timestamp_utc must be a non-empty string"
+        # Should be parseable as an ISO datetime
+        from datetime import datetime
+        # Accept both offset-aware and naive ISO strings
+        try:
+            datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            pytest.fail(f"run_timestamp_utc is not a valid ISO datetime: {ts!r}")
+
+    def test_json_file_written(self, standalone_result):
+        _, out = standalone_result
+        assert out.exists(), "Output JSON file was not created by the standalone path"
+        import json as _json
+        data = _json.loads(out.read_text())
+        assert isinstance(data, list) and len(data) >= 1, (
+            "JSON file must contain a non-empty list"
+        )
+        assert data[-1].get("run_timestamp_utc"), (
+            "Last entry in JSON file is missing run_timestamp_utc"
+        )
+
+    def test_context_feature_importances_all_small(self, standalone_result):
+        """
+        When broader_context={} all 8 context columns are constant (0.5 or 1.0),
+        so XGBoost cannot split on them.  Each importance must be < 0.10.
+        A high importance would indicate leakage or a non-constant fallback.
+        """
+        result, _ = standalone_result
+        importances = (
+            result.get("candidate_27feat", {}).get("context_feature_importances", {})
+        )
+        # The dict is present whenever the full-model fit succeeded
+        if not importances:
+            pytest.skip("context_feature_importances absent — full-model fit may have failed")
+        threshold = 0.10
+        high = {k: v for k, v in importances.items() if v >= threshold}
+        assert not high, (
+            f"Expected all 8 context feature importances < {threshold} with "
+            f"broader_context={{}} (constant fallback columns), but got: {high}"
+        )
+
+    def test_all_8_context_features_present_in_importances(self, standalone_result):
+        """All 8 expected context feature names must appear in the importances dict."""
+        result, _ = standalone_result
+        importances = (
+            result.get("candidate_27feat", {}).get("context_feature_importances", {})
+        )
+        if not importances:
+            pytest.skip("context_feature_importances absent — full-model fit may have failed")
+        expected = {
+            "vix_term_slope", "vix_term_missing",
+            "credit_stress_score", "credit_stress_missing",
+            "breadth_score", "breadth_missing",
+            "rates_level_norm", "rates_missing",
+        }
+        missing = expected - set(importances.keys())
+        assert not missing, (
+            f"These context feature names are absent from importances: {missing}"
+        )
+
+    def test_feature_counts_match_standalone_path(self, standalone_result):
+        result, _ = standalone_result
+        assert result.get("baseline_19feat", {}).get("n_features") == 19
+        assert result.get("candidate_27feat", {}).get("n_features") == 27
+
+
 class TestGatePassLogLine:
     """Verify the structured WARNING log is emitted when the gate passes.
 
