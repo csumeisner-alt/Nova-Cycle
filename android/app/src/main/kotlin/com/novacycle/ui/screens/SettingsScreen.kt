@@ -35,6 +35,10 @@ import com.novacycle.viewmodel.SettingsViewModel
 import com.novacycle.viewmodel.ThemeViewModel
 import com.novacycle.ui.theme.spec
 import kotlinx.coroutines.delay
+import java.util.Locale
+
+internal fun formatThemeUnlockProgress(percent: Int, remainingTaps: Long): String =
+    "$percent% · ${String.format(Locale.US, "%,d", remainingTaps)} taps to unlock"
 
 /**
  * Settings screen — configures signal sensitivity, UI preferences, and backend URL.
@@ -308,7 +312,10 @@ private fun ThemeSwatch(
             )
         } else {
             Text(
-                text = "$percent% · %,d taps to unlock".format(theme.unlockTaps - tapCount.coerceAtMost(theme.unlockTaps)),
+                text = formatThemeUnlockProgress(
+                    percent = percent,
+                    remainingTaps = theme.unlockTaps - tapCount.coerceAtMost(theme.unlockTaps)
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = theme.accent.copy(alpha = 0.75f),
                 maxLines = 1
