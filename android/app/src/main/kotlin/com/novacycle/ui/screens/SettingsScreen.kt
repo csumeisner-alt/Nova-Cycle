@@ -279,6 +279,7 @@ private fun ThemeSwatch(
     onClick: () -> Unit
 ) {
     val shape = RoundedCornerShape(12.dp)
+    val cardBackground = if (unlocked) theme.backgroundPreview else Color(0xFF1C1C1C)
     val progress = if (unlocked || theme.unlockTaps <= 0L) 1f
                    else (tapCount.toFloat() / theme.unlockTaps).coerceIn(0f, 1f)
     val percent = (progress * 100f).toInt()
@@ -286,7 +287,7 @@ private fun ThemeSwatch(
     Column(
         modifier = modifier
             .clip(shape)
-            .background(bg)
+            .background(cardBackground)
             .border(
                 width = if (selected) 2.dp else 1.dp,
                 color = when {
