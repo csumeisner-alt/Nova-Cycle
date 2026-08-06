@@ -42,7 +42,7 @@ import kotlinx.coroutines.delay
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    viewModel: SettingsViewModel = hiltViewModel(),
+    viewModel: SettingsViewModel,
     // MainActivity owns the global tap counter. Passing that instance through
     // the nav host avoids trying to rediscover an Activity from a wrapped
     // Compose Context when this destination is opened.

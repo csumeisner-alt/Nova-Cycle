@@ -4,6 +4,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
@@ -22,10 +24,14 @@ import com.novacycle.ui.theme.NovaExtendedBlue
  */
 @Composable
 fun ConfidenceLegend(modifier: Modifier = Modifier) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        LegendLine(NovaBuyGreen, "Buy (Long-term)")
-        LegendLine(NovaExtendedBlue, "Buy (Short-term)")
-        LegendLine(NovaExtendedBlue.copy(alpha = 0.35f), "Extended Hours")
+    Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        LegendLine(NovaBuyGreen, "LONG BUY")
+        LegendLine(NovaExtendedBlue, "SHORT BUY")
+        LegendLine(NovaExtendedBlue.copy(alpha = 0.35f), "EXTENDED HOURS")
     }
 }
 
@@ -37,7 +43,9 @@ private fun LegendLine(color: Color, label: String) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onBackground
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            softWrap = false
         )
     }
 }

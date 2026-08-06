@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -51,30 +52,67 @@ fun ConfidenceHistoryScreen(
         onRefresh = { viewModel.loadHistory() },
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
     ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-            Text(
-                "Confidence History",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "EMA (Smooth Confidence)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.padding(end = 2.dp)
-                )
-                TextButton(onClick = { showEmaInfo = true }, contentPadding = PaddingValues(0.dp),
-                    modifier = Modifier.size(24.dp)) {
-                    Text("ⓘ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Confidence",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "Long- and short-trend conviction",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f)
+                    )
                 }
-                Spacer(Modifier.width(2.dp))
-                Switch(
-                    checked = emaEnabled,
-                    onCheckedChange = { settingsViewModel.updateSmoothingMode(if (it) SmoothingMode.EMA else SmoothingMode.RAW) }
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            "SMOOTH",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            if (emaEnabled) "EMA" else "Raw",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = emaEnabled,
+                        onCheckedChange = {
+                            settingsViewModel.updateSmoothingMode(
+                                if (it) SmoothingMode.EMA else SmoothingMode.RAW
+                            )
+                        }
+                    )
+                    IconButton(onClick = { showEmaInfo = true }) {
+                        Text(
+                            "i",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
         }
 
@@ -95,31 +133,51 @@ fun ConfidenceHistoryScreen(
         }
 
         // "Updated X ago" freshness label, ticking as time passes
-        UpdatedAgoLabel(lastUpdatedAtMillis = uiState.lastUpdatedAtMillis, modifier = Modifier.padding(horizontal = 12.dp), extendedHoursAware = true)
+        UpdatedAgoLabel(
+            lastUpdatedAtMillis = uiState.lastUpdatedAtMillis,
+            modifier = Modifier.padding(horizontal = 4.dp),
+            extendedHoursAware = true
+        )
 
         Row(
-            Modifier.padding(horizontal = 12.dp).horizontalScroll(rememberScrollState()),
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             windows.forEach { w ->
                 FilterChip(
                     selected = uiState.selectedWindow == w,
                     onClick = { viewModel.setWindow(w) },
-                    label = { Text(w, color = MaterialTheme.colorScheme.onSurface) }
+                    label = {
+                        Text(
+                            w.uppercase(),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 )
             }
         }
 
         if (uiState.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        if (uiState.error != null) Text("⚠️ ${uiState.error}", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+        if (uiState.error != null) {
+            Text(
+                "Unable to load confidence: ${uiState.error}",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        }
 
         // Legend above the chart + trend mini-summary
-        ConfidenceLegend(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+        ConfidenceLegend(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
+        )
         if (uiState.confidencePoints.size >= 2) {
             TrendSummary(
                 points = uiState.confidencePoints,
                 window = uiState.selectedWindow,
-                modifier = Modifier.padding(horizontal = 12.dp)
+                modifier = Modifier.padding(horizontal = 4.dp)
             )
         }
 
@@ -135,7 +193,7 @@ fun ConfidenceHistoryScreen(
                     points = points,
                     windowLabel = uiState.selectedWindow,
                     emaEnabled = emaEnabled,
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp)
+                    modifier = Modifier.fillMaxSize().padding(top = 2.dp, bottom = 4.dp)
                 )
             } else if (!uiState.isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
