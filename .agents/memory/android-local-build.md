@@ -7,4 +7,4 @@ The Android app can be built locally when GitHub Actions is unavailable, but the
 
 **Why:** The CI release keystore is not available in the Repl, while the debug APK can still be verified and delivered directly as an installable artifact.
 
-**How to apply:** Treat the debug APK as a fresh install if an older CI-signed APK is present; Android may reject it as an update because the signing keys differ. Warn that uninstalling the older package removes its local app data.
+**How to apply:** Treat the debug APK as a fresh install if an older CI-signed APK is present; Android may reject it as an update because the signing keys differ. Warn that uninstalling the older package removes its local app data. When the CI workflow is available, prefer its signed release asset: the Repl may have no Android SDK, while GitHub Actions can still run the full Android test, release-build, and signing path.
