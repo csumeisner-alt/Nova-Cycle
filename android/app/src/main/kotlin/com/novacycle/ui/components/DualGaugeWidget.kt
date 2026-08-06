@@ -20,6 +20,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.runtime.LaunchedEffect
 import com.novacycle.domain.model.ConfidenceZone
 import com.novacycle.domain.model.GaugeState
 import com.novacycle.ui.theme.LocalNovaTheme
@@ -63,6 +67,16 @@ fun DualGaugeWidget(
     val gaugePercent = gaugeState.gaugePercent.coerceIn(0, 100)
     // 0% is the far-left red end, 100% is the far-right green end.
     val needleAngle = 180f + gaugePercent * 1.8f
+    val animatedNeedleAngle = remember { Animatable(needleAngle) }
+    LaunchedEffect(needleAngle) {
+        animatedNeedleAngle.animateTo(
+            targetValue = needleAngle,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessLow
+            )
+        )
+    }
 
     // Gray "no data" state: fallback gauges render fully muted.
     val isFallback = gaugeState.isFallback
@@ -132,7 +146,7 @@ fun DualGaugeWidget(
 
             drawGaugeArc(cx, cy, radius, strokeWidth, muted = isFallback, trackColor = trackColor)
             drawTicks(cx, cy, radius, strokeWidth, spec, theme)
-            drawNeedle(cx, cy, radius, needleAngle, zoneColor, spec, pulse)
+            drawNeedle(cx, cy, radius, animatedNeedleAngle.value, zoneColor, spec, pulse)
 
             // Draw center hub
             when (spec.gaugeHubStyle) {
