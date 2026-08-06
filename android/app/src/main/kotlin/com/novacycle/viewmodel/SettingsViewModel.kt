@@ -69,18 +69,10 @@ class SettingsViewModel @Inject constructor(
                 buyThreshold = prefs[KEY_BUY_THRESHOLD] ?: 70,
                 sellThreshold = prefs[KEY_SELL_THRESHOLD] ?: -70,
                 extendedHoursEnabled = prefs[KEY_EXTENDED_HOURS] ?: true,
-                weightingMode = WeightingMode.valueOf(
-                    prefs[KEY_WEIGHTING_MODE] ?: WeightingMode.BALANCED.name
-                ),
-                smoothingMode = SmoothingMode.valueOf(
-                    prefs[KEY_SMOOTHING_MODE] ?: SmoothingMode.RAW.name
-                ),
-                storyCardLevel = StoryLevel.valueOf(
-                    prefs[KEY_STORY_LEVEL] ?: StoryLevel.SIMPLE.name
-                ),
-                notificationSensitivity = NotifSensitivity.valueOf(
-                    prefs[KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
-                ),
+                weightingMode = prefs.enumOrDefault(KEY_WEIGHTING_MODE, WeightingMode.BALANCED),
+                smoothingMode = prefs.enumOrDefault(KEY_SMOOTHING_MODE, SmoothingMode.RAW),
+                storyCardLevel = prefs.enumOrDefault(KEY_STORY_LEVEL, StoryLevel.SIMPLE),
+                notificationSensitivity = prefs.enumOrDefault(KEY_NOTIF_SENSITIVITY, NotifSensitivity.STANDARD),
                 extendedHoursNotifications = prefs[KEY_EXTENDED_NOTIF] ?: true,
                 highConvictionOnly = prefs[KEY_HIGH_CONVICTION_ONLY] ?: false,
                 apiBaseUrl = ApiUrlResolver.resolve(
@@ -278,3 +270,10 @@ class SettingsViewModel @Inject constructor(
             }
     }
 }
+
+private inline fun <reified T : Enum<T>> Preferences.enumOrDefault(
+    key: Preferences.Key<String>,
+    default: T
+): T = runCatching {
+    enumValueOf<T>(this[key] ?: default.name)
+}.getOrDefault(default)

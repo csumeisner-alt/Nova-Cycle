@@ -94,6 +94,11 @@ class MainActivity : ComponentActivity() {
     private val registrationInFlight = AtomicBoolean(false)
 
     private val themeViewModel: ThemeViewModel by viewModels()
+    // Keep settings state at the Activity scope as well. This prevents a
+    // destination-scoped Hilt ViewModel lookup from being the thing that
+    // crashes when the Settings tab is opened, and keeps settings changes
+    // consistent across charts, confidence history, notifications, and here.
+    private val settingsViewModel: SettingsViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Android 12+ system splash (gold ring on #0D0D0D); compat-rendered below 12.
@@ -137,7 +142,10 @@ class MainActivity : ComponentActivity() {
                     // Living ambient layer (glows / ribbons / wisps / pattern)
                     // rendered behind all screens; reacts to the shared breath.
                     AmbientBackground()
-                    NovaCycleNavHost(themeViewModel = themeViewModel)
+                    NovaCycleNavHost(
+                        themeViewModel = themeViewModel,
+                        settingsViewModel = settingsViewModel
+                    )
                     // Branded intro (star → ring → wordmark), once per process launch
                     val introSpec = themeState.selectedTheme.spec()
                     BrandIntroOverlay(
@@ -274,18 +282,26 @@ class MainActivity : ComponentActivity() {
                     buyThreshold = prefs[SettingsViewModel.KEY_BUY_THRESHOLD] ?: 70,
                     sellThreshold = prefs[SettingsViewModel.KEY_SELL_THRESHOLD] ?: -70,
                     extendedHoursEnabled = prefs[SettingsViewModel.KEY_EXTENDED_HOURS] ?: true,
-                    weightingMode = WeightingMode.valueOf(
-                        prefs[SettingsViewModel.KEY_WEIGHTING_MODE] ?: WeightingMode.BALANCED.name
-                    ),
-                    smoothingMode = SmoothingMode.valueOf(
-                        prefs[SettingsViewModel.KEY_SMOOTHING_MODE] ?: SmoothingMode.RAW.name
-                    ),
-                    storyCardLevel = StoryLevel.valueOf(
-                        prefs[SettingsViewModel.KEY_STORY_LEVEL] ?: StoryLevel.SIMPLE.name
-                    ),
-                    notificationSensitivity = NotifSensitivity.valueOf(
-                        prefs[SettingsViewModel.KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
-                    ),
+                    weightingMode = runCatching {
+                        WeightingMode.valueOf(
+                            prefs[SettingsViewModel.KEY_WEIGHTING_MODE] ?: WeightingMode.BALANCED.name
+                        )
+                    }.getOrDefault(WeightingMode.BALANCED),
+                    smoothingMode = runCatching {
+                        SmoothingMode.valueOf(
+                            prefs[SettingsViewModel.KEY_SMOOTHING_MODE] ?: SmoothingMode.RAW.name
+                        )
+                    }.getOrDefault(SmoothingMode.RAW),
+                    storyCardLevel = runCatching {
+                        StoryLevel.valueOf(
+                            prefs[SettingsViewModel.KEY_STORY_LEVEL] ?: StoryLevel.SIMPLE.name
+                        )
+                    }.getOrDefault(StoryLevel.SIMPLE),
+                    notificationSensitivity = runCatching {
+                        NotifSensitivity.valueOf(
+                            prefs[SettingsViewModel.KEY_NOTIF_SENSITIVITY] ?: NotifSensitivity.STANDARD.name
+                        )
+                    }.getOrDefault(NotifSensitivity.STANDARD),
                     extendedHoursNotifications = prefs[SettingsViewModel.KEY_EXTENDED_NOTIF] ?: true,
                     highConvictionOnly = prefs[SettingsViewModel.KEY_HIGH_CONVICTION_ONLY] ?: false,
                     apiBaseUrl = ApiUrlResolver.resolve(
