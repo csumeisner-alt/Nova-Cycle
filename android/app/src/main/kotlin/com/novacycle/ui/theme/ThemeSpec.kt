@@ -17,6 +17,9 @@ enum class AmbientStyle {
     HERITAGE_PATTERN
 }
 
+enum class GaugeNeedleTip { SHARP, GLOW_DOT, GLOW_HALO, BLUNT }
+enum class GaugeHubStyle { GOLD_RING, TEAL_DOT, ROSE_GLOW, COPPER_RING }
+
 /**
  * Per-theme visual parameters beyond the Material color scheme: the neon/metal
  * glow color, card rim lighting, and the ambient background style. Keeping
@@ -33,7 +36,15 @@ data class NovaThemeSpec(
     /** Ambient background treatment. */
     val ambient: AmbientStyle,
     /** True when the background is light (Heritage) — flips scrim directions. */
-    val lightBackground: Boolean = false
+    val lightBackground: Boolean = false,
+    
+    val gaugeArcStroke: Float = 14f,
+    val gaugeTickCount: Int = 5,
+    val gaugeTickLong: Boolean = false,
+    val gaugeNeedleTip: GaugeNeedleTip = GaugeNeedleTip.SHARP,
+    val gaugeHubStyle: GaugeHubStyle = GaugeHubStyle.GOLD_RING,
+    val gaugeGlowIntensity: Float = 0.18f,
+    val gaugeShowTicks: Boolean = true
 )
 
 fun NovaTheme.spec(): NovaThemeSpec = when (this) {
@@ -41,25 +52,53 @@ fun NovaTheme.spec(): NovaThemeSpec = when (this) {
         glow = NovaGold,
         glowBright = NovaGoldBright,
         rim = NovaGold.copy(alpha = 0.55f),
-        ambient = AmbientStyle.EMBER_GLOW
+        ambient = AmbientStyle.EMBER_GLOW,
+        gaugeArcStroke = 14f,
+        gaugeTickCount = 5,
+        gaugeTickLong = true,
+        gaugeNeedleTip = GaugeNeedleTip.SHARP,
+        gaugeHubStyle = GaugeHubStyle.GOLD_RING,
+        gaugeGlowIntensity = 0.18f,
+        gaugeShowTicks = true
     )
     NovaTheme.MINT_LUXE -> NovaThemeSpec(
         glow = NovaMint,
         glowBright = Color(0xFFDFFFF2),
         rim = NovaMint.copy(alpha = 0.45f),
-        ambient = AmbientStyle.AURORA_WISPS
+        ambient = AmbientStyle.AURORA_WISPS,
+        gaugeArcStroke = 22f,
+        gaugeTickCount = 3,
+        gaugeTickLong = false,
+        gaugeNeedleTip = GaugeNeedleTip.GLOW_DOT,
+        gaugeHubStyle = GaugeHubStyle.TEAL_DOT,
+        gaugeGlowIntensity = 0.25f,
+        gaugeShowTicks = true
     )
     NovaTheme.AURORA_FLUX -> NovaThemeSpec(
         glow = NovaRoseGlow,
         glowBright = Color(0xFFFFD9E0),
         rim = NovaRose.copy(alpha = 0.5f),
-        ambient = AmbientStyle.LIGHT_RIBBONS
+        ambient = AmbientStyle.LIGHT_RIBBONS,
+        gaugeArcStroke = 28f,
+        gaugeTickCount = 0,
+        gaugeTickLong = false,
+        gaugeNeedleTip = GaugeNeedleTip.GLOW_HALO,
+        gaugeHubStyle = GaugeHubStyle.ROSE_GLOW,
+        gaugeGlowIntensity = 0.45f,
+        gaugeShowTicks = false
     )
     NovaTheme.CRIMSON_PULSE -> NovaThemeSpec(
         glow = NovaCopperBright,
         glowBright = Color(0xFFFFE9CF),
         rim = NovaCopper.copy(alpha = 0.7f),
         ambient = AmbientStyle.HERITAGE_PATTERN,
-        lightBackground = true
+        lightBackground = true,
+        gaugeArcStroke = 20f,
+        gaugeTickCount = 5,
+        gaugeTickLong = true,
+        gaugeNeedleTip = GaugeNeedleTip.BLUNT,
+        gaugeHubStyle = GaugeHubStyle.COPPER_RING,
+        gaugeGlowIntensity = 0.12f,
+        gaugeShowTicks = true
     )
 }
