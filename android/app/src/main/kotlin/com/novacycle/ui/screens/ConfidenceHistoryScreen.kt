@@ -36,7 +36,11 @@ import kotlin.math.roundToInt
 @Composable
 fun ConfidenceHistoryScreen(
     viewModel: ConfidenceHistoryViewModel = hiltViewModel(),
-    settingsViewModel: SettingsViewModel = hiltViewModel()
+    // Required — caller (NavGraph) must pass the Activity-scoped instance.
+    // Do NOT default to hiltViewModel() here: that would silently create a
+    // NavBackStackEntry-scoped VM distinct from the one MainActivity owns,
+    // which caused a crash on the Settings screen (wrong store owner).
+    settingsViewModel: SettingsViewModel
 ) {
     val uiState  by viewModel.uiState.collectAsStateWithLifecycle()
     val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
