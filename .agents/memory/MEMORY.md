@@ -14,6 +14,7 @@
 - [SQLite async cancellation](sqlite-async-cancellation.md) — cancelled aiosqlite queries kill the pooled connection; timeout tests need file-based DBs, not :memory:
 - [Android chart framework](android-chart-framework.md) — server-side candle resampling, int volumes for Moshi, daily-only Room cache, plot-inset draw helpers, bucket-based signal mapping
 - [Android local build fallback](android-local-build.md) — build with SDK + standard JDK 17 and attach a debug APK when CI release signing is unavailable
+- [Android CI runner queue](android-ci-runner-queue.md) — manual GitHub Actions runs can remain queued without a runner; do not treat queued release jobs as validated
 - [Long-model validation and VIX ingestion](long-model-validation-and-vix.md) — forward labels must use future prices; accept only positive OOS lift; VIX needs index-specific spike handling
 - [Rally-event unification](rally-event-unification.md) — one shared rally label for training/eval/reporting; PR-AUC-vs-base-rate gate; feature builders must return kept positions
 - [Long-trend return alignment bug](long-trend-return-alignment.md) — train/inference mismatch: return features must be pre-computed on full df before meaningful-move filter or sign inversion causes -0.30 OOS lift
