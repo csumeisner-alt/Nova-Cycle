@@ -137,7 +137,7 @@ class MainActivity : ComponentActivity() {
                     // Living ambient layer (glows / ribbons / wisps / pattern)
                     // rendered behind all screens; reacts to the shared breath.
                     AmbientBackground()
-                    NovaCycleNavHost()
+                    NovaCycleNavHost(themeViewModel = themeViewModel)
                     // Branded intro (star → ring → wordmark), once per process launch
                     val introSpec = themeState.selectedTheme.spec()
                     BrandIntroOverlay(

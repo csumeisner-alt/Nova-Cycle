@@ -69,9 +69,9 @@ fun NovaLogoHeader(modifier: Modifier = Modifier) {
     ) {
         val baseAlpha = when (theme) {
             NovaTheme.AURORA_FLUX -> 0.55f
-            NovaTheme.DARK_LUXE -> 0.35f
-            NovaTheme.MINT_LUXE -> 0.20f
-            NovaTheme.CRIMSON_PULSE -> 0.15f
+            NovaTheme.DARK_LUXE -> 0.58f
+            NovaTheme.MINT_LUXE -> 0.34f
+            NovaTheme.CRIMSON_PULSE -> 0.24f
         }
 
         Box(
@@ -86,8 +86,8 @@ fun NovaLogoHeader(modifier: Modifier = Modifier) {
                     drawCircle(
                         brush = Brush.radialGradient(
                             listOf(
-                                spec.glowBright.copy(alpha = baseAlpha + 0.42f * pulse + 0.28f * bloom),
-                                spec.glow.copy(alpha = (baseAlpha * 0.4f) + 0.25f * pulse + 0.16f * bloom),
+                                spec.glowBright.copy(alpha = (baseAlpha + 0.42f * pulse + 0.28f * bloom).coerceAtMost(0.92f)),
+                                spec.glow.copy(alpha = ((baseAlpha * 0.5f) + 0.25f * pulse + 0.16f * bloom).coerceAtMost(0.72f)),
                                 Color.Transparent
                             ),
                             center = center, radius = radius
@@ -208,7 +208,7 @@ fun NovaLogoHeader(modifier: Modifier = Modifier) {
             
             Canvas(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(86.dp)
                     .graphicsLayer {
                         if (isHeritage) {
                             rotationZ = spin.value
@@ -225,33 +225,69 @@ fun NovaLogoHeader(modifier: Modifier = Modifier) {
                 val cy = size.height / 2f
                 val r = size.minDimension / 2f
 
-                val outerStroke = 2.5.dp.toPx()
+                // The emblem is intentionally bolder than the ambient line
+                // work: it must remain legible in a small phone screenshot.
+                val outerStroke = 3.5.dp.toPx()
+                val innerStroke = 2.5.dp.toPx()
+                val glowRadius = r * 0.84f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(
+                            spec.glowBright.copy(alpha = 0.36f + 0.16f * burst.value),
+                            spec.glow.copy(alpha = 0.16f + 0.08f * burst.value),
+                            Color.Transparent
+                        ),
+                        center = Offset(cx, cy),
+                        radius = glowRadius
+                    ),
+                    radius = glowRadius,
+                    center = Offset(cx, cy)
+                )
+                drawCircle(
+                    color = spec.rim.copy(alpha = 0.55f),
+                    radius = r * 0.82f,
+                    style = Stroke(width = 1.dp.toPx())
+                )
                 drawArc(
-                    color = theme.accent,
-                    startAngle = 150f,
-                    sweepAngle = 240f,
+                    color = spec.glowBright,
+                    startAngle = 132f,
+                    sweepAngle = 206f,
                     useCenter = false,
                     style = Stroke(width = outerStroke, cap = StrokeCap.Round)
                 )
-
-                val innerRadius = r - 8.dp.toPx()
                 drawArc(
-                    color = theme.accent.copy(alpha = 0.5f),
-                    startAngle = 330f,
-                    sweepAngle = 120f,
+                    color = theme.accent.copy(alpha = 0.72f),
+                    startAngle = 316f,
+                    sweepAngle = 116f,
+                    useCenter = false,
+                    style = Stroke(width = outerStroke, cap = StrokeCap.Round)
+                )
+                val innerRadius = r * 0.61f
+                drawArc(
+                    color = theme.accent.copy(alpha = 0.9f),
+                    startAngle = 150f,
+                    sweepAngle = 142f,
                     useCenter = false,
                     topLeft = Offset(cx - innerRadius, cy - innerRadius),
                     size = Size(innerRadius * 2, innerRadius * 2),
-                    style = Stroke(width = outerStroke, cap = StrokeCap.Round)
+                    style = Stroke(width = innerStroke, cap = StrokeCap.Round)
                 )
 
-                val nStroke = 2.dp.toPx()
-                val offX = 8.dp.toPx()
-                val offY = 10.dp.toPx()
+                // A solid, centered N is the recognition anchor. It is drawn
+                // over the orbit lines so the mark reads as one emblem.
+                val nStroke = 4.dp.toPx()
+                val offX = 12.dp.toPx()
+                val offY = 15.dp.toPx()
+                val nColor = spec.glowBright
+                drawLine(nColor, Offset(cx - offX, cy - offY), Offset(cx - offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
+                drawLine(nColor, Offset(cx + offX, cy - offY), Offset(cx + offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
+                drawLine(nColor, Offset(cx - offX, cy - offY), Offset(cx + offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
 
-                drawLine(theme.accent, Offset(cx - offX, cy - offY), Offset(cx - offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
-                drawLine(theme.accent, Offset(cx + offX, cy - offY), Offset(cx + offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
-                drawLine(theme.accent, Offset(cx - offX, cy - offY), Offset(cx + offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
+                drawCircle(
+                    color = spec.glowBright.copy(alpha = 0.24f),
+                    radius = 3.dp.toPx(),
+                    center = Offset(cx, cy)
+                )
             }
 
             // Diagonal shimmer sweep across the ring
