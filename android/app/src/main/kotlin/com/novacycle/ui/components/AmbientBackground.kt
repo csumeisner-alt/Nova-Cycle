@@ -68,7 +68,7 @@ fun AmbientBackground(modifier: Modifier = Modifier) {
 /** Executive Gold — two slow-drifting warm ember glows + drifting gold sparks. */
 private fun DrawScope.drawEmberGlow(phase: Float, pulse: Float, glow: Color, bright: Color) {
     val t = phase * 2f * PI.toFloat()
-    val boost = 1f + pulse * 1.2f
+    val boost = 1f + pulse * 1.8f
     val c1 = Offset(
         size.width * (0.25f + 0.10f * sin(t)),
         size.height * (0.20f + 0.06f * cos(t * 0.7f))
@@ -77,16 +77,35 @@ private fun DrawScope.drawEmberGlow(phase: Float, pulse: Float, glow: Color, bri
         size.width * (0.80f - 0.08f * cos(t * 0.9f)),
         size.height * (0.75f + 0.07f * sin(t * 0.6f))
     )
+    // A deliberate brand spotlight sits behind the header. The old treatment
+    // was technically present but too faint to read on a phone screenshot.
+    val logoSpot = Offset(
+        size.width * (0.50f + 0.025f * sin(t * 0.55f)),
+        size.height * 0.18f
+    )
     drawCircle(
         brush = Brush.radialGradient(
-            listOf(bright.copy(alpha = 0.10f * boost), glow.copy(alpha = 0.05f * boost), Color.Transparent),
+            listOf(
+                bright.copy(alpha = (0.22f + 0.16f * pulse).coerceAtMost(0.5f)),
+                glow.copy(alpha = (0.12f + 0.10f * pulse).coerceAtMost(0.3f)),
+                Color.Transparent
+            ),
+            center = logoSpot,
+            radius = size.minDimension * 0.42f
+        ),
+        radius = size.minDimension * 0.42f,
+        center = logoSpot
+    )
+    drawCircle(
+        brush = Brush.radialGradient(
+            listOf(bright.copy(alpha = 0.16f * boost), glow.copy(alpha = 0.08f * boost), Color.Transparent),
             center = c1, radius = size.minDimension * 0.55f
         ),
         radius = size.minDimension * 0.55f, center = c1
     )
     drawCircle(
         brush = Brush.radialGradient(
-            listOf(glow.copy(alpha = 0.08f * boost), Color.Transparent),
+            listOf(glow.copy(alpha = 0.13f * boost), Color.Transparent),
             center = c2, radius = size.minDimension * 0.45f
         ),
         radius = size.minDimension * 0.45f, center = c2

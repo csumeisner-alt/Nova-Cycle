@@ -1,7 +1,5 @@
 package com.novacycle.ui.screens
 
-import android.content.ContextWrapper
-import androidx.activity.ComponentActivity
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -26,7 +24,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -46,10 +43,10 @@ import kotlinx.coroutines.delay
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
-    // The theme VM MUST be the activity-scoped instance: MainActivity registers
-    // global taps (and emits unlock events) on that instance, so scoping this to
-    // the nav destination would silently split the event stream in two.
-    themeViewModel: ThemeViewModel = activityScopedThemeViewModel()
+    // MainActivity owns the global tap counter. Passing that instance through
+    // the nav host avoids trying to rediscover an Activity from a wrapped
+    // Compose Context when this destination is opened.
+    themeViewModel: ThemeViewModel
 ) {
     val settings         by viewModel.settings.collectAsStateWithLifecycle()
     val connTestState    by viewModel.connectionTestState.collectAsStateWithLifecycle()
@@ -212,21 +209,6 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(24.dp))
     }
-}
-
-/**
- * Resolves the activity-scoped [ThemeViewModel] — the same instance MainActivity
- * uses for tap counting — regardless of the nav destination we are composed in.
- */
-@Composable
-private fun activityScopedThemeViewModel(): ThemeViewModel {
-    val context = LocalContext.current
-    val activity = remember(context) {
-        generateSequence(context) { (it as? ContextWrapper)?.baseContext }
-            .filterIsInstance<ComponentActivity>()
-            .first()
-    }
-    return hiltViewModel(activity)
 }
 
 /**

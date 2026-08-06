@@ -20,6 +20,7 @@ import androidx.navigation.compose.*
 import com.novacycle.ui.components.HealthBanners
 import com.novacycle.ui.screens.*
 import com.novacycle.viewmodel.HealthViewModel
+import com.novacycle.viewmodel.ThemeViewModel
 
 /** Route constants — single source of truth for navigation destinations */
 object Routes {
@@ -55,7 +56,8 @@ private val bottomNavItems = listOf(
  */
 @Composable
 fun NovaCycleNavHost(
-    healthViewModel: HealthViewModel = hiltViewModel()
+    healthViewModel: HealthViewModel = hiltViewModel(),
+    themeViewModel: ThemeViewModel
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -154,7 +156,7 @@ fun NovaCycleNavHost(
                 )
             }
             composable(Routes.SETTINGS) {
-                SettingsScreen()
+                SettingsScreen(themeViewModel = themeViewModel)
             }
             composable(Routes.RELIABILITY) {
                 ReliabilityScreen(
