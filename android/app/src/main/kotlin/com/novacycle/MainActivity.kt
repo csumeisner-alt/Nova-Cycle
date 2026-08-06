@@ -40,6 +40,7 @@ import com.novacycle.domain.model.NotifSensitivity
 import com.novacycle.notifications.NovaCycleFirebaseService
 import com.novacycle.ui.navigation.NovaCycleNavHost
 import com.novacycle.ui.theme.NovaCycleTheme
+import com.novacycle.ui.theme.spec
 import com.novacycle.viewmodel.SettingsViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
@@ -138,7 +139,12 @@ class MainActivity : ComponentActivity() {
                     AmbientBackground()
                     NovaCycleNavHost()
                     // Branded intro (star → ring → wordmark), once per process launch
-                    BrandIntroOverlay()
+                    val introSpec = themeState.selectedTheme.spec()
+                    BrandIntroOverlay(
+                        themeGlow = introSpec.glow,
+                        themeGlowBright = introSpec.glowBright,
+                        bgColor = MaterialTheme.colorScheme.background
+                    )
                 }
                 // Plays ping + haptic when a theme unlocks, wherever the user is
                 ThemeUnlockEffectHost(themeViewModel)

@@ -9,14 +9,11 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -39,6 +36,7 @@ import com.novacycle.ui.theme.NovaTheme
 import com.novacycle.viewmodel.ConnectionTestState
 import com.novacycle.viewmodel.SettingsViewModel
 import com.novacycle.viewmodel.ThemeViewModel
+import com.novacycle.ui.theme.spec
 import kotlinx.coroutines.delay
 
 /**
@@ -232,9 +230,9 @@ private fun activityScopedThemeViewModel(): ThemeViewModel {
 }
 
 /**
- * Theme picker: one swatch per luxe theme. Locked themes are greyed out and
- * non-selectable (deliberately without a lock icon). Newly unlocked themes get
- * a brief gold shimmer sweep — the sound + haptic play globally.
+ * Theme picker: one visual preview per luxe theme. Locked themes show their
+ * unlock progress directly, so the collection feels discoverable without
+ * requiring a hidden long-press gesture.
  */
 @Composable
 private fun ThemePicker(themeViewModel: ThemeViewModel) {
@@ -270,7 +268,6 @@ private fun ThemePicker(themeViewModel: ThemeViewModel) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ThemeSwatch(
     theme: NovaTheme,
@@ -282,25 +279,15 @@ private fun ThemeSwatch(
     onClick: () -> Unit
 ) {
     val shape = RoundedCornerShape(12.dp)
-    val accent = if (unlocked) theme.accent else Color(0xFF3A3A3A)
-    val bg = if (unlocked) theme.backgroundPreview else Color(0xFF1C1C1C)
-
-    // Long-pressing a locked swatch briefly reveals the exact tap progress.
-    var showProgressText by remember { mutableStateOf(false) }
-    LaunchedEffect(showProgressText) {
-        if (showProgressText) {
-            delay(3000)
-            showProgressText = false
-        }
-    }
-
+    val cardBackground = if (unlocked) theme.backgroundPreview else Color(0xFF1C1C1C)
     val progress = if (unlocked || theme.unlockTaps <= 0L) 1f
                    else (tapCount.toFloat() / theme.unlockTaps).coerceIn(0f, 1f)
+    val percent = (progress * 100f).toInt()
 
     Column(
         modifier = modifier
             .clip(shape)
-            .background(bg)
+            .background(cardBackground)
             .border(
                 width = if (selected) 2.dp else 1.dp,
                 color = when {
@@ -311,59 +298,119 @@ private fun ThemeSwatch(
                 shape = shape
             )
             .then(
-                if (unlocked) Modifier.clickable(onClick = onClick)
-                else Modifier.combinedClickable(
-                    onClick = { /* locked — non-selectable */ },
-                    onLongClick = { showProgressText = true }
-                )
+                Modifier.clickable(enabled = unlocked, onClick = onClick)
             )
-            .then(if (shimmer) Modifier.shimmerOverlay() else Modifier)
-            .padding(vertical = 12.dp),
+            .then(if (shimmer) Modifier.shimmerOverlay(theme.accent) else Modifier)
+            .padding(horizontal = 8.dp, vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            // Thin progress ring around the accent dot for locked themes —
-            // a subtle hint of how close the unlock milestone is (no lock icon).
-            if (!unlocked) {
-                Canvas(Modifier.size(34.dp)) {
-                    val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
-                    drawArc(
-                        color = Color(0xFF2E2E2E),
-                        startAngle = -90f, sweepAngle = 360f,
-                        useCenter = false, style = stroke
-                    )
-                    if (progress > 0f) {
-                        drawArc(
-                            color = theme.accent.copy(alpha = 0.85f),
-                            startAngle = -90f, sweepAngle = 360f * progress,
-                            useCenter = false, style = stroke
-                        )
-                    }
-                }
-            }
-            Box(
-                Modifier
-                    .size(26.dp)
-                    .clip(CircleShape)
-                    .background(accent)
-            )
-        }
+        ThemePreview(
+            theme = theme,
+            enabled = unlocked,
+            modifier = Modifier.fillMaxWidth()
+        )
         Text(
-            text = if (!unlocked && showProgressText)
-                       "%,d / %,d".format(tapCount, theme.unlockTaps)
-                   else theme.displayName,
+            text = theme.displayName,
             style = MaterialTheme.typography.labelSmall,
             color = if (unlocked) MaterialTheme.colorScheme.onSurface
                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
             maxLines = 1
         )
+        if (unlocked) {
+            Text(
+                text = if (selected) "ACTIVE" else "AVAILABLE",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = theme.accent
+            )
+        } else {
+            Text(
+                text = "$percent% · %,d taps to unlock".format(theme.unlockTaps - tapCount.coerceAtMost(theme.unlockTaps)),
+                style = MaterialTheme.typography.labelSmall,
+                color = theme.accent.copy(alpha = 0.75f),
+                maxLines = 1
+            )
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth().height(3.dp),
+                color = theme.accent.copy(alpha = 0.8f),
+                trackColor = Color(0xFF2E2E2E)
+            )
+        }
     }
 }
 
-/** Repeating diagonal gold shimmer sweep drawn over the swatch content. */
 @Composable
-private fun Modifier.shimmerOverlay(): Modifier {
+private fun ThemePreview(
+    theme: NovaTheme,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val spec = theme.spec()
+    val accent = if (enabled) theme.accent else Color(0xFF4A4A4A)
+    val background = if (enabled) theme.backgroundPreview else Color(0xFF1C1C1C)
+
+    Canvas(
+        modifier = modifier
+            .height(64.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(background)
+    ) {
+        val centerX = size.width / 2f
+        val centerY = size.height * 0.36f
+        val markRadius = size.minDimension * 0.18f
+        val markStroke = 1.5.dp.toPx()
+        drawArc(
+            color = accent,
+            startAngle = 150f,
+            sweepAngle = 240f,
+            useCenter = false,
+            topLeft = Offset(centerX - markRadius, centerY - markRadius),
+            size = androidx.compose.ui.geometry.Size(markRadius * 2f, markRadius * 2f),
+            style = Stroke(width = markStroke, cap = StrokeCap.Round)
+        )
+        drawArc(
+            color = accent.copy(alpha = 0.55f),
+            startAngle = 330f,
+            sweepAngle = 120f,
+            useCenter = false,
+            topLeft = Offset(centerX - markRadius * 0.66f, centerY - markRadius * 0.66f),
+            size = androidx.compose.ui.geometry.Size(markRadius * 1.32f, markRadius * 1.32f),
+            style = Stroke(width = markStroke, cap = StrokeCap.Round)
+        )
+        val nHalfWidth = 4.dp.toPx()
+        val nHalfHeight = 5.dp.toPx()
+        drawLine(accent, Offset(centerX - nHalfWidth, centerY - nHalfHeight), Offset(centerX - nHalfWidth, centerY + nHalfHeight), 1.2.dp.toPx(), StrokeCap.Round)
+        drawLine(accent, Offset(centerX + nHalfWidth, centerY - nHalfHeight), Offset(centerX + nHalfWidth, centerY + nHalfHeight), 1.2.dp.toPx(), StrokeCap.Round)
+        drawLine(accent, Offset(centerX - nHalfWidth, centerY - nHalfHeight), Offset(centerX + nHalfWidth, centerY + nHalfHeight), 1.2.dp.toPx(), StrokeCap.Round)
+
+        val gaugeRadius = size.width * 0.34f
+        val gaugeCenter = Offset(centerX, size.height + gaugeRadius * 0.26f)
+        drawArc(
+            color = accent.copy(alpha = 0.2f),
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(gaugeCenter.x - gaugeRadius, gaugeCenter.y - gaugeRadius),
+            size = androidx.compose.ui.geometry.Size(gaugeRadius * 2f, gaugeRadius * 2f),
+            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+        )
+        drawArc(
+            color = accent,
+            startAngle = 180f,
+            sweepAngle = 92f,
+            useCenter = false,
+            topLeft = Offset(gaugeCenter.x - gaugeRadius, gaugeCenter.y - gaugeRadius),
+            size = androidx.compose.ui.geometry.Size(gaugeRadius * 2f, gaugeRadius * 2f),
+            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+        )
+    }
+}
+
+/** Repeating diagonal theme-colored shimmer sweep drawn over the swatch content. */
+@Composable
+private fun Modifier.shimmerOverlay(accent: Color): Modifier {
     val transition = rememberInfiniteTransition(label = "shimmer")
     val x by transition.animateFloat(
         initialValue = -1f,
@@ -375,7 +422,7 @@ private fun Modifier.shimmerOverlay(): Modifier {
         Brush.linearGradient(
             colors = listOf(
                 Color.Transparent,
-                Color(0xFFFFD700).copy(alpha = 0.45f),
+                accent.copy(alpha = 0.45f),
                 Color.Transparent
             ),
             start = Offset(x * 300f, x * 120f),

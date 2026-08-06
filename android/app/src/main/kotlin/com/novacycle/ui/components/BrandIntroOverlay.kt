@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -19,9 +20,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -49,7 +52,11 @@ object BrandIntro {
 private const val INTRO_DURATION_MS = 1600
 
 @Composable
-fun BrandIntroOverlay() {
+fun BrandIntroOverlay(
+    themeGlow: Color = Color(0xFFCBA135),
+    themeGlowBright: Color = Color(0xFFFFD700),
+    bgColor: Color = Color(0xFF0D0D0D)
+) {
     var visible by remember { mutableStateOf(!BrandIntro.hasPlayed) }
     if (!visible) {
         BrandIntro.isVisible = false
@@ -76,7 +83,7 @@ fun BrandIntroOverlay() {
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer { alpha = overlayAlpha }
-            .background(Color(0xFF0D0D0D))
+            .background(bgColor)
             .pointerInput(Unit) {
                 // Swallow all input while the intro is visible so taps cannot
                 // reach the UI underneath (or inflate the tap counter).
@@ -95,7 +102,7 @@ fun BrandIntroOverlay() {
             val r = size.minDimension * (0.06f + 0.10f * p)
             drawCircle(
                 brush = Brush.radialGradient(
-                    listOf(Color(0xFFFFF3C0), Color(0xFFFFD700), Color.Transparent),
+                    listOf(Color(0xFFFFF3C0), themeGlowBright, Color.Transparent),
                     center = c, radius = r * 2.2f
                 ),
                 radius = r * 2.2f, center = c
@@ -107,29 +114,78 @@ fun BrandIntroOverlay() {
                 val dx = (Math.cos(rad) * len).toFloat()
                 val dy = (Math.sin(rad) * len).toFloat()
                 drawLine(
-                    color = Color(0xFFFFD700).copy(alpha = 0.85f),
+                    color = themeGlowBright.copy(alpha = 0.85f),
                     start = c - Offset(dx, dy), end = c + Offset(dx, dy),
                     strokeWidth = r * 0.16f, cap = StrokeCap.Round
                 )
             }
         }
+        
         // Step 2 — cycle ring fade-in
-        Image(
-            painter = painterResource(R.drawable.nova_logo),
-            contentDescription = null,
+        Canvas(
             modifier = Modifier
-                .fillMaxWidth(0.45f)
+                .fillMaxWidth(0.35f)
+                .aspectRatio(1f)
                 .graphicsLayer { alpha = ringAlpha }
-        )
-        // Step 3 — brand text fade-in (full lock-up)
-        Image(
-            painter = painterResource(R.drawable.nova_launch),
-            contentDescription = "NovaCycle",
-            modifier = Modifier
-                .fillMaxWidth(0.8f)
-                .padding(24.dp)
-                .graphicsLayer { alpha = logoAlpha }
-        )
+        ) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val r = size.minDimension / 2f
+
+            val outerStroke = 2.5.dp.toPx()
+            drawArc(
+                color = themeGlow,
+                startAngle = 150f,
+                sweepAngle = 240f,
+                useCenter = false,
+                style = Stroke(width = outerStroke, cap = StrokeCap.Round)
+            )
+
+            val innerRadius = r - 8.dp.toPx()
+            drawArc(
+                color = themeGlow.copy(alpha = 0.5f),
+                startAngle = 330f,
+                sweepAngle = 120f,
+                useCenter = false,
+                topLeft = Offset(cx - innerRadius, cy - innerRadius),
+                size = Size(innerRadius * 2, innerRadius * 2),
+                style = Stroke(width = outerStroke, cap = StrokeCap.Round)
+            )
+
+            val nStroke = 2.dp.toPx()
+            val offX = 8.dp.toPx()
+            val offY = 10.dp.toPx()
+
+            drawLine(themeGlow, Offset(cx - offX, cy - offY), Offset(cx - offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
+            drawLine(themeGlow, Offset(cx + offX, cy - offY), Offset(cx + offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
+            drawLine(themeGlow, Offset(cx - offX, cy - offY), Offset(cx + offX, cy + offY), strokeWidth = nStroke, cap = StrokeCap.Round)
+        }
+
+        // Step 3 — brand text fade-in (full lock-up) + shimmer
+        Box(contentAlignment = Alignment.Center) {
+            Image(
+                painter = painterResource(R.drawable.nova_launch),
+                contentDescription = "NovaCycle",
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .padding(24.dp)
+                    .graphicsLayer { alpha = logoAlpha }
+            )
+            
+            val shimmerProgress = ramp(p, 0.70f, 0.95f)
+            if (shimmerProgress > 0f && shimmerProgress < 1f) {
+                Canvas(Modifier.fillMaxWidth(0.8f).padding(24.dp)) {
+                    val sweep = shimmerProgress * 3f - 1f
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            listOf(Color.Transparent, themeGlowBright.copy(alpha = 0.5f), Color.Transparent),
+                            start = Offset(size.width * sweep - size.width * 0.2f, 0f),
+                            end = Offset(size.width * sweep + size.width * 0.2f, size.height)
+                        )
+                    )
+                }
+            }
+        }
     }
 }
 
